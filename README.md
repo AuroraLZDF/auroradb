@@ -89,6 +89,21 @@ npm run tauri signer generate -- -w ~/.config/auroradb/updater.key
 
 产物位于 `src-tauri/target/release/bundle/`。
 
+### 发布到 Gitee 发行版
+
+源码仓库保持私有，安装包发布到独立的**公开**仓库 `auroradb-releases`（私有仓库的发行版附件需要登录鉴权，终端用户无法下载）。
+
+```bash
+export GITEE_TOKEN=<Gitee 私人令牌>   # 需勾选 projects 权限
+./release.sh                          # 发布到 <owner>/auroradb-releases
+./release.sh --tag v1.0.1 --notes "修复若干问题"
+./release.sh --repo owner/other-repo   # 指定其他公开发布仓库
+```
+
+首次使用需先在 Gitee 创建公开仓库 `auroradb-releases` 并初始化 README，否则脚本会提示仓库不可访问。
+
+脚本会校验发布仓库、读取其默认分支、创建发行版并上传安装包与 `.sig` 签名文件；单个超过 100MB 的产物会被跳过。令牌只从环境变量读取，不要写入仓库。
+
 ## 授权
 
 应用采用**离线买断**模式：激活码由发行方离线签名，客户端本地验签，无需联网。
