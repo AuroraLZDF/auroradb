@@ -1,0 +1,15 @@
+[package]
+name = "license-gen"
+version = "0.1.0"
+edition = "2021"
+
+# 独立于应用：签发工具不参与 AuroraDB 的构建与发布
+[workspace]
+
+[dependencies]
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+base64 = "0.21"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = "0.4"

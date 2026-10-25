@@ -1,0 +1,61 @@
+{
+  "$schema": "https://schema.tauri.app/config/2.0.0",
+  "productName": "AuroraDB",
+  "version": "1.0.0",
+  "identifier": "com.auroradb.app",
+  "build": {
+    "beforeDevCommand": "cd src-ui && npm run dev",
+    "beforeBuildCommand": "cd src-ui && npm run build",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../src-ui/dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "AuroraDB",
+        "width": 1400,
+        "height": 900,
+        "minWidth": 800,
+        "minHeight": 600,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'"
+    },
+    "enableGTKAppId": false
+  },
+  "bundle": {
+    "active": true,
+    "category": "DeveloperTool",
+    "copyright": "",
+    "shortDescription": "A MySQL database client",
+    "longDescription": "A MySQL database client with connection stability",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/256x256.png",
+      "icons/icon.ico"
+    ],
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": false
+      },
+      "deb": {
+        "depends": []
+      }
+    },
+    "targets": ["deb", "appimage"],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ0RTJGRTc3MTU0RkIxMEMKUldRTXNVOFZkLzdpUkhTcU5hdi9vcUpWckxOTWVvd0wwMnNKMTJJRjM0V29pTkRFOExYdWhzMnUK",
+      "endpoints": [
+        "https://updates.example.com/auroradb/latest.json"
+      ]
+    }
+  }
+}

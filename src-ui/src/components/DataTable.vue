@@ -1,0 +1,3020 @@
+<template>
+  <div class="data-table" @click="hideContextMenu">
+    <!-- 工具栏 -->
+    <div class="table-toolbar" v-if="currentTab">
+      <div class="toolbar-left">
+        <span class="table-info">{{ currentTab?.name }}</span>
+        <div class="toolbar-actions">
+          <button @click="refreshData" :disabled="loading" :title="t('dataTable.refreshHint')">
+            <RefreshCw :size="14" />
+          </button>
+          <button @click="addRow" :disabled="loading || !canEdit" :title="canEdit ? t('dataTable.addRowHint') : editBlockReason">
+            <Plus :size="14" />
+            {{ t('dataTable.addRow') }}
+          </button>
+          <button @click="deleteSelectedRows" :disabled="!hasSelection || loading || !canEdit" :title="canEdit ? t('dataTable.deleteRowsHint') : editBlockReason">
+            <Minus :size="14" />
+            {{ t('common.delete') }}
+          </button>
+          <button @click="saveChanges" :disabled="!hasUnsavedChanges || loading || !canEdit || transactionActive" :title="transactionActive ? t('dataTable.transactionBlockingSave') : (canEdit ? t('dataTable.saveHint') : editBlockReason)">
+            <Save :size="14" />
+            {{ t('common.save') }}
+          </button>
+          <span class="toolbar-divider"></span>
+          <!-- 事务控制按钮 -->
+          <button
+            @click="beginTransaction"
+            :disabled="transactionActive || loading"
+            :class="{ active: transactionActive }"
+            :title="t('dataTable.beginTransaction')"
+          >BEGIN</button>
+          <button
+            @click="commitTransaction"
+            :disabled="!transactionActive || loading"
+            :title="t('dataTable.commitTransaction')"
+          >COMMIT</button>
+          <button
+            @click="rollbackTransaction"
+            :disabled="!transactionActive || loading"
+            :title="t('dataTable.rollbackTransaction')"
+          >ROLLBACK</button>
+          <span v-if="transactionActive" class="transaction-indicator" :title="t('dataTable.transactionActiveHint')">
+            <Circle :size="10" fill="var(--success-500)" />
+          </span>
+          <span v-if="isReadOnlyConnection" class="readonly-badge" :title="t('dataTable.readOnlyConnectionHint')">
+            {{ t('dataTable.readOnlyConnection') }}
+          </span>
+          <span v-else-if="currentTableData && !hasPrimaryKey" class="readonly-badge" :title="t('dataTable.noPrimaryKeyReadonlyHint')">
+            {{ t('dataTable.readOnlyNoPrimaryKey') }}
+          </span>
+        </div>
+      </div>
+      <div class="toolbar-right">
+        <input
+          v-model="searchText"
+          type="text"
+          :placeholder="t('dataTable.searchPlaceholder')"
+          class="search-input"
+        />
+        <span v-if="currentTableData" class="row-info">
+          {{ t('dataTable.rowRange', {
+            start: (page - 1) * pageSize + 1,
+            end: Math.min(page * pageSize, currentTableData.total_count),
+            total: currentTableData.total_count
+          }) }}
+        </span>
+      </div>
+    </div>
+
+    <!-- 数据表格 -->
+    <div class="table-container" v-if="currentTableData" ref="tableContainer" @scroll="handleScroll">
+      <table>
+        <thead>
+          <tr>
+            <th class="row-number-header"></th>
+            <th
+              v-for="(col, index) in currentTableData.columns"
+              :key="col.name"
+              :style="{ width: columnWidths[index] + 'px' }"
+              @click="sort(col.name)"
+              :class="{ sorted: sortColumn === col.name }"
+            >
+              <div class="th-content">
+                <span class="col-name" :title="col.name">{{ col.name }}</span>
+                <span class="data-type">{{ col.data_type }}</span>
+                <span class="sort-indicator">
+                  <component
+                    v-if="sortColumn === col.name"
+                    :is="sortDirection === 'Asc' ? ChevronUp : ChevronDown"
+                    :size="12"
+                  />
+                </span>
+              </div>
+              <div
+                class="resize-handle"
+                @mousedown.stop="startResize($event, index)"
+              ></div>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-if="currentTableData.rows.length === 0" class="empty-row">
+            <td :colspan="currentTableData.columns.length + 1" class="empty-cell">
+              {{ t('dataTable.tableEmpty') }}
+            </td>
+          </tr>
+          <tr
+            v-if="virtualEnabled && virtualPaddingTop > 0"
+            class="virtual-spacer"
+            aria-hidden="true"
+          >
+            <td
+              :colspan="currentTableData.columns.length + 1"
+              :style="{ height: virtualPaddingTop + 'px', padding: '0', border: 'none' }"
+            ></td>
+          </tr>
+          <tr
+            v-for="{ row, index: rowIndex } in visibleRows"
+            :key="rowIndex"
+            :class="{ selected: isRowSelected(rowIndex), 'new-row': isNewRow(rowIndex) }"
+            @click="selectRow(rowIndex, $event)"
+          >
+            <td class="row-number">
+              <span class="row-num">{{ (page - 1) * pageSize + rowIndex + 1 }}</span>
+            </td>
+            <td
+              v-for="(cell, cellIndex) in row"
+              :key="cellIndex"
+              :class="{
+                editing: isEditing(rowIndex, cellIndex),
+                modified: isModified(rowIndex, cellIndex),
+                'is-null': cell === null || cell === undefined
+              }"
+              :style="{ width: columnWidths[cellIndex] + 'px' }"
+              @click="startEdit(rowIndex, cellIndex, cell)"
+              @contextmenu.prevent="showContextMenu($event, rowIndex, cellIndex, cell)"
+              :title="getCellTitle(cell)"
+            >
+              <template v-if="isEditing(rowIndex, cellIndex)">
+                <!-- 日期时间类型使用自定义编辑器 -->
+                <template v-if="isDateTimeType(editingColumnType)">
+                  <div class="datetime-editor-wrapper">
+                    <!-- 遮罩层：防止点击外部关闭（仅在弹层打开时显示） -->
+                    <div v-if="showDateTimePicker" class="datetime-picker-overlay" @click.stop="showDateTimePicker = false"></div>
+                    <div class="datetime-editor-container" @click.stop>
+                      <!-- 显示当前值的文本框 -->
+                      <input
+                        v-model="editingValue"
+                        class="edit-input datetime-display"
+                        readonly
+                        @keydown.enter="finishEdit"
+                        @keydown.esc="cancelEdit"
+                      />
+                      <!-- 打开选择器按钮 -->
+                      <button class="btn-open-picker" @click="openDateTimePicker($event)" :title="t('dataTable.pickDateTime')">
+                        <Calendar :size="14" />
+                      </button>
+                      <!-- 自定义选择器弹层 -->
+                      <Teleport to="body">
+                        <div v-if="showDateTimePicker" class="datetime-picker-popup" 
+                             :style="pickerPosition" 
+                             @click.stop>
+                          <!-- 日期选择 -->
+                          <div class="picker-section" v-if="!editingColumnType.includes('time') || editingColumnType.includes('datetime') || editingColumnType.includes('timestamp')">
+                            <div class="picker-header">
+                              <button @click="prevMonth">◀</button>
+                              <span>{{ t('dataTable.yearMonth', { year: currentYear, month: currentMonth }) }}</span>
+                              <button @click="nextMonth">▶</button>
+                            </div>
+                            <div class="picker-days">
+                              <div class="day-header">{{ t('dataTable.weekdaySun') }}</div>
+                              <div class="day-header">{{ t('dataTable.weekdayMon') }}</div>
+                              <div class="day-header">{{ t('dataTable.weekdayTue') }}</div>
+                              <div class="day-header">{{ t('dataTable.weekdayWed') }}</div>
+                              <div class="day-header">{{ t('dataTable.weekdayThu') }}</div>
+                              <div class="day-header">{{ t('dataTable.weekdayFri') }}</div>
+                              <div class="day-header">{{ t('dataTable.weekdaySat') }}</div>
+                              <div v-for="day in calendarDays" :key="day.date" 
+                                   class="day-cell"
+                                   :class="{ 
+                                     'other-month': !day.isCurrentMonth, 
+                                     'selected': day.date === selectedDate,
+                                     'today': day.isToday 
+                                   }"
+                                   @click="selectDate(day.date)">
+                                {{ day.day }}
+                              </div>
+                            </div>
+                          </div>
+                          <!-- 时间选择 -->
+                          <div class="picker-section time-section" v-if="editingColumnType.includes('datetime') || editingColumnType.includes('timestamp') || editingColumnType.includes('time')">
+                            <div class="time-inputs">
+                              <div class="time-field">
+                                <label>{{ t('dataTable.hour') }}</label>
+                                <input type="number" v-model.number="selectedHour" min="0" max="23" @input="updateTime" />
+                              </div>
+                              <span class="time-separator">:</span>
+                              <div class="time-field">
+                                <label>{{ t('dataTable.minute') }}</label>
+                                <input type="number" v-model.number="selectedMinute" min="0" max="59" @input="updateTime" />
+                              </div>
+                              <span class="time-separator">:</span>
+                              <div class="time-field">
+                                <label>{{ t('dataTable.second') }}</label>
+                                <input type="number" v-model.number="selectedSecond" min="0" max="59" @input="updateTime" />
+                              </div>
+                            </div>
+                          </div>
+                          <!-- 选择器按钮 -->
+                        <div class="picker-actions">
+                          <button class="btn-cancel" @click="showDateTimePicker = false">{{ t('common.cancel') }}</button>
+                          <button class="btn-confirm" @click="applyDateTime">{{ t('common.confirm') }}</button>
+                        </div>
+                        </div>
+                      </Teleport>
+                    </div>
+                  </div>
+                </template>
+                <!-- 其他类型使用普通文本输入 -->
+                <input
+                  v-else
+                  v-model="editingValue"
+                  @blur="finishEdit"
+                  @keydown.enter="finishEdit"
+                  @keydown.esc="cancelEdit"
+                  class="edit-input"
+                  ref="textInput"
+                />
+              </template>
+              <template v-else>
+                <span class="cell-text" :class="getCellClass(cell)">
+                  {{ formatCellValue(cell, cellIndex) }}
+                </span>
+              </template>
+            </td>
+          </tr>
+          <tr
+            v-if="virtualEnabled && virtualPaddingBottom > 0"
+            class="virtual-spacer"
+            aria-hidden="true"
+          >
+            <td
+              :colspan="currentTableData.columns.length + 1"
+              :style="{ height: virtualPaddingBottom + 'px', padding: '0', border: 'none' }"
+            ></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- 分页 -->
+    <div v-if="currentTableData" class="table-footer">
+      <div class="pagination">
+        <button @click="firstPage" :disabled="page <= 1">{{ t('dataTable.firstPage') }}</button>
+        <button @click="prevPage" :disabled="page <= 1">{{ t('dataTable.prevPage') }}</button>
+        <span>{{ t('dataTable.pageIndicator', { page, total: totalPages }) }}</span>
+        <button @click="nextPage" :disabled="page >= totalPages">{{ t('dataTable.nextPage') }}</button>
+        <button @click="lastPage" :disabled="page >= totalPages">{{ t('dataTable.lastPage') }}</button>
+      </div>
+      <div class="page-size">
+        <select v-model="pageSize" @change="reload">
+          <option :value="50">{{ t('dataTable.rowsPerPage', { count: 50 }) }}</option>
+          <option :value="100">{{ t('dataTable.rowsPerPage', { count: 100 }) }}</option>
+          <option :value="500">{{ t('dataTable.rowsPerPage', { count: 500 }) }}</option>
+          <option :value="1000">{{ t('dataTable.rowsPerPage', { count: 1000 }) }}</option>
+        </select>
+      </div>
+      <div class="execution-time" v-if="currentTableData">
+        {{ t('dataTable.executionTime', { ms: currentTableData.execution_time_ms }) }}
+      </div>
+    </div>
+
+    <!-- 加载失败 -->
+    <div v-if="!currentTableData && !loading && loadError" class="empty-state error-state">
+      {{ t('dataTable.loadFailed', { error: loadError }) }}
+    </div>
+
+    <!-- 空状态 -->
+    <div v-else-if="!currentTableData && !loading" class="empty-state">
+      {{ t('dataTable.selectTableHint') }}
+    </div>
+
+    <!-- 加载中 -->
+    <div v-if="loading" class="loading-overlay">{{ t('common.loading') }}</div>
+
+    <!-- 右键菜单 -->
+    <div v-if="contextMenu.show" class="context-menu" :style="contextMenu.style">
+      <div class="menu-item" @click="copyCell">{{ t('common.copy') }}</div>
+      <div class="menu-item" @click="pasteCell">{{ t('dataTable.paste') }}</div>
+      <div class="menu-divider"></div>
+      <div class="menu-item" @click="setNull">{{ t('dataTable.setNull') }}</div>
+      <div class="menu-item" @click="viewFullContent">{{ t('dataTable.viewFullContent') }}</div>
+      <div class="menu-divider"></div>
+      <div class="menu-item" @click="editCell">{{ t('common.edit') }}</div>
+    </div>
+
+    <!-- 查看完整内容弹窗 -->
+    <div v-if="fullContent.show" class="modal-overlay" @click.self="fullContent.show = false">
+      <div class="content-dialog">
+        <h3>{{ t('dataTable.fullContent') }}</h3>
+        <textarea v-model="fullContent.text" readonly class="content-textarea"></textarea>
+        <div class="dialog-actions">
+          <button @click="fullContent.show = false" class="btn-primary">{{ t('common.close') }}</button>
+          <button @click="copyFullContent" class="btn-secondary">{{ t('common.copy') }}</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 关闭 / 切换确认对话框 -->
+    <div v-if="showCloseConfirm" class="modal-overlay">
+      <div class="confirm-dialog">
+        <h3>{{ pendingSwitchTab ? t('dataTable.confirmSwitchTitle') : t('dataTable.confirmCloseTitle') }}</h3>
+        <p>{{ pendingSwitchTab ? t('dataTable.confirmSwitchMessage') : t('dataTable.confirmCloseMessage') }}</p>
+        <div class="confirm-actions">
+          <button @click="confirmClose(false)" class="btn-secondary">
+            {{ pendingSwitchTab ? t('dataTable.discardAndSwitch') : t('dataTable.discardAndClose') }}
+          </button>
+          <button @click="confirmClose(true)" class="btn-primary">
+            {{ pendingSwitchTab ? t('dataTable.saveAndSwitch') : t('dataTable.saveAndClose') }}
+          </button>
+          <button @click="cancelClose" class="btn-secondary">{{ t('common.cancel') }}</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 保存预览：确认后在同一事务中执行 -->
+    <div v-if="previewDialog.show" class="modal-overlay" @click.self="cancelPreview">
+      <div class="dialog save-preview-dialog">
+        <h3>{{ t('dataTable.confirmSaveTitle') }}</h3>
+        <div class="dialog-content">
+          <p class="preview-summary">{{ previewSummary }}</p>
+          <p class="preview-hint">{{ t('dataTable.previewHint') }}</p>
+          <textarea :value="previewSqlText" readonly rows="14" class="result-textarea"></textarea>
+          <p v-if="previewDialog.error" class="preview-error">{{ previewDialog.error }}</p>
+        </div>
+        <div class="dialog-actions">
+          <button @click="cancelPreview" class="btn-secondary" :disabled="previewDialog.saving">{{ t('common.cancel') }}</button>
+          <button @click="confirmSave" class="btn-primary" :disabled="previewDialog.saving">
+            {{ previewDialog.saving ? t('dataTable.saving') : t('dataTable.saveAndExecute') }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 保存成功提示 -->
+    <div v-if="saveSuccess.show" class="toast-message" :class="saveSuccess.type">
+      {{ saveSuccess.message }}
+    </div>
+
+    <!-- 导入数据弹窗 -->
+    <div v-if="importDialog.show" class="modal-overlay" @click.self="importDialog.show = false">
+      <div class="dialog import-dialog">
+        <h3>{{ t('dataTable.importTitle') }}</h3>
+        <div class="dialog-content">
+          <div class="form-group">
+            <label>{{ t('dataTable.format') }}</label>
+            <select v-model="importDialog.format" @change="handleImportFormatChange">
+              <option value="csv">CSV</option>
+              <option value="sql">SQL</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>{{ t('dataTable.file') }}</label>
+            <div class="file-select-area">
+              <button @click="selectImportFile" :disabled="importDialog.loading" class="btn-secondary">
+                <Folder class="btn-icon" :size="16" /> {{ t('dataTable.selectFile') }}
+              </button>
+              <div v-if="importDialog.filePath" class="file-info">
+                <span class="file-name">{{ importDialog.fileName }}</span>
+                <span class="file-size">({{ formatFileSize(importDialog.fileSize) }})</span>
+              </div>
+              <div v-else class="file-hint">
+                {{ t('dataTable.fileHint') }}
+              </div>
+            </div>
+          </div>
+          <div class="form-group" v-if="importDialog.data">
+            <label>{{ t('dataTable.previewFirst500') }}</label>
+            <div class="file-preview">
+              <pre>{{ importDialog.data.substring(0, 500) }}{{ importDialog.data.length > 500 ? '...' : '' }}</pre>
+            </div>
+          </div>
+        </div>
+        <div class="dialog-actions">
+          <button @click="importDialog.show = false" class="btn-secondary">{{ t('common.cancel') }}</button>
+          <button @click="executeImport" :disabled="importDialog.loading || !importDialog.data" class="btn-primary">
+            {{ importDialog.loading ? t('dataTable.importing') : t('common.import') }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 导出数据弹窗 -->
+    <div v-if="exportDialog.show" class="modal-overlay" @click.self="exportDialog.show = false">
+      <div class="dialog export-dialog">
+        <h3>{{ t('dataTable.exportTitle') }}</h3>
+        <div class="dialog-content">
+          <div class="form-group">
+            <label>{{ t('dataTable.format') }}</label>
+            <select v-model="exportDialog.format" @change="exportDialog.data = ''">
+              <option value="csv">CSV</option>
+              <option value="xlsx">Excel (xlsx)</option>
+              <option value="sql">SQL</option>
+              <option value="json">JSON</option>
+            </select>
+          </div>
+          <div class="form-group" v-if="exportDialog.data">
+            <label>{{ t('dataTable.result') }}</label>
+            <textarea
+              v-model="exportDialog.data"
+              readonly
+              rows="10"
+              class="result-textarea"
+            ></textarea>
+          </div>
+        </div>
+        <div class="dialog-actions">
+          <button @click="exportDialog.show = false" class="btn-secondary">{{ t('common.close') }}</button>
+          <button v-if="!exportDialog.data" @click="executeExport" :disabled="exportDialog.loading" class="btn-primary">
+            {{ exportDialog.loading ? t('dataTable.exporting') : t('common.export') }}
+          </button>
+          <template v-else>
+            <button @click="copyExportedData" class="btn-secondary">{{ t('common.copy') }}</button>
+            <button @click="downloadExportedData" class="btn-primary">{{ t('dataTable.download') }}</button>
+          </template>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
+import { useDataBrowserStore, type TableChange } from '@/stores/dataBrowser'
+import { useConnectionStore } from '@/stores/connection'
+import { useLicenseStore } from '@/stores/license'
+import { useDebounce } from '@/composables/useDebounce'
+import { useVirtualRows } from '@/composables/useVirtualRows'
+import { collectTableChanges, isSameValue } from '@/utils/tableChanges'
+import { t } from '@/i18n'
+import {
+  RefreshCw,
+  Plus,
+  Minus,
+  Save,
+  ChevronUp,
+  ChevronDown,
+  Circle,
+  Folder
+} from '@/components/icons'
+import { Calendar } from 'lucide-vue-next'
+
+interface TableTab {
+  id: string
+  connectionId: string
+  database: string
+  tableName: string
+  name: string
+  modified: boolean
+  originalData?: unknown
+}
+
+interface ModifiedCell {
+  rowIndex: number
+  colIndex: number
+  oldValue: unknown
+  newValue: unknown
+  oldRowData: unknown[] // 存储原始行数据用于构建 WHERE 子句
+}
+
+interface NewRow {
+  data: unknown[]
+  isNew: true
+}
+
+const browserStore = useDataBrowserStore()
+const connectionStore = useConnectionStore()
+const licenseStore = useLicenseStore()
+
+// 表标签真正关闭后通知外层，保证外层 Tab 与内部表状态同步
+const emit = defineEmits<{
+  (e: 'table-closed', tab: { connectionId: string; database: string; tableName: string }): void
+}>()
+
+// 标签页管理
+const openTables = ref<TableTab[]>([])
+const currentTab = ref<TableTab | null>(null)
+const currentTableData = computed(() => browserStore.tableData)
+const loading = computed(() => browserStore.loading)
+const loadError = ref('')
+
+// 分页和排序
+const page = computed(() => browserStore.page)
+const pageSize = computed(() => browserStore.pageSize)
+const sortColumn = ref('')
+const sortDirection = ref<'Asc' | 'Desc'>('Asc')
+
+// 列宽管理
+const defaultColumnWidth = 150
+
+// 根据数据类型获取列宽
+function getColumnWidthByType(dataType: string): number {
+  const type = dataType.toLowerCase()
+  // ID/主键列
+  if (type.includes('int') || type.includes('bigint') || type.includes('serial')) {
+    return 80
+  }
+  // 小整数
+  if (type.includes('tinyint') || type.includes('smallint') || type.includes('mediumint')) {
+    return 60
+  }
+  // 布尔值
+  if (type.includes('bool')) {
+    return 60
+  }
+  // 日期时间
+  if (type.includes('datetime') || type.includes('timestamp')) {
+    return 160
+  }
+  // 日期
+  if (type.includes('date')) {
+    return 100
+  }
+  // 时间
+  if (type.includes('time')) {
+    return 80
+  }
+  // 小数
+  if (type.includes('decimal') || type.includes('numeric') || type.includes('float') || type.includes('double')) {
+    return 100
+  }
+  // 枚举/集合
+  if (type.includes('enum') || type.includes('set')) {
+    return 120
+  }
+  // JSON
+  if (type.includes('json')) {
+    return 200
+  }
+  // 文本/大字段
+  if (type.includes('text') || type.includes('blob')) {
+    return 250
+  }
+  // 字符串
+  if (type.includes('varchar') || type.includes('char')) {
+    return 150
+  }
+  // 二进制
+  if (type.includes('binary') || type.includes('varbinary')) {
+    return 150
+  }
+  // 默认
+  return 120
+}
+
+const columnWidths = ref<number[]>([])
+
+// 编辑状态
+const editingCell = ref<{ row: number; col: number } | null>(null)
+const editingValue = ref('')
+const editingColumnType = ref('') // 当前编辑列的数据类型
+
+// 自定义日期时间选择器状态
+const showDateTimePicker = ref(false)
+const pickerPosition = ref({ top: '0px', left: '0px' })
+const currentYear = ref(new Date().getFullYear())
+const currentMonth = ref(new Date().getMonth() + 1)
+const selectedDate = ref('')
+const selectedHour = ref(0)
+const selectedMinute = ref(0)
+const selectedSecond = ref(0)
+const modifiedCells = ref<Map<string, ModifiedCell>>(new Map())
+const newRows = ref<NewRow[]>([])
+interface DeletedRow {
+  index: number
+  rowData: unknown[]
+}
+const deletedRows = ref<DeletedRow[]>([])
+
+// 行选择
+const selectedRows = ref<Set<number>>(new Set())
+
+// 搜索
+const searchText = ref('')
+const { debouncedValue: debouncedSearchText, flush: flushSearch } = useDebounce(searchText, 300)
+
+// 右键菜单
+const contextMenu = ref({
+  show: false,
+  style: { top: '0px', left: '0px' },
+  rowIndex: -1,
+  colIndex: -1,
+  cellValue: null as unknown
+})
+
+// 查看完整内容
+const fullContent = ref({
+  show: false,
+  text: ''
+})
+
+// 关闭确认
+const showCloseConfirm = ref(false)
+const tabToClose = ref<TableTab | null>(null)
+// 有未保存修改时待切换的目标表（与 tabToClose 互斥，复用同一个确认框）
+const pendingSwitchTab = ref<TableTab | null>(null)
+
+// 保存提示
+const saveSuccess = ref({
+  show: false,
+  message: '',
+  type: 'success'
+})
+
+// 保存预览（SQL 预览 + 确认后在同一事务中执行）
+const previewDialog = ref({
+  show: false,
+  changes: [] as TableChange[],
+  saving: false,
+  error: ''
+})
+// 从「保存并关闭」进入预览时为 true，保存成功后继续关闭标签页
+const pendingCloseAfterSave = ref(false)
+
+// 事务状态
+const transactionActive = ref(false)
+
+// 导入导出弹窗
+const importDialog = ref({
+  show: false,
+  format: 'csv' as 'csv' | 'sql',
+  data: '',
+  filePath: '',
+  fileName: '',
+  fileSize: 0,
+  loading: false
+})
+
+const exportDialog = ref({
+  show: false,
+  format: 'csv' as 'csv' | 'xlsx' | 'sql' | 'json',
+  data: '',
+  loading: false
+})
+
+// 计算属性
+const totalPages = computed(() => {
+  if (!currentTableData.value) return 1
+  return Math.ceil(currentTableData.value.total_count / pageSize.value)
+})
+
+const hasUnsavedChanges = computed(() => {
+  return currentTab.value?.modified ||
+         modifiedCells.value.size > 0 ||
+         newRows.value.length > 0 ||
+         deletedRows.value.length > 0
+})
+
+const hasSelection = computed(() => selectedRows.value.size > 0)
+
+// 没有主键就无法安全定位行，此时禁止编辑（避免全列匹配误伤）
+const hasPrimaryKey = computed(() => (currentTableData.value?.columns ?? []).some(col => col.is_primary))
+
+// 只读连接同样禁止写入（后端也会兜底拦截）
+const isReadOnlyConnection = computed(() => connectionStore.currentConnection?.safety_mode === 'read-only')
+
+// 编辑拦截原因：只读连接优先提示，其次是无主键表
+const editBlockReason = computed(() => {
+  if (isReadOnlyConnection.value) return t('dataTable.readOnlyConnectionHint')
+  if (!hasPrimaryKey.value) return t('dataTable.noPrimaryKeyEditReason')
+  return ''
+})
+
+const canEdit = computed(() => editBlockReason.value === '')
+
+const isAllSelected = computed(() => {
+  if (!currentTableData.value?.rows.length) return false
+  return selectedRows.value.size === currentTableData.value.rows.length
+})
+
+// 过滤后的行
+const filteredRows = computed(() => {
+  if (!currentTableData.value?.rows) return []
+  if (!debouncedSearchText.value) return currentTableData.value.rows
+
+  const search = debouncedSearchText.value.toLowerCase()
+  return currentTableData.value.rows.filter(row =>
+    row.some(cell => String(cell).toLowerCase().includes(search))
+  )
+})
+
+// 大表虚拟滚动：只渲染可视区内的行，行索引仍对应 filteredRows
+const tableContainer = ref<HTMLElement | null>(null)
+const {
+  enabled: virtualEnabled,
+  start: virtualStart,
+  end: virtualEnd,
+  paddingTop: virtualPaddingTop,
+  paddingBottom: virtualPaddingBottom,
+  onScroll: handleVirtualScroll,
+} = useVirtualRows(tableContainer, () => filteredRows.value.length, {
+  rowHeight: 36,
+  threshold: 100,
+})
+
+const visibleRows = computed(() => {
+  const rows = filteredRows.value
+  if (!virtualEnabled.value) {
+    return rows.map((row, index) => ({ row, index }))
+  }
+  return rows
+    .slice(virtualStart.value, virtualEnd.value)
+    .map((row, offset) => ({ row, index: virtualStart.value + offset }))
+})
+
+// 监听表数据变化，初始化列宽
+watch(() => currentTableData.value?.columns, (columns) => {
+  if (columns && columnWidths.value.length !== columns.length) {
+    columnWidths.value = columns.map(col => getColumnWidthByType(col.data_type))
+  }
+}, { immediate: true })
+
+// 键盘快捷键
+onMounted(() => {
+  document.addEventListener('keydown', handleKeyDown)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('keydown', handleKeyDown)
+})
+
+function handleKeyDown(e: KeyboardEvent) {
+  // 检查当前焦点是否在数据表格区域内
+  const target = e.target as HTMLElement
+  const isInDataTable = target?.closest('.data-table') !== null
+  
+  // Ctrl+S 保存
+  if (e.ctrlKey && e.key === 's') {
+    e.preventDefault()
+    if (hasUnsavedChanges.value) saveChanges()
+  }
+  // Ctrl+N 新增行
+  if (e.ctrlKey && e.key === 'n') {
+    e.preventDefault()
+    addRow()
+  }
+  // Delete 删除选中行
+  if (e.key === 'Delete' && hasSelection.value) {
+    deleteSelectedRows()
+  }
+  // F5 刷新
+  if (e.key === 'F5') {
+    e.preventDefault()
+    refreshData()
+  }
+  // Ctrl+A 全选 - 只在焦点在数据表格内时生效
+  if (e.ctrlKey && e.key === 'a') {
+    if (isInDataTable) {
+      e.preventDefault()
+      toggleSelectAll()
+    }
+    // 如果不在数据表格内，不阻止默认行为，让浏览器正常处理
+  }
+}
+
+// 打开新表
+function openTable(connectionId: string, database: string, tableName: string) {
+  const tabId = `${connectionId}.${database}.${tableName}`
+  const existingTab = openTables.value.find(t => t.id === tabId)
+
+  if (existingTab) {
+    // 已是当前表则不重复切换/加载，避免切回同一表时重复请求
+    if (currentTab.value?.id !== existingTab.id) {
+      switchTab(existingTab)
+    }
+    return
+  }
+
+  const newTab: TableTab = {
+    id: tabId,
+    connectionId,
+    database,
+    tableName,
+    name: `${database}.${tableName}`,
+    modified: false
+  }
+
+  openTables.value.push(newTab)
+  switchTab(newTab)
+}
+
+// 切换标签页：当前表有未保存修改时先确认，避免静默丢弃
+async function switchTab(tab: TableTab) {
+  const previousTab = currentTab.value
+  if (previousTab && previousTab.id !== tab.id && hasUnsavedChanges.value) {
+    tabToClose.value = null
+    pendingSwitchTab.value = tab
+    showCloseConfirm.value = true
+    return
+  }
+
+  await activateTab(tab)
+}
+
+// 真正切换到目标表并加载数据
+async function activateTab(tab: TableTab) {
+  const previousTab = currentTab.value
+  currentTab.value = tab
+  browserStore.currentDatabase = tab.database
+  browserStore.currentTable = tab.tableName
+
+  // 切换到对应连接
+  connectionStore.switchConnection(tab.connectionId)
+
+  // 切换表即丢弃上一张表的未保存状态，同步复位脏标记，避免切回后显示「假脏」
+  if (previousTab && previousTab.id !== tab.id) {
+    previousTab.modified = false
+  }
+
+  // 清除修改状态
+  modifiedCells.value.clear()
+  newRows.value = []
+  deletedRows.value = []
+  selectedRows.value.clear()
+  searchText.value = ''
+  flushSearch()
+  
+  // 重置排序状态，避免使用之前表的排序列
+  sortColumn.value = ''
+  sortDirection.value = 'Asc'
+
+  await loadData()
+}
+
+// 关闭标签页：立即关闭返回 true；有未保存修改时弹确认框并返回 false，由确认结果收尾
+function closeTab(tab: TableTab): boolean {
+  if (tab.modified || hasUnsavedChanges.value) {
+    pendingSwitchTab.value = null
+    tabToClose.value = tab
+    showCloseConfirm.value = true
+    return false
+  }
+
+  doCloseTab(tab)
+  return true
+}
+
+async function confirmClose(save: boolean) {
+  const switching = pendingSwitchTab.value
+
+  if (save && hasUnsavedChanges.value) {
+    // 有真实变更时走保存预览，保存成功后由 confirmSave 继续关闭标签页 / 切换目标表
+    if (collectChanges().length > 0) {
+      saveChanges()
+      return
+    }
+    // 只有脏标记、没有实际变更时直接丢弃并继续
+  }
+
+  if (switching) {
+    pendingSwitchTab.value = null
+    showCloseConfirm.value = false
+    await activateTab(switching)
+    return
+  }
+
+  closeAfterSave()
+}
+
+// 完成「保存并关闭」：关闭最初请求关闭的标签页
+function closeAfterSave() {
+  if (tabToClose.value) {
+    doCloseTab(tabToClose.value)
+    tabToClose.value = null
+  }
+  showCloseConfirm.value = false
+}
+
+function cancelClose() {
+  showCloseConfirm.value = false
+  tabToClose.value = null
+  pendingSwitchTab.value = null
+}
+
+function doCloseTab(tab: TableTab) {
+  const index = openTables.value.findIndex(t => t.id === tab.id)
+  if (index === -1) return
+  openTables.value.splice(index, 1)
+
+  // 清理该表遗留的编辑记录，避免重新打开同一张表时脏状态复活
+  modifiedCells.value.forEach((_, key) => {
+    if (key.startsWith(`${tab.id}.`)) modifiedCells.value.delete(key)
+  })
+
+  if (currentTab.value?.id === tab.id) {
+    currentTab.value = openTables.value[0] || null
+    if (currentTab.value) {
+      switchTab(currentTab.value)
+    } else {
+      browserStore.tableData = null
+    }
+  }
+
+  emit('table-closed', {
+    connectionId: tab.connectionId,
+    database: tab.database,
+    tableName: tab.tableName
+  })
+}
+
+// 关闭指定连接的所有表格
+function closeConnectionTables(connectionId: string) {
+  const tabsToClose = openTables.value.filter(t => t.connectionId === connectionId)
+  tabsToClose.forEach(tab => {
+    // 清除相关修改记录
+    modifiedCells.value.forEach((_, key) => {
+      if (key.startsWith(tab.id)) {
+        modifiedCells.value.delete(key)
+      }
+    })
+  })
+  // 从 openTables 中移除
+  openTables.value = openTables.value.filter(t => t.connectionId !== connectionId)
+
+  // 如果当前标签页被关闭，切换到其他标签页
+  if (currentTab.value?.connectionId === connectionId) {
+    currentTab.value = openTables.value[0] || null
+    if (currentTab.value) {
+      switchTab(currentTab.value)
+    } else {
+      browserStore.tableData = null
+    }
+  }
+}
+
+// 根据 ID 关闭表（供外部调用）：返回是否已立即关闭
+function closeTableById(tabId: string): boolean {
+  const tab = openTables.value.find(t => t.id === tabId)
+  if (!tab) return true
+  return closeTab(tab)
+}
+
+// 加载数据
+async function loadData() {
+  const conn = connectionStore.currentConnection
+  if (!conn || !browserStore.currentDatabase || !browserStore.currentTable) return
+
+  loadError.value = ''
+  try {
+    await browserStore.loadTableData(conn.id, browserStore.currentDatabase, browserStore.currentTable, {
+      page: page.value,
+      pageSize: pageSize.value,
+      sortColumn: sortColumn.value || undefined,
+      sortDirection: sortDirection.value?.toLowerCase() as 'asc' | 'desc' | undefined,
+    })
+  } catch (e) {
+    const message = String(e)
+    loadError.value = message
+    console.error('Failed to load table data:', e)
+    showToast(t('dataTable.loadFailed', { error: message }), 'error')
+  }
+}
+
+// 刷新
+async function refreshData() {
+  if (hasUnsavedChanges.value) {
+    const confirmed = confirm(t('dataTable.refreshConfirm'))
+    if (!confirmed) return
+  }
+  await loadData()
+}
+
+// 排序
+function sort(column: string) {
+  if (sortColumn.value === column) {
+    sortDirection.value = sortDirection.value === 'Asc' ? 'Desc' : 'Asc'
+  } else {
+    sortColumn.value = column
+    sortDirection.value = 'Asc'
+  }
+  loadData()
+}
+
+// 分页
+function firstPage() {
+  browserStore.setPage(1)
+  loadData()
+}
+
+function prevPage() {
+  if (page.value > 1) {
+    browserStore.setPage(page.value - 1)
+    loadData()
+  }
+}
+
+function nextPage() {
+  if (page.value < totalPages.value) {
+    browserStore.setPage(page.value + 1)
+    loadData()
+  }
+}
+
+function lastPage() {
+  browserStore.setPage(totalPages.value)
+  loadData()
+}
+
+function reload() {
+  browserStore.setPage(1)
+  loadData()
+}
+
+// 行选择
+function selectRow(rowIndex: number, event: MouseEvent) {
+  if (event.shiftKey) {
+    // Shift 多选
+    const lastSelected = Array.from(selectedRows.value).pop() || 0
+    const start = Math.min(lastSelected, rowIndex)
+    const end = Math.max(lastSelected, rowIndex)
+    for (let i = start; i <= end; i++) {
+      selectedRows.value.add(i)
+    }
+  } else if (event.ctrlKey || event.metaKey) {
+    // Ctrl 切换选择
+    if (selectedRows.value.has(rowIndex)) {
+      selectedRows.value.delete(rowIndex)
+    } else {
+      selectedRows.value.add(rowIndex)
+    }
+  } else {
+    // 单选
+    selectedRows.value.clear()
+    selectedRows.value.add(rowIndex)
+  }
+}
+
+function isRowSelected(rowIndex: number): boolean {
+  return selectedRows.value.has(rowIndex)
+}
+
+function toggleSelectAll() {
+  if (isAllSelected.value) {
+    selectedRows.value.clear()
+  } else {
+    currentTableData.value?.rows.forEach((_, index) => {
+      selectedRows.value.add(index)
+    })
+  }
+}
+
+// 根据数据类型生成默认值
+function getDefaultValue(dataType: string, isNullable: boolean): unknown {
+  if (isNullable) return null
+
+  const type = dataType.toLowerCase()
+
+  // 数字类型
+  if (type.includes('int') || type.includes('decimal') || type.includes('float') || type.includes('double') || type.includes('numeric') || type.includes('real')) {
+    return 0
+  }
+
+  // 日期时间类型
+  if (type.includes('datetime')) return '0000-00-00 00:00:00'
+  if (type.includes('date')) return '0000-00-00'
+  if (type.includes('time')) return '00:00:00'
+  if (type.includes('timestamp')) return '0000-00-00 00:00:00'
+  if (type.includes('year')) return 0
+
+  // 布尔类型
+  if (type.includes('bool') || type.includes('bit(1)')) return 0
+
+  // 二进制类型
+  if (type.includes('binary') || type.includes('blob')) return ''
+
+  // JSON 类型
+  if (type.includes('json')) return '{}'
+
+  // 枚举和集合类型 - 返回第一个值
+  if (type.includes('enum')) {
+    const match = type.match(/enum\s*\(([^)]+)\)/i)
+    if (match && match[1]) {
+      const values = match[1].split(',').map(v => v.trim().replace(/['"]/g, ''))
+      return values[0] || ''
+    }
+  }
+  if (type.includes('set')) {
+    return ''
+  }
+
+  // 字符串类型（默认）
+  return ''
+}
+
+// 新增行
+function addRow() {
+  if (!canEdit.value) {
+    showToast(editBlockReason.value, 'error')
+    return
+  }
+  const emptyRow = currentTableData.value?.columns.map(col => {
+    return getDefaultValue(col.data_type, col.is_nullable)
+  }) || []
+  newRows.value.push({ data: emptyRow, isNew: true })
+  if (currentTableData.value) {
+    currentTableData.value.rows.push(emptyRow)
+  }
+  if (currentTab.value) {
+    currentTab.value.modified = true
+  }
+}
+
+function isNewRow(rowIndex: number): boolean {
+  const dataRowsCount = currentTableData.value?.rows.length || 0
+  return rowIndex >= dataRowsCount - newRows.value.length
+}
+
+// 删除行
+function deleteSelectedRows() {
+  if (!hasPrimaryKey.value) {
+    showToast(t('dataTable.noPrimaryKeyEditReason'), 'error')
+    return
+  }
+  const indices = Array.from(selectedRows.value).sort((a, b) => b - a)
+  indices.forEach(index => {
+    // 保存原始行数据到 deletedRows
+    if (currentTableData.value) {
+      const rowData = currentTableData.value.rows[index]
+      if (rowData) {
+        deletedRows.value.push({ index, rowData: [...rowData] })
+      }
+      // 从显示中移除
+      currentTableData.value.rows.splice(index, 1)
+    }
+  })
+  selectedRows.value.clear()
+  if (currentTab.value) {
+    currentTab.value.modified = true
+  }
+}
+
+// 编辑功能
+function startEdit(rowIndex: number, colIndex: number, value: unknown) {
+  if (!canEdit.value) {
+    showToast(editBlockReason.value, 'error')
+    return
+  }
+  editingCell.value = { row: rowIndex, col: colIndex }
+
+  // 获取列的数据类型
+  const col = currentTableData.value?.columns[colIndex]
+  const colType = col?.data_type?.toLowerCase() || ''
+  editingColumnType.value = colType
+
+  // 根据类型格式化值
+  let strValue = value === null ? '' : String(value)
+  if (strValue && isDateTimeType(colType)) {
+    strValue = formatDateTimeForInput(strValue, colType)
+  }
+  editingValue.value = strValue
+
+  // 初始化日期时间选择器状态
+  if (strValue && isDateTimeType(colType)) {
+    initDateTimePicker(strValue, colType)
+  }
+
+  nextTick(() => {
+    // 日期时间类型不自动聚焦，让用户手动点击选择
+    if (!isDateTimeType(colType)) {
+      const input = document.querySelector('.edit-input') as HTMLInputElement
+      if (input) {
+        input.focus()
+        input.select()
+      }
+    }
+  })
+}
+
+// 判断是否为日期时间类型
+function isDateTimeType(type: string): boolean {
+  return type.includes('datetime') || type.includes('timestamp') || type.includes('date') || type.includes('time')
+}
+
+// 初始化日期时间选择器
+function initDateTimePicker(value: string, type: string) {
+  showDateTimePicker.value = false
+  
+  let dateStr = ''
+  let timeStr = ''
+  
+  if (value.includes('T')) {
+    // datetime-local 格式: 2024-01-01T12:00:00
+    const [date, time] = value.split('T')
+    dateStr = date || ''
+    timeStr = time?.substring(0, 8) || '00:00:00'
+  } else if (type.includes('time')) {
+    // time 格式: 12:00:00
+    timeStr = value.substring(0, 8)
+    dateStr = ''
+  } else if (type.includes('date')) {
+    // date 格式: 2024-01-01
+    dateStr = value.substring(0, 10)
+    timeStr = '00:00:00'
+  }
+  
+  selectedDate.value = dateStr
+  
+  if (dateStr) {
+    const date = new Date(dateStr)
+    currentYear.value = date.getFullYear()
+    currentMonth.value = date.getMonth() + 1
+  } else {
+    const now = new Date()
+    currentYear.value = now.getFullYear()
+    currentMonth.value = now.getMonth() + 1
+  }
+  
+  // 解析时间
+  if (timeStr) {
+    const [h, m, s] = timeStr.split(':').map(Number)
+    selectedHour.value = h || 0
+    selectedMinute.value = m || 0
+    selectedSecond.value = s || 0
+  } else {
+    selectedHour.value = 0
+    selectedMinute.value = 0
+    selectedSecond.value = 0
+  }
+}
+
+// 打开日期时间选择器
+function openDateTimePicker(event: MouseEvent) {
+  initDateTimePicker(editingValue.value || '', editingColumnType.value)
+  
+  // 计算弹层位置
+  const target = event.currentTarget as HTMLElement
+  const rect = target.getBoundingClientRect()
+  pickerPosition.value = {
+    top: `${rect.bottom + 4}px`,
+    left: `${rect.left}px`
+  }
+  
+  showDateTimePicker.value = true
+}
+
+// 计算日历天数
+const calendarDays = computed(() => {
+  const days = []
+  const firstDay = new Date(currentYear.value, currentMonth.value - 1, 1)
+  const lastDay = new Date(currentYear.value, currentMonth.value, 0)
+  const prevMonthLastDay = new Date(currentYear.value, currentMonth.value - 1, 0)
+  
+  const startWeekday = firstDay.getDay()
+  const totalDays = lastDay.getDate()
+  const prevMonthDays = prevMonthLastDay.getDate()
+  
+  const today = new Date()
+  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+  
+  // 上个月的日期
+  for (let i = startWeekday - 1; i >= 0; i--) {
+    const day = prevMonthDays - i
+    const date = new Date(currentYear.value, currentMonth.value - 2, day)
+    const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+    days.push({
+      day,
+      date: dateStr,
+      isCurrentMonth: false,
+      isToday: dateStr === todayStr
+    })
+  }
+  
+  // 当前月的日期
+  for (let day = 1; day <= totalDays; day++) {
+    const dateStr = `${currentYear.value}-${String(currentMonth.value).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+    days.push({
+      day,
+      date: dateStr,
+      isCurrentMonth: true,
+      isToday: dateStr === todayStr
+    })
+  }
+  
+  // 下个月的日期
+  const remainingDays = 42 - days.length // 6行 x 7列
+  for (let day = 1; day <= remainingDays; day++) {
+    const date = new Date(currentYear.value, currentMonth.value, day)
+    const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+    days.push({
+      day,
+      date: dateStr,
+      isCurrentMonth: false,
+      isToday: dateStr === todayStr
+    })
+  }
+  
+  return days
+})
+
+// 上一个月
+function prevMonth() {
+  if (currentMonth.value === 1) {
+    currentMonth.value = 12
+    currentYear.value--
+  } else {
+    currentMonth.value--
+  }
+}
+
+// 下一个月
+function nextMonth() {
+  if (currentMonth.value === 12) {
+    currentMonth.value = 1
+    currentYear.value++
+  } else {
+    currentMonth.value++
+  }
+}
+
+// 选择日期
+function selectDate(date: string) {
+  selectedDate.value = date
+  updateEditingValue()
+}
+
+// 更新时间
+function updateTime() {
+  // 确保值在有效范围内
+  selectedHour.value = Math.max(0, Math.min(23, selectedHour.value || 0))
+  selectedMinute.value = Math.max(0, Math.min(59, selectedMinute.value || 0))
+  selectedSecond.value = Math.max(0, Math.min(59, selectedSecond.value || 0))
+  updateEditingValue()
+}
+
+// 更新编辑值
+function updateEditingValue() {
+  const type = editingColumnType.value
+  const timeStr = `${String(selectedHour.value).padStart(2, '0')}:${String(selectedMinute.value).padStart(2, '0')}:${String(selectedSecond.value).padStart(2, '0')}`
+  
+  if (type.includes('datetime') || type.includes('timestamp')) {
+    // 如果没有选择日期，使用当前日期
+    if (!selectedDate.value) {
+      selectedDate.value = `${currentYear.value}-${String(currentMonth.value).padStart(2, '0')}-01`
+    }
+    editingValue.value = `${selectedDate.value}T${timeStr}`
+  } else if (type.includes('time')) {
+    editingValue.value = timeStr
+  } else if (type.includes('date')) {
+    editingValue.value = selectedDate.value
+  }
+}
+
+// 应用日期时间选择
+function applyDateTime() {
+  updateEditingValue()
+  showDateTimePicker.value = false
+  // 直接完成编辑并保存
+  finishEdit()
+}
+
+// 格式化日期时间为 input 接受的格式
+function formatDateTimeForInput(value: string, type: string): string {
+  if (!value) return ''
+
+  // 替换空格为 T，符合 datetime-local 格式要求
+  if (type.includes('datetime') || type.includes('timestamp')) {
+    // 格式: 2024-01-01 12:00:00 -> 2024-01-01T12:00:00
+    return value.replace(' ', 'T').substring(0, 19)
+  }
+  if (type.includes('date')) {
+    // 格式: 2024-01-01
+    return value.substring(0, 10)
+  }
+  if (type.includes('time')) {
+    // 格式: 12:00:00
+    return value.substring(0, 8)
+  }
+  return value
+}
+
+// 从 input 格式化回数据库格式
+function formatDateTimeFromInput(value: string, type: string): string {
+  if (!value) return ''
+
+  if (type.includes('datetime') || type.includes('timestamp')) {
+    // 格式: 2024-01-01T12:00:00 -> 2024-01-01 12:00:00
+    return value.replace('T', ' ')
+  }
+  return value
+}
+
+function clearEditingState() {
+  editingCell.value = null
+  editingColumnType.value = ''
+  showDateTimePicker.value = false
+}
+
+/**
+ * 写入单元格并记录变更，所有改动入口（编辑、粘贴、置空）共用：
+ * - 与原值等价时不写回、不记录，避免生成 `SET col = 原值` 的空更新
+ * - 改回原始值时撤销该单元格的记录，而不是留下一条无意义的更新
+ */
+function commitCellValue(rowIndex: number, colIndex: number, newValue: unknown) {
+  const tab = currentTab.value
+  const tableData = currentTableData.value
+  if (!tab || !tableData || !tableData.rows[rowIndex]) return
+
+  const cellKey = `${tab.id}.${rowIndex}.${colIndex}`
+  const existing = modifiedCells.value.get(cellKey)
+  const oldValue = existing ? existing.oldValue : tableData.rows[rowIndex]![colIndex]
+
+  if (isSameValue(oldValue, newValue)) {
+    if (existing) {
+      modifiedCells.value.delete(cellKey)
+      tableData.rows[rowIndex]![colIndex] = oldValue
+      if (modifiedCells.value.size === 0 && newRows.value.length === 0 && deletedRows.value.length === 0) {
+        tab.modified = false
+      }
+    }
+    return
+  }
+
+  // 首次改动时深拷贝整行快照（必须在写回新值之前），否则修改主键列时 WHERE 会用新值定位；
+  // 已有记录时沿用最初的快照，避免二次修改把主键的当前值当成原始值
+  const oldRowData = existing?.oldRowData
+    ? existing.oldRowData
+    : JSON.parse(JSON.stringify(tableData.rows[rowIndex]))
+
+  tableData.rows[rowIndex]![colIndex] = newValue
+  modifiedCells.value.set(cellKey, {
+    rowIndex,
+    colIndex,
+    oldValue,
+    newValue,
+    oldRowData
+  })
+  tab.modified = true
+}
+
+function finishEdit() {
+  if (!editingCell.value || !currentTab.value) return
+
+  const { row, col } = editingCell.value
+  let newValue = editingValue.value === '' ? null : editingValue.value
+
+  // 处理日期时间类型格式转换
+  if (newValue && isDateTimeType(editingColumnType.value)) {
+    newValue = formatDateTimeFromInput(newValue as string, editingColumnType.value)
+  }
+
+  commitCellValue(row, col, newValue)
+  clearEditingState()
+}
+
+function cancelEdit() {
+  clearEditingState()
+}
+
+function isEditing(row: number, col: number): boolean {
+  return editingCell.value?.row === row && editingCell.value?.col === col
+}
+
+function isModified(row: number, col: number): boolean {
+  if (!currentTab.value) return false
+  const cellKey = `${currentTab.value.id}.${row}.${col}`
+  return modifiedCells.value.has(cellKey)
+}
+
+// 右键菜单
+function showContextMenu(event: MouseEvent, rowIndex: number, colIndex: number, cell: unknown) {
+  contextMenu.value = {
+    show: true,
+    style: {
+      top: `${event.clientY}px`,
+      left: `${event.clientX}px`
+    },
+    rowIndex,
+    colIndex,
+    cellValue: cell
+  }
+}
+
+function hideContextMenu() {
+  contextMenu.value.show = false
+}
+
+function copyCell() {
+  const value = contextMenu.value.cellValue
+  navigator.clipboard.writeText(value === null ? 'NULL' : String(value))
+  hideContextMenu()
+  showToast(t('dataTable.copiedToClipboard'))
+}
+
+async function pasteCell() {
+  if (!canEdit.value) {
+    hideContextMenu()
+    showToast(editBlockReason.value, 'error')
+    return
+  }
+  try {
+    const text = await navigator.clipboard.readText()
+    const { rowIndex, colIndex } = contextMenu.value
+    commitCellValue(rowIndex, colIndex, text)
+    hideContextMenu()
+  } catch {
+    showToast(t('dataTable.pasteFailed'), 'error')
+  }
+}
+
+function setNull() {
+  if (!canEdit.value) {
+    hideContextMenu()
+    showToast(editBlockReason.value, 'error')
+    return
+  }
+  const { rowIndex, colIndex } = contextMenu.value
+  commitCellValue(rowIndex, colIndex, null)
+  hideContextMenu()
+}
+
+function viewFullContent() {
+  fullContent.value.text = String(contextMenu.value.cellValue)
+  fullContent.value.show = true
+  hideContextMenu()
+}
+
+function editCell() {
+  const { rowIndex, colIndex, cellValue } = contextMenu.value
+  startEdit(rowIndex, colIndex, cellValue)
+  hideContextMenu()
+}
+
+function copyFullContent() {
+  navigator.clipboard.writeText(fullContent.value.text)
+  showToast(t('dataTable.copiedToClipboard'))
+}
+
+// 汇总当前所有未保存的修改（SQL 由前端生成，后端在同一事务中执行）
+function collectChanges(): TableChange[] {
+  const tab = currentTab.value
+  const columns = currentTableData.value?.columns
+  if (!tab || !columns) return []
+
+  return collectTableChanges({
+    table: tab.tableName,
+    columns,
+    edits: modifiedCells.value.values(),
+    inserts: newRows.value.map(row => row.data),
+    deletes: deletedRows.value.map(row => row.rowData)
+  })
+}
+
+function changeKindLabel(kind: TableChange['kind']): string {
+  if (kind === 'update') return t('dataTable.changeUpdate')
+  if (kind === 'insert') return t('dataTable.changeInsert')
+  return t('dataTable.changeDelete')
+}
+
+// 预览弹窗：摘要与逐条 SQL
+const previewSummary = computed(() => {
+  const counts: Record<TableChange['kind'], number> = { update: 0, insert: 0, delete: 0 }
+  for (const change of previewDialog.value.changes) counts[change.kind] += 1
+  const total = previewDialog.value.changes.length
+  return t('dataTable.previewSummary', {
+    total,
+    update: counts.update,
+    insert: counts.insert,
+    delete: counts.delete
+  })
+})
+
+const previewSqlText = computed(() =>
+  previewDialog.value.changes
+    .map((change, index) => `-- ${index + 1}. ${changeKindLabel(change.kind)}\n${change.sql};`)
+    .join('\n\n')
+)
+
+// 保存：先收集变更并打开 SQL 预览，确认后由后端在同一事务中执行
+function saveChanges(): boolean {
+  if (!currentTab.value) return false
+  if (!canEdit.value) {
+    showToast(editBlockReason.value, 'error')
+    return false
+  }
+  if (transactionActive.value) {
+    showToast(t('dataTable.transactionBlockingSaveMessage'), 'error')
+    return false
+  }
+
+  const changes = collectChanges()
+  if (changes.length === 0) {
+    showToast(t('dataTable.noChangesToSave'), 'error')
+    return false
+  }
+
+  previewDialog.value = { show: true, changes, saving: false, error: '' }
+  return true
+}
+
+function cancelPreview() {
+  if (previewDialog.value.saving) return
+  previewDialog.value = { show: false, changes: [], saving: false, error: '' }
+  pendingCloseAfterSave.value = false
+  pendingSwitchTab.value = null
+}
+
+async function confirmSave() {
+  const conn = connectionStore.currentConnection
+  const tab = currentTab.value
+  if (!conn || !tab || previewDialog.value.saving) return
+
+  previewDialog.value.saving = true
+  previewDialog.value.error = ''
+  try {
+    const result = await browserStore.applyTableChanges(conn.id, tab.database, previewDialog.value.changes)
+
+    modifiedCells.value.clear()
+    newRows.value = []
+    deletedRows.value = []
+    tab.modified = false
+    previewDialog.value = { show: false, changes: [], saving: false, error: '' }
+
+    showToast(result.unchanged > 0
+      ? t('dataTable.saveSuccessWithUnchanged', { applied: result.applied, unchanged: result.unchanged })
+      : t('dataTable.saveSuccess', { count: result.applied }))
+
+    const nextTab = pendingSwitchTab.value
+    pendingSwitchTab.value = null
+
+    if (nextTab) {
+      // 「保存并切换」：保存成功后直接切到目标表，由 activateTab 加载数据，避免重复刷新当前表
+      showCloseConfirm.value = false
+      await activateTab(nextTab)
+    } else {
+      await loadData()
+
+      if (pendingCloseAfterSave.value) {
+        pendingCloseAfterSave.value = false
+        closeAfterSave()
+      }
+    }
+  } catch (e) {
+    console.error('Save failed:', e)
+    previewDialog.value.error = String(e)
+  } finally {
+    previewDialog.value.saving = false
+  }
+}
+
+// 工具函数
+function formatCellValue(value: unknown, colIndex: number): string {
+  if (value === null || value === undefined) return 'NULL'
+  const str = String(value)
+  const maxChars = Math.floor((columnWidths.value[colIndex] || defaultColumnWidth) / 7)
+  if (str.length > maxChars) {
+    return str.substring(0, maxChars - 3) + '...'
+  }
+  return str
+}
+
+function getCellTitle(value: unknown): string {
+  if (value === null || value === undefined) return 'NULL'
+  return String(value)
+}
+
+function getCellClass(value: unknown): string {
+  if (value === null || value === undefined) return 'type-null'
+  if (typeof value === 'number') return 'type-number'
+  if (typeof value === 'boolean') return 'type-boolean'
+  return 'type-string'
+}
+
+function showToast(message: string, type: 'success' | 'error' = 'success') {
+  saveSuccess.value = { show: true, message, type }
+  setTimeout(() => {
+    saveSuccess.value.show = false
+  }, 3000)
+}
+
+// 列宽调整
+let resizingCol = -1
+let startX = 0
+let startWidth = 0
+
+function startResize(event: MouseEvent, colIndex: number) {
+  resizingCol = colIndex
+  startX = event.clientX
+  startWidth = columnWidths.value[colIndex] ?? 100
+
+  document.addEventListener('mousemove', handleResize)
+  document.addEventListener('mouseup', stopResize)
+}
+
+function handleResize(event: MouseEvent) {
+  if (resizingCol === -1) return
+  const delta = event.clientX - startX
+  columnWidths.value[resizingCol] = Math.max(80, startWidth + delta)
+}
+
+function stopResize() {
+  resizingCol = -1
+  document.removeEventListener('mousemove', handleResize)
+  document.removeEventListener('mouseup', stopResize)
+}
+
+function handleScroll() {
+  hideContextMenu()
+  handleVirtualScroll()
+}
+
+// 事务管理
+async function beginTransaction() {
+  const conn = connectionStore.currentConnection
+  if (!conn) return
+
+  try {
+    await browserStore.beginTransaction(conn.id)
+    transactionActive.value = true
+    showToast(t('dataTable.transactionStarted'))
+  } catch (e: unknown) {
+    showToast(t('dataTable.beginTransactionFailed', { error: String(e) }), 'error')
+  }
+}
+
+async function commitTransaction() {
+  const conn = connectionStore.currentConnection
+  if (!conn) return
+
+  try {
+    await browserStore.commitTransaction(conn.id)
+    transactionActive.value = false
+    showToast(t('dataTable.transactionCommitted'))
+    await loadData()
+  } catch (e: unknown) {
+    showToast(t('dataTable.commitTransactionFailed', { error: String(e) }), 'error')
+  }
+}
+
+async function rollbackTransaction() {
+  const conn = connectionStore.currentConnection
+  if (!conn) return
+
+  try {
+    await browserStore.rollbackTransaction(conn.id)
+    transactionActive.value = false
+    showToast(t('dataTable.transactionRolledBack'))
+    await loadData()
+  } catch (e: unknown) {
+    showToast(t('dataTable.rollbackTransactionFailed', { error: String(e) }), 'error')
+  }
+}
+
+// 导入导出
+function showImportDialog() {
+  importDialog.value = {
+    show: true,
+    format: 'csv',
+    data: '',
+    filePath: '',
+    fileName: '',
+    fileSize: 0,
+    loading: false
+  }
+}
+
+// 格式化文件大小
+function formatFileSize(bytes: number): string {
+  if (bytes === 0) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+}
+
+// 选择导入文件
+async function selectImportFile() {
+  try {
+    importDialog.value.loading = true
+    const result = await invoke<[string, string]>('read_file_from_dialog', {
+      format: importDialog.value.format
+    })
+    const [filePath, content] = result
+    importDialog.value.filePath = filePath
+    importDialog.value.fileName = filePath.split('/').pop() || filePath.split('\\').pop() || ''
+    importDialog.value.data = content
+    // 估算文件大小（字符数 * 2 字节，近似 UTF-8）
+    importDialog.value.fileSize = new Blob([content]).size
+  } catch (error: unknown) {
+    const errorMessage = String(error)
+    // 用户取消选择时不显示错误
+    if (!errorMessage.includes('用户取消') && !errorMessage.includes('被取消')) {
+      showToast(t('dataTable.selectFileFailed', { error: errorMessage }), 'error')
+    }
+  } finally {
+    importDialog.value.loading = false
+  }
+}
+
+// 处理导入格式变更
+function handleImportFormatChange() {
+  // 清除已选择的文件
+  importDialog.value.data = ''
+  importDialog.value.filePath = ''
+  importDialog.value.fileName = ''
+  importDialog.value.fileSize = 0
+}
+
+function showExportDialog() {
+  exportDialog.value = {
+    show: true,
+    format: 'csv',
+    data: '',
+    loading: false
+  }
+}
+
+async function executeExport() {
+  if (!currentTab.value) {
+    showToast(t('dataTable.openTableFirst'), 'error')
+    return
+  }
+  const conn = connectionStore.currentConnection
+  if (!conn) {
+    showToast(t('dataTable.connectFirst'), 'error')
+    return
+  }
+
+  exportDialog.value.loading = true
+  try {
+    if (exportDialog.value.format === 'xlsx') {
+      // Excel 由后端直接生成二进制文件，这里只需等待保存对话框返回路径
+      const filePath = await browserStore.exportTableToExcel(
+        conn.id,
+        currentTab.value.database,
+        currentTab.value.tableName,
+        `${currentTab.value.tableName}.xlsx`
+      )
+      showToast(t('dataTable.fileSaved', { path: filePath }))
+      exportDialog.value.show = false
+      return
+    }
+    const data = await browserStore.exportTableData(
+      conn.id,
+      currentTab.value.database,
+      currentTab.value.tableName,
+      exportDialog.value.format
+    )
+    exportDialog.value.data = data
+  } catch (e: unknown) {
+    const errorMessage = String(e)
+    // 用户取消保存时不提示错误
+    if (!errorMessage.includes('用户取消')) {
+      console.error('Export failed:', e)
+      if (!licenseStore.handleError(e)) {
+        showToast(t('dataTable.exportFailed', { error: errorMessage }), 'error')
+      }
+    }
+  } finally {
+    exportDialog.value.loading = false
+  }
+}
+
+async function executeImport() {
+  if (!currentTab.value) {
+    showToast(t('dataTable.openTableFirst'), 'error')
+    return
+  }
+  const conn = connectionStore.currentConnection
+  if (!conn) {
+    showToast(t('dataTable.connectFirst'), 'error')
+    return
+  }
+
+  if (!importDialog.value.data.trim()) {
+    showToast(t('dataTable.importDataRequired'), 'error')
+    return
+  }
+
+  importDialog.value.loading = true
+  try {
+    const count = await browserStore.importData(
+      conn.id,
+      currentTab.value.database,
+      currentTab.value.tableName,
+      importDialog.value.format,
+      importDialog.value.data
+    )
+    showToast(t('dataTable.importSuccess', { count }))
+    importDialog.value.show = false
+    await loadData()
+  } catch (e: unknown) {
+    console.error('Import failed:', e)
+    if (!licenseStore.handleError(e)) {
+      showToast(t('dataTable.importFailed', { error: String(e) }), 'error')
+    }
+  } finally {
+    importDialog.value.loading = false
+  }
+}
+
+function copyExportedData() {
+  navigator.clipboard.writeText(exportDialog.value.data)
+  showToast(t('dataTable.copiedToClipboard'))
+}
+
+async function downloadExportedData() {
+  const ext = exportDialog.value.format
+  const defaultFilename = `${currentTab.value?.tableName || 'export'}.${ext}`
+
+  try {
+    // 使用 Tauri 文件对话框保存
+    const filePath = await invoke('save_file_to_dialog', {
+      content: exportDialog.value.data,
+      defaultFilename: defaultFilename,
+      format: ext
+    })
+    showToast(t('dataTable.fileSaved', { path: String(filePath) }))
+  } catch (error: unknown) {
+    const errorMessage = String(error)
+    // 用户取消保存时不显示错误
+    if (!errorMessage.includes('用户取消')) {
+      showToast(t('dataTable.saveFailed', { error: errorMessage }), 'error')
+    }
+  }
+}
+
+// 暴露方法
+defineExpose({
+  openTable,
+  switchToTable: switchTab,
+  closeTableById,
+  closeConnectionTables,
+  showImportDialog,
+  showExportDialog,
+  refreshData
+})
+</script>
+
+<style scoped>
+.data-table {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+  overflow: hidden;
+  position: relative;
+}
+
+/* 工具栏 */
+.table-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--space-2) var(--space-4);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-default);
+  flex-shrink: 0;
+  gap: var(--space-4);
+}
+
+.toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex: 1;
+}
+
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.table-info {
+  font-weight: var(--font-semibold);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.toolbar-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.toolbar-actions button {
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border-default);
+  background: var(--surface-default);
+  color: var(--text-primary);
+  cursor: pointer;
+  border-radius: var(--radius-md);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  transition: var(--transition-colors);
+}
+
+.toolbar-actions button:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+}
+
+.toolbar-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.search-input {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  font-size: var(--text-xs);
+  background: var(--surface-default);
+  color: var(--text-primary);
+  width: 150px;
+  transition: var(--transition-colors);
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: var(--brand-500);
+  box-shadow: var(--shadow-focus);
+}
+
+.row-info {
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+/* 表格容器 */
+.table-container {
+  flex: 1;
+  overflow: auto;
+  position: relative;
+}
+
+table {
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  table-layout: fixed;
+  width: auto;
+  border-right: 1px solid var(--border-default);
+}
+
+/* 行号列 */
+.row-number-header,
+.row-number {
+  width: 40px !important;
+  min-width: 20px !important;
+  max-width: 50px !important;
+  text-align: center;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border-default);
+  padding: var(--space-2) !important;
+}
+
+.row-number {
+  text-align: center;
+  vertical-align: middle;
+}
+
+.row-num {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+th, td {
+  padding: var(--space-2);
+  text-align: left;
+  border-bottom: 1px solid var(--border-default);
+  border-right: 1px solid var(--border-default);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  position: relative;
+}
+
+th {
+  background: var(--bg-secondary);
+  font-weight: var(--font-semibold);
+  cursor: pointer;
+  user-select: none;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.th-content {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.col-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.data-type {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  font-weight: var(--font-normal);
+}
+
+.sort-indicator {
+  margin-left: var(--space-1);
+  color: var(--brand-500);
+}
+
+.resize-handle {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  cursor: col-resize;
+  background: transparent;
+  transition: background var(--duration-fast);
+}
+
+.resize-handle:hover {
+  background: var(--brand-500);
+}
+
+/* 数据行 */
+tr:hover {
+  background: var(--surface-hover);
+}
+
+tr.selected {
+  background: #87CEEB !important;
+}
+
+tr.new-row {
+  background: rgba(16, 185, 129, 0.08);
+}
+
+tr.deleted-row {
+  background: rgba(239, 68, 68, 0.08);
+  opacity: 0.5;
+}
+
+/* 虚拟滚动占位行：只用于撑起滚动高度 */
+.virtual-spacer:hover {
+  background: transparent;
+}
+
+.virtual-spacer td {
+  cursor: default;
+}
+
+td {
+  cursor: pointer;
+  position: relative;
+}
+
+td.modified {
+  background: rgba(245, 158, 11, 0.08);
+}
+
+td.is-null {
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+.cell-text {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.type-null {
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+.type-number {
+  color: var(--brand-500);
+}
+
+.type-boolean {
+  color: var(--info-500);
+}
+
+.type-string {
+  color: var(--text-primary);
+}
+
+/* 编辑输入框 */
+.edit-input {
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--brand-500);
+  padding: var(--space-2);
+  font-size: var(--text-sm);
+  outline: none;
+  background: var(--color-background);
+  box-sizing: border-box;
+  color: var(--color-text);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15), 0 4px 12px rgba(0, 0, 0, 0.15);
+  transition: all 0.15s ease;
+}
+
+.edit-input:focus {
+  border-color: var(--brand-600);
+  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2), 0 6px 16px rgba(0, 0, 0, 0.2);
+}
+
+/* 编辑器包装器 */
+.datetime-editor-wrapper {
+  position: relative;
+}
+
+/* 遮罩层：防止点击外部关闭编辑器（仅在弹层打开时显示） */
+.datetime-picker-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 9999;
+  background: rgba(0, 0, 0, 0.1);
+}
+
+/* 自定义日期时间编辑器容器 */
+.datetime-editor-container {
+  position: relative;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px;
+  background: var(--color-background);
+  border: 1px solid var(--brand-500);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15), 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.datetime-editor-container .edit-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  font-size: var(--text-sm);
+  border: none;
+  box-shadow: none;
+  background: transparent;
+}
+
+.datetime-editor-container .edit-input:focus {
+  box-shadow: none;
+  border: none;
+  outline: none;
+}
+
+/* 打开选择器按钮 */
+.btn-open-picker {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  transition: all 0.15s ease;
+  padding: 0;
+}
+
+.btn-open-picker:hover {
+  color: var(--brand-500);
+  background: var(--brand-100);
+}
+
+/* 确认/取消按钮 */
+.datetime-actions {
+  display: flex;
+  gap: 2px;
+  padding: 0 2px;
+}
+
+.datetime-actions button {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  padding: 0;
+}
+
+.datetime-actions .btn-confirm {
+  color: var(--success-500);
+}
+
+.datetime-actions .btn-confirm:hover {
+  background: var(--success-100);
+}
+
+.datetime-actions .btn-cancel {
+  color: var(--danger-500);
+}
+
+.datetime-actions .btn-cancel:hover {
+  background: var(--danger-100);
+}
+
+/* 自定义日期时间选择器弹层 */
+.datetime-picker-popup {
+  position: fixed;
+  background: var(--color-background);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.2);
+  z-index: 10000;
+  min-width: 240px;
+  padding: 8px;
+}
+
+/* 日历选择器头部 */
+.picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  padding: 0 2px;
+}
+
+.picker-header span {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.picker-header button {
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  border-radius: 4px;
+  transition: all 0.15s ease;
+  font-size: 11px;
+}
+
+.picker-header button:hover {
+  background: var(--brand-100);
+  color: var(--brand-500);
+}
+
+/* 日历格子 */
+.picker-days {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 1px;
+}
+
+.day-header {
+  text-align: center;
+  padding: 3px 1px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-weight: 500;
+}
+
+.day-cell {
+  text-align: center;
+  padding: 5px 1px;
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 3px;
+  transition: all 0.15s ease;
+}
+
+.day-cell:hover {
+  background: var(--brand-100);
+}
+
+.day-cell.other-month {
+  color: var(--text-tertiary);
+}
+
+.day-cell.selected {
+  background: var(--brand-500);
+  color: white;
+}
+
+.day-cell.today {
+  font-weight: 600;
+  border: 1px solid var(--brand-500);
+}
+
+.day-cell.today.selected {
+  border-color: white;
+}
+
+/* 时间选择器 */
+.time-section {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-color);
+}
+
+.time-inputs {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 2px;
+}
+
+.time-field {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.time-field label {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.time-field input {
+  width: 40px;
+  height: 26px;
+  text-align: center;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  font-size: 13px;
+  padding: 0;
+}
+
+.time-field input:focus {
+  border-color: var(--brand-500);
+  outline: none;
+}
+
+.time-separator {
+  font-size: var(--text-lg);
+  color: var(--text-secondary);
+  padding-bottom: 4px;
+}
+
+/* 选择器底部按钮 */
+.picker-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-color);
+  justify-content: flex-end;
+}
+
+.picker-actions button {
+  padding: 5px 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--color-background);
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.15s ease;
+}
+
+.picker-actions .btn-cancel {
+  color: var(--text-secondary);
+  border-color: var(--border-color);
+}
+
+.picker-actions .btn-cancel:hover {
+  background: var(--gray-100);
+}
+
+.picker-actions .btn-confirm {
+  background: var(--brand-500);
+  color: white;
+  border-color: var(--brand-500);
+}
+
+.picker-actions .btn-confirm:hover {
+  background: var(--brand-600);
+}
+
+td.editing {
+  padding: 2px;
+  background: rgba(59, 130, 246, 0.05);
+}
+
+td.editing::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  border: 2px solid var(--brand-500);
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* 右键菜单 */
+.context-menu {
+  position: fixed;
+  background: var(--color-background);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  box-shadow: 0 2px 8px var(--color-shadow);
+  z-index: 1000;
+  min-width: 120px;
+}
+
+.menu-item {
+  padding: 8px 16px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--color-text);
+}
+
+.menu-item:hover {
+  background: var(--color-background-hover);
+}
+
+.menu-divider {
+  height: 1px;
+  background: var(--color-border);
+  margin: 4px 0;
+}
+
+/* 分页 */
+.table-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 16px;
+  background: var(--color-background-soft);
+  border-top: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.pagination {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.pagination button {
+  padding: 4px 12px;
+  border: 1px solid var(--color-border);
+  background: var(--color-background);
+  color: var(--color-text);
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.pagination button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.page-size select {
+  padding: 4px 8px;
+  padding-right: 22px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font-size: 12px;
+  /* WebKitGTK 的原生下拉控件会忽略背景色，禁用原生外观后由 CSS 绘制 */
+  background-color: var(--color-background);
+  color: var(--color-text);
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 12 12'%3E%3Cpath fill='%23888' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 6px center;
+  cursor: pointer;
+}
+
+.page-size select:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.page-size select option {
+  background: var(--color-background);
+  color: var(--color-text);
+}
+
+/* 空状态 */
+.empty-state {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+}
+
+.empty-state.error-state {
+  color: var(--color-danger);
+}
+
+/* 空表提示 */
+.empty-row {
+  background: transparent;
+}
+
+.empty-cell {
+  text-align: center;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  padding: 24px 0;
+}
+
+.loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  /* 使用更柔和的遮罩层，保留内容可见性 */
+  background: rgba(var(--bg-primary-rgb, 30, 30, 30), 0.35);
+  backdrop-filter: blur(1px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  color: var(--color-text-secondary);
+  z-index: 10;
+  /* 淡入动画 */
+  animation: fade-in 0.3s ease-out;
+}
+
+/* 查看完整内容弹窗 */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  /* 弹窗遮罩层可以稍深一些，但也不要太深 */
+  background: rgba(var(--bg-primary-rgb, 30, 30, 30), 0.45);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  /* 淡入动画 */
+  animation: fade-in 0.3s ease-out;
+}
+
+/* 淡入淡出动画 */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    backdrop-filter: blur(0px);
+  }
+  to {
+    opacity: 1;
+    backdrop-filter: blur(1px);
+  }
+}
+
+@keyframes fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+.content-dialog {
+  background: var(--color-background);
+  padding: 24px;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px var(--color-shadow);
+  width: 500px;
+  max-width: 90vw;
+}
+
+.content-dialog h3 {
+  margin: 0 0 12px 0;
+  font-size: 16px;
+  color: var(--color-text);
+}
+
+.content-textarea {
+  width: 100%;
+  height: 300px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 12px;
+  font-family: monospace;
+  font-size: 13px;
+  resize: none;
+  margin-bottom: 16px;
+  background: var(--color-background);
+  color: var(--color-text);
+}
+
+.dialog-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+/* 确认对话框 */
+.confirm-dialog {
+  background: var(--color-background);
+  padding: 24px;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px var(--color-shadow);
+  min-width: 300px;
+}
+
+.confirm-dialog h3 {
+  margin: 0 0 12px 0;
+  font-size: 16px;
+  color: var(--color-text);
+}
+
+.confirm-dialog p {
+  margin: 0 0 20px 0;
+  color: var(--color-text-secondary);
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.btn-primary {
+  background: var(--color-success);
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.btn-secondary {
+  background: var(--color-background-soft);
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+  padding: 8px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+/* 工具栏样式 */
+.toolbar-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--color-border);
+  margin: 0 4px;
+}
+
+.toolbar-actions button.active {
+  background: rgba(25, 118, 210, 0.15);
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.transaction-indicator {
+  color: var(--color-success);
+  font-size: 16px;
+  animation: pulse 1.5s infinite;
+}
+
+/* 无主键只读徽标 */
+.readonly-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  color: var(--text-secondary);
+  background: var(--surface-hover);
+  border: 1px solid var(--border-default);
+  white-space: nowrap;
+}
+
+/* 保存预览弹窗 */
+.save-preview-dialog {
+  max-width: 760px;
+}
+
+.preview-summary {
+  margin: 0 0 6px 0;
+  font-size: 13px;
+  color: var(--color-text);
+}
+
+.preview-hint {
+  margin: 0 0 12px 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.save-preview-dialog .result-textarea {
+  width: 100%;
+  min-height: 220px;
+  resize: vertical;
+  padding: 10px;
+  font-family: monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-background-soft);
+  color: var(--color-text);
+  box-sizing: border-box;
+}
+
+.preview-error {
+  margin: 12px 0 0 0;
+  font-size: 12px;
+  color: var(--color-danger);
+  white-space: pre-wrap;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* 导入导出弹窗 */
+.dialog {
+  background: var(--color-background);
+  padding: 24px;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  min-width: 400px;
+  max-width: 600px;
+  width: 90vw;
+}
+
+.dialog h3 {
+  margin: 0 0 20px 0;
+  font-size: 16px;
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 12px;
+  color: var(--color-text);
+}
+
+.dialog-content {
+  margin-bottom: 20px;
+}
+
+.form-group {
+  margin-bottom: 16px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.form-group select,
+.form-group textarea {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: inherit;
+  background: var(--color-background);
+  color: var(--color-text);
+}
+
+.form-group select {
+  padding-right: 32px;
+  cursor: pointer;
+  /* 同分页选择器：禁用 WebKitGTK 原生外观，避免暗色主题下白底 */
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23888' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+}
+
+.form-group select:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.form-group select option {
+  background: var(--color-background);
+  color: var(--color-text);
+}
+
+.form-group textarea {
+  resize: vertical;
+  min-height: 120px;
+  font-family: monospace;
+}
+
+.form-group textarea.result-textarea {
+  background: var(--color-background-soft);
+}
+
+.import-dialog,
+.export-dialog {
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+/* 文件选择区域 */
+.file-select-area {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.file-select-area .btn-secondary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 16px;
+}
+
+.btn-icon {
+  font-size: 16px;
+}
+
+.file-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--color-background-soft);
+  border-radius: 4px;
+  border: 1px solid var(--color-border);
+}
+
+.file-name {
+  font-weight: 500;
+  color: var(--color-text);
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-size {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.file-hint {
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  padding: 8px 0;
+}
+
+.file-preview {
+  background: var(--color-background-soft);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 12px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.file-preview pre {
+  margin: 0;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--color-text);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* Toast 提示 */
+.toast-message {
+  position: fixed;
+  top: 50px;
+  right: 20px;
+  padding: 12px 24px;
+  border-radius: 4px;
+  color: white;
+  font-size: 14px;
+  z-index: 1001;
+  animation: slideIn 0.3s ease;
+}
+
+.toast-message.success {
+  background: var(--color-success);
+}
+
+.toast-message.error {
+  background: var(--color-danger);
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+</style>
