@@ -116,6 +116,7 @@ fn main() {
             commands::connection::restore_database,
             commands::connection::list_backup_history,
             commands::connection::delete_backup_record,
+            commands::connection::global_search,
             commands::audit::list_audit_entries,
             commands::audit::clear_audit_logs,
             password_store::save_connection_password,

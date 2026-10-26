@@ -1,11 +1,13 @@
 use crate::core::audit::{AuditEntry, AuditLog};
 use crate::core::connection::{
     BackupRecord, ConnectionConfig, ConnectionManager, ConnectionRequest, ConnectionStatus,
-    DataQueryRequest, ErDiagramData, ExplainPlan, SshConfig,
+    DataQueryRequest, ErDiagramData, ExplainPlan, GlobalSearchRequest, GlobalSearchResult,
+    SshConfig,
 };
 use crate::core::license::{
-    LicenseManager, FEATURE_BACKUP, FEATURE_ER_DIAGRAM, FEATURE_IMPORT_EXPORT, FEATURE_MONITOR,
-    FEATURE_QUERY_PLAN, FEATURE_SCHEMA_DIFF, FEATURE_SSH_TUNNEL,
+    LicenseManager, FEATURE_BACKUP, FEATURE_ER_DIAGRAM, FEATURE_GLOBAL_SEARCH,
+    FEATURE_IMPORT_EXPORT, FEATURE_MONITOR, FEATURE_QUERY_PLAN, FEATURE_SCHEMA_DIFF,
+    FEATURE_SSH_TUNNEL,
 };
 use tauri::{command, State};
 use tauri_plugin_dialog::{DialogExt, FilePath};
@@ -641,6 +643,20 @@ pub async fn list_backup_history(
 ) -> Result<Vec<BackupRecord>, String> {
     let manager = state.manager.read().await;
     Ok(manager.list_backup_history(&connection_id, &database))
+}
+
+/// 跨库全局搜索（Pro）：按表名 / 字段名 / 数据内容查找
+#[command]
+pub async fn global_search(
+    state: State<'_, ConnectionManagerState>,
+    license: State<'_, LicenseManager>,
+    request: GlobalSearchRequest,
+) -> Result<GlobalSearchResult, String> {
+    license
+        .ensure(FEATURE_GLOBAL_SEARCH, "跨库全局搜索")
+        .await?;
+    let manager = state.manager.read().await;
+    manager.global_search(request).await.map_err(|e| fail(&e))
 }
 
 /// 从历史中删除一条备份记录（同时清理磁盘文件）

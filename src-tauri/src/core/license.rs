@@ -37,6 +37,7 @@ pub const FEATURE_SSH_TUNNEL: &str = "ssh-tunnel";
 pub const FEATURE_QUERY_PLAN: &str = "query-plan";
 pub const FEATURE_ER_DIAGRAM: &str = "er-diagram";
 pub const FEATURE_BACKUP: &str = "backup";
+pub const FEATURE_GLOBAL_SEARCH: &str = "global-search";
 
 /// 命令层错误前缀：前端据此识别「需要激活」并弹出激活窗口
 pub const LICENSE_REQUIRED_PREFIX: &str = "LICENSE_REQUIRED:";

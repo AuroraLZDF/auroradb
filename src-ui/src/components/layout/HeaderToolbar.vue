@@ -79,6 +79,15 @@
         </button>
         <button
           class="header-btn"
+          @click="emit('openGlobalSearch')"
+          :title="t('header.globalSearchHint')"
+          :disabled="connStore.activeConnections.length === 0 || !licenseStore.allows('global-search')"
+        >
+          <Search class="header-btn-icon" :size="16" />
+          <span class="header-btn-label u-hidden-mobile">{{ t('header.globalSearch') }}</span>
+        </button>
+        <button
+          class="header-btn"
           :class="{ 'license-active': licenseStore.activated }"
           @click="emit('openLicense')"
           :title="t('header.licenseHint')"
@@ -139,7 +148,7 @@ import { useConnectionStore } from '@/stores/connection'
 import { useUpdaterStore } from '@/stores/updater'
 import { useLicenseStore } from '@/stores/license'
 import { t, locale, toggleLocale } from '@/i18n'
-import { Menu, Plug, FileCode, Moon, Sun, PanelRight, Terminal, RefreshCw, GitCompare, Activity, Languages, KeyRound, Network, HardDrive } from 'lucide-vue-next'
+import { Menu, Plug, FileCode, Moon, Sun, PanelRight, Terminal, RefreshCw, GitCompare, Activity, Languages, KeyRound, Network, HardDrive, Search } from 'lucide-vue-next'
 
 const themeStore = useThemeStore()
 const connStore = useConnectionStore()
@@ -192,6 +201,7 @@ const emit = defineEmits<{
   openErDiagram: []
   openMonitor: []
   openBackup: []
+  openGlobalSearch: []
   openLicense: []
 }>()
 </script>

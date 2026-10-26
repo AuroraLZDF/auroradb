@@ -12,6 +12,7 @@
       @open-er-diagram="handleOpenErDiagram"
       @open-monitor="handleOpenMonitor"
       @open-backup="handleOpenBackup"
+      @open-global-search="handleOpenGlobalSearch"
       @open-license="licenseStore.openDialog()"
     />
 
@@ -252,6 +253,18 @@
       </div>
     </div>
 
+    <!-- 跨库全局搜索弹窗 -->
+    <div v-if="showGlobalSearch" class="modal-overlay">
+      <div class="modal-content modal-large">
+        <GlobalSearchDialog
+          :initial-connection-id="currentConnection?.id"
+          :initial-database="browserStore.currentDatabase"
+          @open-table="handleGlobalSearchOpenTable"
+          @close="showGlobalSearch = false"
+        />
+      </div>
+    </div>
+
     <!-- 表格设计器弹窗 -->
     <div v-if="showTableDesigner" class="modal-overlay">
       <div class="modal-content modal-large">
@@ -310,6 +323,7 @@ import LicenseDialog from '@/components/LicenseDialog.vue'
 import ToastNotification from '@/components/ui/Toast.vue'
 import CommandPalette from '@/components/CommandPalette.vue'
 import BackupDialog from '@/components/BackupDialog.vue'
+import GlobalSearchDialog from '@/components/GlobalSearchDialog.vue'
 import { useCommandRegistryStore } from '@/stores/commandRegistry'
 import { useToast } from '@/composables/useToast'
 import { useBreakpoints } from '@/composables/useBreakpoints'
@@ -450,6 +464,9 @@ const showMonitor = ref(false)
 // 备份还原
 const showBackup = ref(false)
 
+// 跨库全局搜索
+const showGlobalSearch = ref(false)
+
 // 专业版入口：未激活时先弹出激活窗口
 function handleOpenSchemaDiff() {
   if (licenseStore.requirePro('schema-diff', t('license.feature.schema-diff'))) {
@@ -475,6 +492,17 @@ function handleOpenMonitor() {
 function handleOpenBackup() {
   if (!licenseStore.requirePro('backup', t('license.feature.backup'))) return
   showBackup.value = true
+}
+
+function handleOpenGlobalSearch() {
+  if (!licenseStore.requirePro('global-search', t('license.feature.global-search'))) return
+  showGlobalSearch.value = true
+}
+
+/** 全局搜索结果跳转：关闭弹窗并打开对应表 */
+function handleGlobalSearchOpenTable(connectionId: string, database: string, table: string) {
+  showGlobalSearch.value = false
+  openTable(connectionId, database, table)
 }
 
 // 数据库设计器

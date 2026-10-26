@@ -1381,7 +1381,7 @@ fn ms(end: Instant, start: Instant) -> f64 {
 /// 判断列类型是否参与关键字搜索。
 ///
 /// BLOB/二进制/空间类型无法安全地做字符串包含匹配（或匹配结果没有意义），直接跳过。
-fn is_searchable_type(column_type: &str) -> bool {
+pub(super) fn is_searchable_type(column_type: &str) -> bool {
     let t = column_type.to_ascii_lowercase();
     !(t.contains("blob")
         || t.contains("binary")

@@ -42,6 +42,7 @@ export default {
     'license.feature.query-plan': '执行计划解释',
     'license.feature.er-diagram': 'ER 图自动生成',
     'license.feature.backup': '数据库备份还原',
+    'license.feature.global-search': '跨库全局搜索',
   },
   'en-US': {
     'header.license': 'Activate',
@@ -86,5 +87,6 @@ export default {
     'license.feature.query-plan': 'Query plan',
     'license.feature.er-diagram': 'ER diagram',
     'license.feature.backup': 'Backup & Restore',
+    'license.feature.global-search': 'Cross-database search',
   },
 }
