@@ -183,6 +183,21 @@ else
     cargo tauri build --bundles "$BUNDLE_TYPE"
 fi
 
+# AppImage 默认压缩率下超过 100MB，会被 Gitee 发行版拒收；重打包后再签名
+if [[ "$BUNDLE_TYPE" == *"appimage"* ]]; then
+    echo -e "${YELLOW}[5.5/5] 重新压缩 AppImage...${NC}"
+    shopt -s nullglob
+    IMAGES=(target/release/bundle/appimage/*.AppImage)
+    shopt -u nullglob
+    if (( ${#IMAGES[@]} == 0 )); then
+        echo -e "${RED}  ✗ 未生成 AppImage${NC}"
+        exit 1
+    fi
+    for img in "${IMAGES[@]}"; do
+        "$SCRIPT_DIR/repack-appimage.sh" "$img"
+    done
+fi
+
 echo ""
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}    打包成功！${NC}"

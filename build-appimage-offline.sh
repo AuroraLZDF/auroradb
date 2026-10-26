@@ -197,6 +197,10 @@ if [ -n "$APPIMAGE_FILE" ]; then
     mkdir -p "$TARGET_DIR/bundle/appimage"
     cp "$APPIMAGE_FILE" "$TARGET_DIR/bundle/appimage/"
     echo "已复制到: $TARGET_DIR/bundle/appimage/"
+
+    # linuxdeploy 默认压缩率会超过 Gitee 100MB 上限，重打包并签名
+    BUNDLED_APPIMAGE="$TARGET_DIR/bundle/appimage/$(basename "$APPIMAGE_FILE")"
+    "$SCRIPT_DIR/repack-appimage.sh" "$BUNDLED_APPIMAGE"
 else
     echo ""
     echo -e "${RED}✗ 未找到生成的 AppImage 文件${NC}"

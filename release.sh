@@ -44,6 +44,7 @@ if [[ -z "${GITEE_TOKEN:-}" ]]; then
 fi
 
 command -v curl >/dev/null || { echo -e "${RED}错误: 未找到 curl${NC}"; exit 1; }
+command -v python3 >/dev/null || { echo -e "${RED}错误: 未找到 python3${NC}"; exit 1; }
 
 # 从 origin 解析 owner/repo，兼容 SSH 与 HTTPS 两种地址
 REMOTE_URL="$(git remote get-url origin)"
@@ -83,7 +84,8 @@ fi
 echo -e "${YELLOW}发布仓库: $OWNER/$REPO  版本: $TAG${NC}"
 
 TMP="$(mktemp)"
-trap 'rm -f "$TMP"' EXIT
+LATEST_TMP="$(mktemp)"
+trap 'rm -f "$TMP" "$LATEST_TMP"' EXIT
 
 json_id() {
     # 忽略 JSON 中的换行与空格，取第一个顶层 "id"
@@ -172,14 +174,15 @@ if [[ ${#FILES[@]} -eq 0 ]]; then
     exit 1
 fi
 
-# 3. 逐个上传，超过 100MB 的跳过
+# 3. 逐个上传，超过 100MB 直接失败（否则 AppImage 会被静默漏发）
 UPLOADED=0
 for f in "${FILES[@]}"; do
     NAME_ONLY="$(basename "$f")"
     SIZE="$(stat -c %s "$f")"
     if (( SIZE > MAX_SIZE )); then
-        echo -e "${YELLOW}  跳过 $NAME_ONLY ($((SIZE / 1024 / 1024))MB，超过 Gitee 单附件上限)${NC}"
-        continue
+        echo -e "${RED}  ✗ $NAME_ONLY ($((SIZE / 1024 / 1024))MB) 超过 Gitee 单附件上限${NC}"
+        echo "  AppImage 需先重打包: ./repack-appimage.sh $f"
+        exit 1
     fi
 
     HTTP_CODE="$(curl -sS -X POST -o "$TMP" -w '%{http_code}' \
@@ -200,5 +203,79 @@ if (( UPLOADED > 0 )); then
     echo -e "${GREEN}完成: $UPLOADED 个文件已发布到 $TAG${NC}"
 else
     echo -e "${RED}没有任何文件上传成功${NC}"
+    exit 1
+fi
+
+# 4. 生成 latest.json 并写入分发仓库默认分支，作为 App 内自动更新的固定入口
+APPIMAGE=""
+while IFS= read -r f; do
+    APPIMAGE="$f"
+    break
+done < <(find "$BUNDLE_DIR/appimage" -maxdepth 1 -type f -name '*.AppImage' 2>/dev/null | sort)
+
+if [[ -z "$APPIMAGE" ]]; then
+    echo -e "${RED}错误: 未找到 AppImage，无法生成 latest.json${NC}"
+    exit 1
+fi
+if [[ ! -f "$APPIMAGE.sig" ]]; then
+    echo -e "${RED}错误: 未找到 $(basename "$APPIMAGE").sig，请确认构建时已签名${NC}"
+    exit 1
+fi
+
+APPIMAGE_NAME="$(basename "$APPIMAGE")"
+APPIMAGE_URL="https://gitee.com/$OWNER/$REPO/releases/download/$TAG/$APPIMAGE_NAME"
+
+python3 - "$LATEST_TMP" "$VERSION" "$NOTES" "$APPIMAGE.sig" "$APPIMAGE_URL" <<'PY'
+import datetime
+import json
+import sys
+
+out, version, notes, sig_path, url = sys.argv[1:6]
+signature = open(sig_path, encoding='utf-8').read().strip()
+data = {
+    "version": version,
+    "notes": notes,
+    "pub_date": datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+    "platforms": {"linux-x86_64": {"signature": signature, "url": url}},
+}
+with open(out, 'w', encoding='utf-8') as f:
+    json.dump(data, f, ensure_ascii=False, indent=2)
+PY
+
+# Gitee contents API：文件已存在时用 PUT + sha，否则 POST
+HTTP_CODE="$(curl -sS -o "$TMP" -w '%{http_code}' \
+    "$API/contents/latest.json?access_token=$GITEE_TOKEN&ref=$TARGET_BRANCH")"
+EXISTING_SHA=""
+if [[ "$HTTP_CODE" == "200" ]]; then
+    EXISTING_SHA="$(json_field sha "$TMP")"
+fi
+
+B64_CONTENT="$(base64 -w0 "$LATEST_TMP")"
+if [[ -n "$EXISTING_SHA" ]]; then
+    METHOD="PUT"
+    SHA_ARGS=(--data-urlencode "sha=$EXISTING_SHA")
+else
+    METHOD="POST"
+    SHA_ARGS=()
+fi
+
+HTTP_CODE="$(curl -sS -X "$METHOD" -o "$TMP" -w '%{http_code}' \
+    "$API/contents/latest.json" \
+    --data-urlencode "access_token=$GITEE_TOKEN" \
+    --data-urlencode "content=$B64_CONTENT" \
+    --data-urlencode "message=chore: 更新自动更新清单 $VERSION" \
+    --data-urlencode "branch=$TARGET_BRANCH" \
+    ${SHA_ARGS[@]+"${SHA_ARGS[@]}"})"
+
+LATEST_URL="https://gitee.com/$OWNER/$REPO/raw/$TARGET_BRANCH/latest.json"
+if [[ "$HTTP_CODE" == "200" || "$HTTP_CODE" == "201" ]]; then
+    echo -e "${GREEN}✓ 自动更新清单已更新: $LATEST_URL${NC}"
+    CONFIGURED_ENDPOINT="$(grep -o 'https://[^"]*latest\.json' src-tauri/tauri.conf.json | head -n 1)"
+    if [[ -n "$CONFIGURED_ENDPOINT" && "$CONFIGURED_ENDPOINT" != "$LATEST_URL" ]]; then
+        echo -e "${YELLOW}  注意: tauri.conf.json 的更新地址为 $CONFIGURED_ENDPOINT，与本次发布地址不一致${NC}"
+    fi
+else
+    echo -e "${RED}✗ 自动更新清单更新失败 (HTTP $HTTP_CODE)${NC}"
+    cat "$TMP"
     exit 1
 fi

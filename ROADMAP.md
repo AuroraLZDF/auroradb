@@ -42,15 +42,15 @@
 
 | 项 | 说明 | 优先级 |
 |----|------|--------|
-| **AppImage 101MB 超限** | Gitee 单附件 100MB 上限，当前 AppImage 被跳过 → 自动更新链路断。解法：`appimagetool --comp zstd` 压到 100MB 内 | blocker |
-| **Linux 应用内更新** | deb 不支持 tauri-plugin-updater，只有 AppImage 支持。更新 release.sh 改发 AppImage | blocker |
+| **AppImage 101MB 超限** | ✅ 已解决：`repack-appimage.sh` 复用原 runtime，strip 符号后用 xz 重压包（101MB → 83MB），构建脚本自动调用并重新签名 | 已解决 |
+| **Linux 应用内更新** | ✅ 已解决：updater endpoint 指向 `https://gitee.com/auroraLZDF/auroradb-releases/raw/main/latest.json`，`release.sh` 上传 AppImage 后自动生成并提交 latest.json；deb 不支持更新，仅 AppImage 生效 | 已解决 |
 | **免费版 / Pro 边界细化** | 免费版：多连接 + 查询 + 导入导出 + 表设计器；Pro：结构同步 + 定时备份 + 审计 + SSH 多跳 + 跨库搜索 | 产品 |
 | **试用期** | 14 天全功能；实现：激活码带 trial 标记，或首次启动开始倒计时 | 变现 |
 
 ## 实施顺序建议
 
 ```
-blocker: AppImage 压缩 + updater 链路打通
+blocker: AppImage 压缩 + updater 链路打通（已完成）
     ↓
 P0-1 多标签页 → P0-3 草稿恢复 → P0-5 大结果集
     ↓
@@ -66,3 +66,4 @@ P1-3 备份还原 → P1-8 数据同步（Pro 变现）
 ## 变更日志
 
 - 2026-10-26：初稿，P0-P2 分级 + 实施顺序
+- 2026-10-26：发布链路打通 — AppImage 重打包压到 83MB、updater endpoint 落地、release.sh 自动生成 latest.json

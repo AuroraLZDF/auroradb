@@ -54,7 +54,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ0RTJGRTc3MTU0RkIxMEMKUldRTXNVOFZkLzdpUkhTcU5hdi9vcUpWckxOTWVvd0wwMnNKMTJJRjM0V29pTkRFOExYdWhzMnUK",
       "endpoints": [
-        "https://updates.example.com/auroradb/latest.json"
+        "https://gitee.com/auroraLZDF/auroradb-releases/raw/main/latest.json"
       ]
     }
   }
