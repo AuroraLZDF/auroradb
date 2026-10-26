@@ -263,13 +263,16 @@
 
     <!-- Toast 通知 -->
     <ToastNotification ref="toastRef" />
+
+    <!-- 命令面板 Ctrl+K -->
+    <CommandPalette />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, reactive, onMounted, onUnmounted, watch } from 'vue'
 import { quoteIdentifier } from '@/utils/sql'
-import { t } from '@/i18n'
+import { t, toggleLocale } from '@/i18n'
 import { invoke } from '@tauri-apps/api/core'
 import { useConnectionStore, type ConnectionStatus, type SshConfig } from '@/stores/connection'
 import { useSavedConnectionsStore, type SavedConnection } from '@/stores/savedConnections'
@@ -287,6 +290,8 @@ import SchemaDiff from '@/components/SchemaDiff.vue'
 import MonitorPanel from '@/components/MonitorPanel.vue'
 import LicenseDialog from '@/components/LicenseDialog.vue'
 import ToastNotification from '@/components/ui/Toast.vue'
+import CommandPalette from '@/components/CommandPalette.vue'
+import { useCommandRegistryStore } from '@/stores/commandRegistry'
 import { useToast } from '@/composables/useToast'
 import { useBreakpoints } from '@/composables/useBreakpoints'
 import {
@@ -309,6 +314,7 @@ const savedStore = useSavedConnectionsStore()
 const browserStore = useDataBrowserStore()
 const themeStore = useThemeStore()
 const licenseStore = useLicenseStore()
+const registry = useCommandRegistryStore()
 const mainContentRef = ref<InstanceType<typeof MainContent> | null>(null)
 const toastRef = ref<InstanceType<typeof ToastNotification> | null>(null)
 
@@ -1269,12 +1275,100 @@ async function handleTableMenu(action: string) {
 }
 
 // 窗口大小变化时重新计算
+function registerCommands() {
+  registry.register({
+    id: 'new-query',
+    title: t('commandPalette.newQuery'),
+    category: t('commandPalette.categoryTabs'),
+    shortcut: 'Ctrl+N',
+    available: () => !!currentConnection.value,
+    action: openNewQueryTab,
+  })
+  registry.register({
+    id: 'new-console',
+    title: t('commandPalette.newConsole'),
+    category: t('commandPalette.categoryTabs'),
+    shortcut: 'Ctrl+Shift+T',
+    available: () => !!currentConnection.value,
+    action: openNewConsoleTab,
+  })
+  registry.register({
+    id: 'close-current-tab',
+    title: t('commandPalette.closeCurrentTab'),
+    category: t('commandPalette.categoryTabs'),
+    action: () => {
+      const active = mainContentRef.value?.activeTabId
+      if (active && active !== 'objects') {
+        mainContentRef.value?.closeTab(active)
+      }
+    },
+  })
+  registry.register({
+    id: 'refresh-object-tree',
+    title: t('commandPalette.refreshObjectTree'),
+    category: t('commandPalette.categoryNav'),
+    shortcut: 'Ctrl+R',
+    available: () => !!currentConnection.value,
+    action: () => {
+      if (currentConnection.value) {
+        void loadConnectionDatabases(currentConnection.value.id)
+        showToast(t('app.refreshSuccess'))
+      }
+    },
+  })
+  registry.register({
+    id: 'toggle-theme',
+    title: themeStore.theme === 'dark' ? t('commandPalette.switchLight') : t('commandPalette.switchDark'),
+    category: t('commandPalette.categoryApp'),
+    shortcut: 'Ctrl+Shift+L',
+    action: () => { themeStore.toggleTheme(); registry.updateCommandTitle('toggle-theme', themeStore.theme === 'dark' ? t('commandPalette.switchLight') : t('commandPalette.switchDark')) },
+  })
+  registry.register({
+    id: 'toggle-language',
+    title: t('commandPalette.switchLanguage'),
+    category: t('commandPalette.categoryApp'),
+    action: () => { toggleLocale(); registry.updateCommandTitle('toggle-language', t('commandPalette.switchLanguage')) },
+  })
+  registry.register({
+    id: 'open-activation',
+    title: t('commandPalette.openActivation'),
+    category: t('commandPalette.categoryApp'),
+    action: () => licenseStore.openDialog(),
+  })
+  registry.register({
+    id: 'open-connection-form',
+    title: t('commandPalette.openConnectionForm'),
+    category: t('commandPalette.categoryApp'),
+    action: openConnectionForm,
+  })
+}
+
+function onGlobalKeydown(e: KeyboardEvent) {
+  // Ctrl/Cmd+K 打开/关闭命令面板
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+    e.preventDefault()
+    if (registry.open) {
+      registry.closePalette()
+    } else {
+      registry.openPalette()
+    }
+  }
+  // 面板打开时阻止下层组件响应方向键等
+  if (registry.open) {
+    if (['ArrowUp', 'ArrowDown', 'Enter', 'Escape'].includes(e.key)) {
+      e.stopPropagation()
+    }
+  }
+}
+
 onMounted(() => {
   // 初始化主题
   themeStore.init()
   // 读取本地授权状态，供专业版入口做前置判断
   void licenseStore.loadStatus()
 
+  registerCommands()
+  window.addEventListener('keydown', onGlobalKeydown)
   window.addEventListener('resize', () => {
     // 触发重新计算
   })
@@ -1283,6 +1377,8 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener('mousemove', onResize)
   document.removeEventListener('mouseup', stopResize)
+  window.removeEventListener('keydown', onGlobalKeydown)
+  registry.reset()
 })
 </script>
 

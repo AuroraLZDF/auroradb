@@ -431,8 +431,10 @@ defineExpose({
   openTable,
   newSqlQuery,
   newConsole,
+  closeTab,
   closeDatabaseTabs,
-  closeConnectionTabs
+  closeConnectionTabs,
+  activeTabId,
 })
 </script>
 
