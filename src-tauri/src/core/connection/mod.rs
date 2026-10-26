@@ -1,3 +1,4 @@
+pub mod backup;
 pub mod dialect;
 pub mod driver;
 pub mod er_diagram;
@@ -14,6 +15,7 @@ pub mod tunnel;
 pub mod types;
 pub mod validation;
 
+pub use backup::BackupRecord;
 pub use manager::ConnectionManager;
 pub use types::*;
 pub use explain::ExplainPlan;

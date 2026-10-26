@@ -11,6 +11,7 @@
       @open-schema-diff="handleOpenSchemaDiff"
       @open-er-diagram="handleOpenErDiagram"
       @open-monitor="handleOpenMonitor"
+      @open-backup="handleOpenBackup"
       @open-license="licenseStore.openDialog()"
     />
 
@@ -235,6 +236,13 @@
       </div>
     </div>
 
+    <!-- 备份还原弹窗 -->
+    <div v-if="showBackup" class="modal-overlay">
+      <div class="modal-content modal-large">
+        <BackupDialog @close="showBackup = false" />
+      </div>
+    </div>
+
     <!-- 表格设计器弹窗 -->
     <div v-if="showTableDesigner" class="modal-overlay">
       <div class="modal-content modal-large">
@@ -292,6 +300,7 @@ import MonitorPanel from '@/components/MonitorPanel.vue'
 import LicenseDialog from '@/components/LicenseDialog.vue'
 import ToastNotification from '@/components/ui/Toast.vue'
 import CommandPalette from '@/components/CommandPalette.vue'
+import BackupDialog from '@/components/BackupDialog.vue'
 import { useCommandRegistryStore } from '@/stores/commandRegistry'
 import { useToast } from '@/composables/useToast'
 import { useBreakpoints } from '@/composables/useBreakpoints'
@@ -428,6 +437,9 @@ const showSchemaDiff = ref(false)
 // 实例监控与审计
 const showMonitor = ref(false)
 
+// 备份还原
+const showBackup = ref(false)
+
 // 专业版入口：未激活时先弹出激活窗口
 function handleOpenSchemaDiff() {
   if (licenseStore.requirePro('schema-diff', t('license.feature.schema-diff'))) {
@@ -448,6 +460,11 @@ function handleOpenMonitor() {
   if (licenseStore.requirePro('monitor', t('license.feature.monitor'))) {
     showMonitor.value = true
   }
+}
+
+function handleOpenBackup() {
+  if (!licenseStore.requirePro('backup', t('license.feature.backup'))) return
+  showBackup.value = true
 }
 
 // 数据库设计器

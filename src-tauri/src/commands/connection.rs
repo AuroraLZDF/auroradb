@@ -1,11 +1,11 @@
 use crate::core::audit::{AuditEntry, AuditLog};
 use crate::core::connection::{
-    ConnectionConfig, ConnectionManager, ConnectionRequest, ConnectionStatus, DataQueryRequest,
-    ErDiagramData, ExplainPlan, SshConfig,
+    BackupRecord, ConnectionConfig, ConnectionManager, ConnectionRequest, ConnectionStatus,
+    DataQueryRequest, ErDiagramData, ExplainPlan, SshConfig,
 };
 use crate::core::license::{
-    LicenseManager, FEATURE_ER_DIAGRAM, FEATURE_IMPORT_EXPORT, FEATURE_MONITOR, FEATURE_QUERY_PLAN,
-    FEATURE_SCHEMA_DIFF, FEATURE_SSH_TUNNEL,
+    LicenseManager, FEATURE_BACKUP, FEATURE_ER_DIAGRAM, FEATURE_IMPORT_EXPORT, FEATURE_MONITOR,
+    FEATURE_QUERY_PLAN, FEATURE_SCHEMA_DIFF, FEATURE_SSH_TUNNEL,
 };
 use tauri::{command, State};
 use std::sync::Arc;
@@ -578,4 +578,69 @@ pub async fn get_er_diagram_data(
         Ok(data) => Ok(data),
         Err(e) => Err(fail(&e)),
     }
+}
+
+/// 触发完整数据库备份（mysqldump / pg_dump 子进程）
+#[command]
+pub async fn backup_database(
+    state: State<'_, ConnectionManagerState>,
+    license: State<'_, LicenseManager>,
+    connection_id: String,
+    database: String,
+    label: Option<String>,
+) -> Result<BackupRecord, String> {
+    license.ensure(FEATURE_BACKUP, "数据库备份").await?;
+    let manager = state.manager.read().await;
+
+    match manager
+        .backup_database(&connection_id, &database, label)
+        .await
+    {
+        Ok(record) => Ok(record),
+        Err(e) => Err(fail(&e)),
+    }
+}
+
+/// 从 dump 文件还原数据库
+#[command]
+pub async fn restore_database(
+    state: State<'_, ConnectionManagerState>,
+    license: State<'_, LicenseManager>,
+    connection_id: String,
+    database: String,
+    dump_path: String,
+) -> Result<(), String> {
+    license.ensure(FEATURE_BACKUP, "数据库还原").await?;
+    let manager = state.manager.read().await;
+
+    match manager
+        .restore_database(&connection_id, &database, &dump_path)
+        .await
+    {
+        Ok(()) => Ok(()),
+        Err(e) => Err(fail(&e)),
+    }
+}
+
+/// 查询某连接某库的备份历史
+#[command]
+pub async fn list_backup_history(
+    state: State<'_, ConnectionManagerState>,
+    connection_id: String,
+    database: String,
+) -> Result<Vec<BackupRecord>, String> {
+    let manager = state.manager.read().await;
+    Ok(manager.list_backup_history(&connection_id, &database))
+}
+
+/// 从历史中删除一条备份记录（同时清理磁盘文件）
+#[command]
+pub async fn delete_backup_record(
+    state: State<'_, ConnectionManagerState>,
+    id: String,
+) -> Result<(), String> {
+    let manager = state.manager.read().await;
+    manager
+        .delete_backup_record(&id)
+        .map_err(|e| fail(&e))
 }

@@ -30,6 +30,7 @@ export default {
     'common.pleaseSelect': '请选择',
     'common.success': '成功',
     'common.failed': '失败',
+    'common.deleted': '已删除',
   },
   'en-US': {
     'common.cancel': 'Cancel',
@@ -58,5 +59,6 @@ export default {
     'common.pleaseSelect': 'Select...',
     'common.success': 'Success',
     'common.failed': 'Failed',
+    'common.deleted': 'Deleted',
   },
 }
