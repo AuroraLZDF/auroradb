@@ -1198,10 +1198,8 @@ async function handleDatabaseMenu(action: string) {
       // 导入SQL文件 - 使用 Tauri 对话框
       if (!licenseStore.requirePro('import-export', t('license.feature.import-export'))) break
       try {
-        const [, sql] = await invoke<[string, string]>('read_file_from_dialog', {
-          format: 'sql'
-        })
-        await browserStore.importDatabaseSql(connectionId, database, sql)
+        const filePath = await invoke<string>('pick_file_path', { format: 'sql' })
+        await browserStore.importSqlFile(connectionId, database, filePath)
         // 刷新表列表
         delete connectionDatabaseTables[connectionId]
         await loadConnectionDatabases(connectionId)

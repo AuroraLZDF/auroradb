@@ -504,6 +504,47 @@ pub async fn import_database_sql(
     }
 }
 
+/// 从文件导入数据库 SQL
+///
+/// 只接收文件路径，由后端把文件流式写入 `mysql` 客户端执行，内容不经过 IPC、
+/// 不进入内存，因此没有 10MB 上限，也能正确执行含 `DELIMITER` 的脚本。
+#[command]
+pub async fn import_sql_file(
+    state: State<'_, ConnectionManagerState>,
+    audit: State<'_, AuditLog>,
+    license: State<'_, LicenseManager>,
+    connection_id: String,
+    database: String,
+    file_path: String,
+) -> Result<(), String> {
+    license.ensure(FEATURE_IMPORT_EXPORT, "导入数据库").await?;
+    let (name, host) = connection_meta(&state, &connection_id).await;
+    let started = Instant::now();
+    let outcome = {
+        let manager = state.manager.read().await;
+        manager
+            .import_sql_file(&connection_id, &database, &file_path)
+            .await
+    };
+
+    // 审计只记录来源文件，不把整份 SQL 写进日志
+    let summary = format!("-- 从文件导入: {}", file_path);
+    let mut entry = AuditEntry::new("import", &connection_id, &name, &host, &database, &summary);
+    entry.duration_ms = started.elapsed().as_millis() as u64;
+    match outcome {
+        Ok(_) => {
+            audit.record(entry).await;
+            Ok(())
+        }
+        Err(e) => {
+            entry.success = false;
+            entry.error = Some(e.to_string());
+            audit.record(entry).await;
+            Err(fail(&e))
+        }
+    }
+}
+
 /// 读取服务端会话/进程列表
 #[command]
 pub async fn get_process_list(

@@ -567,16 +567,16 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
     return await tauriInvoke<number>('clear_audit_logs')
   }
 
-  // 导入数据库SQL
-  async function importDatabaseSql(
+  // 从文件导入数据库 SQL（后端流式执行，无大小限制）
+  async function importSqlFile(
     connectionId: string,
     database: string,
-    sql: string
+    filePath: string
   ): Promise<void> {
-    await tauriInvoke('import_database_sql', {
+    await tauriInvoke('import_sql_file', {
       connectionId,
       database,
-      sql
+      filePath
     })
   }
 
@@ -623,6 +623,6 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
     getServerMetrics,
     listAuditEntries,
     clearAuditLogs,
-    importDatabaseSql,
+    importSqlFile,
   }
 })

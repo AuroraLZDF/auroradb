@@ -319,10 +319,8 @@ async function runBackup() {
 
 async function pickFile() {
   try {
-    // 用已有的 read_file_from_dialog 其实会读内容；我们只需要路径
-    // 简化：直接用后端 file picker 对话框
-    const result = await invoke<[string, string]>('read_file_from_dialog', { format: 'sql' })
-    restoreFilePath.value = result[0]
+    // 只取路径，文件内容由后端流式送入 mysql，不受 10MB 限制
+    restoreFilePath.value = await invoke<string>('pick_file_path', { format: 'sql' })
   } catch {
     // 用户取消或出错时保持原状
   }

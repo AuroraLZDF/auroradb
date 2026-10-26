@@ -382,12 +382,7 @@ pub async fn read_file_from_dialog(
     format: String,
 ) -> Result<(String, String), String> {
     // 根据格式设置文件过滤器
-    let (filter_name, extensions) = match format.as_str() {
-        "csv" => ("CSV 文件", vec!["csv"]),
-        "sql" => ("SQL 文件", vec!["sql"]),
-        "json" => ("JSON 文件", vec!["json"]),
-        _ => ("文本文件", vec!["txt", "csv", "sql", "json"]),
-    };
+    let (filter_name, extensions) = dialog_filter(&format);
 
     // 使用 Tauri v2 的文件对话框
     let (tx, rx) = tokio::sync::oneshot::channel::<Option<FilePath>>();
@@ -427,5 +422,40 @@ pub async fn read_file_from_dialog(
         }
         Ok(None) => Err("用户取消了选择操作".to_string()),
         Err(_) => Err("对话框操作被取消".to_string()),
+    }
+}
+
+/// 只选择文件并返回路径，不读取内容、不限制大小。
+///
+/// 供大 SQL 文件导入 / dump 还原使用：内容由后端直接流式写入 `mysql` 客户端，
+/// 既不经过 IPC 也不占用内存，因此没有 10MB 上限。
+#[command]
+pub async fn pick_file_path(window: tauri::Window, format: String) -> Result<String, String> {
+    let (filter_name, extensions) = dialog_filter(&format);
+
+    let (tx, rx) = tokio::sync::oneshot::channel::<Option<FilePath>>();
+    window.dialog()
+        .file()
+        .set_title("选择要导入的文件")
+        .add_filter(filter_name, &extensions)
+        .add_filter("所有文件", &["*"])
+        .pick_file(move |path| {
+            let _ = tx.send(path);
+        });
+
+    match rx.await {
+        Ok(Some(path)) => Ok(path.to_string()),
+        Ok(None) => Err("用户取消了选择操作".to_string()),
+        Err(_) => Err("对话框操作被取消".to_string()),
+    }
+}
+
+/// 对话框文件过滤器（名称 + 扩展名）
+fn dialog_filter(format: &str) -> (&'static str, Vec<&'static str>) {
+    match format {
+        "csv" => ("CSV 文件", vec!["csv"]),
+        "sql" => ("SQL 文件", vec!["sql"]),
+        "json" => ("JSON 文件", vec!["json"]),
+        _ => ("文本文件", vec!["txt", "csv", "sql", "json"]),
     }
 }
