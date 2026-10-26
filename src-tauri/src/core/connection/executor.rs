@@ -842,47 +842,71 @@ impl ConnectionManager {
 
         sql.push_str(&format!(" FROM `{}`.`{}`", database, table));
 
-        // WHERE 子句单独构建，SELECT 与 COUNT 复用，保证带过滤时分页总数正确
-        let mut where_clause = String::new();
+        // WHERE 子句单独构建，SELECT 与 COUNT 复用，保证带过滤/搜索时分页总数正确
+        let mut conditions: Vec<String> = Vec::new();
         if let Some(filter) = &request.filter {
-            where_clause.push_str(&format!(" WHERE `{}` ", filter.column));
+            let mut cond = format!("`{}` ", filter.column);
             match filter.operator {
                 FilterOperator::Eq => {
                     let val = quote_value(&filter.value)?;
-                    where_clause.push_str(&format!("= {}", val));
+                    cond.push_str(&format!("= {}", val));
                 }
                 FilterOperator::Ne => {
                     let val = quote_value(&filter.value)?;
-                    where_clause.push_str(&format!("!= {}", val));
+                    cond.push_str(&format!("!= {}", val));
                 }
                 FilterOperator::Gt => {
                     let val = quote_value(&filter.value)?;
-                    where_clause.push_str(&format!("> {}", val));
+                    cond.push_str(&format!("> {}", val));
                 }
                 FilterOperator::Gte => {
                     let val = quote_value(&filter.value)?;
-                    where_clause.push_str(&format!(">= {}", val));
+                    cond.push_str(&format!(">= {}", val));
                 }
                 FilterOperator::Lt => {
                     let val = quote_value(&filter.value)?;
-                    where_clause.push_str(&format!("< {}", val));
+                    cond.push_str(&format!("< {}", val));
                 }
                 FilterOperator::Lte => {
                     let val = quote_value(&filter.value)?;
-                    where_clause.push_str(&format!("<= {}", val));
+                    cond.push_str(&format!("<= {}", val));
                 }
                 FilterOperator::Like => {
                     let val = quote_value(&filter.value)?;
-                    where_clause.push_str(&format!("LIKE {}", val));
+                    cond.push_str(&format!("LIKE {}", val));
                 }
                 FilterOperator::IsNull => {
-                    where_clause.push_str("IS NULL");
+                    cond.push_str("IS NULL");
                 }
                 FilterOperator::IsNotNull => {
-                    where_clause.push_str("IS NOT NULL");
+                    cond.push_str("IS NOT NULL");
                 }
             }
+            conditions.push(cond);
         }
+
+        // 关键字搜索：对所有可比较列做包含匹配（BLOB/二进制/空间类型跳过）
+        if let Some(keyword) = request.search.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+            let searchable: Vec<&str> = column_meta
+                .iter()
+                .filter(|(_, col_type)| is_searchable_type(col_type))
+                .map(|(name, _)| name.as_str())
+                .collect();
+            if !searchable.is_empty() {
+                let pattern = escape_like_keyword(keyword);
+                let likes: Vec<String> = searchable
+                    .iter()
+                    .map(|col| format!("`{}` LIKE '%{}%'", col, pattern))
+                    .collect();
+                conditions.push(format!("({})", likes.join(" OR ")));
+            }
+        }
+
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", conditions.join(" AND "))
+        };
         sql.push_str(&where_clause);
 
         // ORDER BY - 只在排序列有效时添加
@@ -1292,164 +1316,6 @@ impl ConnectionManager {
         Ok(count)
     }
 
-    /// 导出数据库SQL
-    pub async fn export_database_sql(
-        &self,
-        connection_id: &str,
-        database: &str,
-    ) -> Result<String> {
-        tracing::info!("Starting export_database_sql for {}.{}", connection_id, database);
-
-        // 输入验证
-        validate_identifier(database)
-            .map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
-
-        // 获取 pool 后立即释放 connections 锁
-        tracing::info!("Getting pool for connection: {}", connection_id);
-        let pool = {
-            let connections = self.connections.read().await;
-            let conn = connections.get(connection_id)
-                .ok_or_else(|| anyhow!("Connection not found: {}", connection_id))?;
-            let pool = conn.pool.as_ref()
-                .ok_or_else(|| anyhow!("Connection not established"))?
-                .as_mysql("导出数据库")?
-                .clone();
-            tracing::info!("Got pool, releasing connections lock");
-            pool
-        };
-
-        tracing::info!("Fetching tables for database: {}", database);
-
-        // 获取所有表 - 添加超时防止卡住
-        let tables: Vec<(String,)> = match tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            sqlx::query_as(
-                "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES 
-                 WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'
-                 ORDER BY TABLE_NAME ASC",
-            )
-            .bind(database)
-            .fetch_all(&pool)
-        ).await {
-            Ok(result) => {
-                tracing::info!("Tables query succeeded");
-                result?
-            },
-            Err(_) => {
-                tracing::error!("Tables query timed out");
-                return Err(anyhow!("获取表列表超时"))
-            },
-        };
-
-        tracing::info!("Found {} tables", tables.len());
-
-        let mut sql_parts: Vec<String> = vec![
-            format!("-- Database: {}\n", database),
-            format!("-- Export Time: {}\n", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")),
-            "SET FOREIGN_KEY_CHECKS=0;\n".to_string(),
-        ];
-
-        for (table_name,) in tables {
-            tracing::info!("Exporting table: {}", table_name);
-
-            // 获取建表语句 - 添加超时
-            let create_result: Result<(String, String), _> = match tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                sqlx::query_as(&format!("SHOW CREATE TABLE `{}`.`{}`", database, table_name))
-                    .fetch_one(&pool)
-            ).await {
-                Ok(res) => res,
-                Err(_) => {
-                    tracing::error!("SHOW CREATE TABLE timeout for {}", table_name);
-                    continue;
-                }
-            };
-
-            if let Ok((_, create_stmt)) = create_result {
-                sql_parts.push(format!("\n-- Table structure for `{}`\n", table_name));
-                sql_parts.push(format!("DROP TABLE IF EXISTS `{}`;\n", table_name));
-                sql_parts.push(format!("{};\n", create_stmt));
-
-                tracing::info!("Fetching data for table: {}", table_name);
-
-                // 先获取列信息
-                let column_info: Vec<(String, String)> = match tokio::time::timeout(
-                    std::time::Duration::from_secs(10),
-                    sqlx::query_as(
-                        "SELECT COLUMN_NAME, DATA_TYPE 
-                         FROM INFORMATION_SCHEMA.COLUMNS 
-                         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
-                         ORDER BY ORDINAL_POSITION",
-                    )
-                    .bind(database)
-                    .bind(&table_name)
-                    .fetch_all(&pool)
-                ).await {
-                    Ok(res) => res.unwrap_or_default(),
-                    Err(_) => {
-                        tracing::error!("Failed to get column info for {}", table_name);
-                        continue;
-                    }
-                };
-
-                if column_info.is_empty() {
-                    tracing::warn!("No columns found for table {}", table_name);
-                    continue;
-                }
-
-                // 构建 SELECT 语句，直接查询所有列
-                // BIT 类型在 format_sql_value 中处理
-                let select_cols: Vec<String> = column_info.iter().map(|(col_name, _)| {
-                    format!("`{}`", col_name)
-                }).collect();
-
-                let columns: Vec<(String, String)> = column_info.clone();
-
-                // 获取表数据 - 添加超时和行数限制
-                let data: Vec<sqlx::mysql::MySqlRow> = match tokio::time::timeout(
-                    std::time::Duration::from_secs(10),
-                    sqlx::query(&format!("SELECT {} FROM `{}`.`{}` LIMIT 10000", 
-                        select_cols.join(", "), database, table_name))
-                        .fetch_all(&pool)
-                ).await {
-                    Ok(res) => res?,
-                    Err(_) => {
-                        tracing::error!("SELECT timeout for {}", table_name);
-                        continue;
-                    }
-                };
-
-                tracing::info!("Table {} has {} rows", table_name, data.len());
-
-                if !data.is_empty() {
-                    sql_parts.push(format!("\n-- Dumping data for `{}`\n", table_name));
-
-                    tracing::info!("Table {} columns: {:?}", table_name, columns);
-
-                    for (row_idx, row) in data.iter().enumerate() {
-                        let values: Vec<String> = columns.iter().map(|(col_name, data_type)| {
-                            tracing::debug!("Exporting row {} column '{}' type '{}'", row_idx, col_name, data_type);
-                            format_sql_value(row, col_name, data_type)
-                        }).collect();
-
-                        sql_parts.push(format!(
-                            "INSERT INTO `{}` ({}) VALUES ({});\n",
-                            table_name,
-                            columns.iter().map(|(c, _)| format!("`{}`", c)).collect::<Vec<_>>().join(", "),
-                            values.join(", ")
-                        ));
-                    }
-                }
-            }
-        }
-
-        sql_parts.push("\nSET FOREIGN_KEY_CHECKS=1;\n".to_string());
-
-        tracing::info!("Export completed");
-
-        Ok(sql_parts.join(""))
-    }
-
     /// 导入数据库SQL
     pub async fn import_database_sql(
         &self,
@@ -1510,4 +1376,54 @@ impl ConnectionManager {
 /// 计算两个时间点之间的毫秒数（保留小数，用于耗时统计）。
 fn ms(end: Instant, start: Instant) -> f64 {
     end.duration_since(start).as_secs_f64() * 1000.0
+}
+
+/// 判断列类型是否参与关键字搜索。
+///
+/// BLOB/二进制/空间类型无法安全地做字符串包含匹配（或匹配结果没有意义），直接跳过。
+fn is_searchable_type(column_type: &str) -> bool {
+    let t = column_type.to_ascii_lowercase();
+    !(t.contains("blob")
+        || t.contains("binary")
+        || t.starts_with("bit")
+        || t.contains("geometry")
+        || t.contains("point")
+        || t.contains("linestring")
+        || t.contains("polygon"))
+}
+
+/// 转义 LIKE 模式中的通配符，避免用户输入的 `%`/`_` 被当成模式。
+fn escape_like_keyword(keyword: &str) -> String {
+    keyword
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+        .replace('\'', "''")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn searchable_type_skips_binary_like_columns() {
+        assert!(is_searchable_type("varchar(255)"));
+        assert!(is_searchable_type("text"));
+        assert!(is_searchable_type("int(11)"));
+        assert!(is_searchable_type("datetime"));
+        assert!(!is_searchable_type("blob"));
+        assert!(!is_searchable_type("longblob"));
+        assert!(!is_searchable_type("varbinary(16)"));
+        assert!(!is_searchable_type("bit(1)"));
+        assert!(!is_searchable_type("geometry"));
+    }
+
+    #[test]
+    fn escape_like_keyword_escapes_wildcards_and_quotes() {
+        assert_eq!(escape_like_keyword("abc"), "abc");
+        assert_eq!(escape_like_keyword("50%"), "50\\%");
+        assert_eq!(escape_like_keyword("a_b"), "a\\_b");
+        assert_eq!(escape_like_keyword("it's"), "it''s");
+        assert_eq!(escape_like_keyword("c:\\x"), "c:\\\\x");
+    }
 }

@@ -8,6 +8,7 @@ use crate::core::license::{
     FEATURE_QUERY_PLAN, FEATURE_SCHEMA_DIFF, FEATURE_SSH_TUNNEL,
 };
 use tauri::{command, State};
+use tauri_plugin_dialog::{DialogExt, FilePath};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
@@ -423,37 +424,46 @@ pub async fn import_data(
     }
 }
 
-/// 导出数据库SQL
+/// 导出整库 SQL 到用户选择的位置（mysqldump 直写文件）
+///
+/// 不把整库拼成字符串经 IPC 传输，因此没有行数上限，也不会在单表超时后静默跳过，
+/// 且包含视图 / 触发器 / 存储过程 / 事件。
 #[command]
-pub async fn export_database_sql(
+pub async fn export_database_sql_to_file(
+    window: tauri::Window,
     state: State<'_, ConnectionManagerState>,
     license: State<'_, LicenseManager>,
     connection_id: String,
     database: String,
+    default_filename: String,
 ) -> Result<String, String> {
     license.ensure(FEATURE_IMPORT_EXPORT, "导出数据库").await?;
-    tracing::info!("export_database_sql command received: {}.{}", connection_id, database);
 
-    // 克隆 Arc 避免长时间持有锁
-    let manager = Arc::clone(&state.manager);
+    let (tx, rx) = tokio::sync::oneshot::channel::<Option<FilePath>>();
+    window
+        .dialog()
+        .file()
+        .set_title("导出数据库 SQL")
+        .set_file_name(&default_filename)
+        .add_filter("SQL 文件", &["sql"])
+        .add_filter("所有文件", &["*"])
+        .save_file(move |path| {
+            let _ = tx.send(path);
+        });
 
-    // 在内部作用域中获取锁并立即释放
-    let result = {
-        let mgr = manager.read().await;
-        tracing::info!("Got manager lock");
-        mgr.export_database_sql(&connection_id, &database).await
+    let output_path = match rx.await {
+        Ok(Some(path)) => path.to_string(),
+        Ok(None) => return Err("用户取消了保存操作".to_string()),
+        Err(_) => return Err("对话框操作被取消".to_string()),
     };
 
-    match result {
-        Ok(data) => {
-            tracing::info!("Export completed, data length: {}", data.len());
-            Ok(data)
-        }
-        Err(e) => {
-            tracing::error!("Export failed: {}", e);
-            Err(fail(&e))
-        }
-    }
+    let manager = state.manager.read().await;
+    manager
+        .export_database_sql_to_file(&connection_id, &database, &output_path)
+        .await
+        .map_err(|e| fail(&e))?;
+
+    Ok(output_path)
 }
 
 /// 导入数据库SQL

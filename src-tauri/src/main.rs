@@ -105,7 +105,7 @@ fn main() {
             commands::connection::cancel_query,
             commands::connection::export_table_data,
             commands::connection::import_data,
-            commands::connection::export_database_sql,
+            commands::connection::export_database_sql_to_file,
             commands::connection::import_database_sql,
             commands::connection::get_process_list,
             commands::connection::kill_process,

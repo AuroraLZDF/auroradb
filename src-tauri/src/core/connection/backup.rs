@@ -11,6 +11,7 @@
 
 use super::driver::DriverKind;
 use super::manager::ConnectionManager;
+use super::validation::validate_identifier;
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -246,6 +247,96 @@ impl ConnectionManager {
             .unwrap_or_else(|e| tracing::warn!("写入备份历史失败：{}", e));
 
         Ok(record)
+    }
+
+    /// 导出整库 SQL 到用户指定路径（mysqldump 直写文件，不经内存/IPC）。
+    ///
+    /// 与 `backup_database` 的区别：输出路径由用户选择、不登记备份历史。
+    /// 相比旧版逐表拼接 SQL 的实现，这里没有 1 万行上限，也不会在超时后静默跳过表，
+    /// 并且天然包含视图、触发器、存储过程与事件。
+    pub async fn export_database_sql_to_file(
+        &self,
+        connection_id: &str,
+        database: &str,
+        output_path: &str,
+    ) -> Result<u64> {
+        validate_identifier(database)
+            .map_err(|e| anyhow!("数据库名验证失败：{}", e))?;
+
+        let (config, tunnel_port) = {
+            let connections = self.connections.read().await;
+            let conn = connections
+                .get(connection_id)
+                .ok_or_else(|| anyhow!("连接 {} 不存在或已断开", connection_id))?;
+            let tunnel_port = conn.tunnel.as_ref().map(|t| t.local_port());
+            (conn.config.clone(), tunnel_port)
+        };
+
+        if config.driver == DriverKind::Postgres {
+            return Err(anyhow!(
+                "PostgreSQL 暂不支持整库导出，请在 SQL 编辑器中导出查询结果"
+            ));
+        }
+
+        let (host, port) = if let Some(local_port) = tunnel_port {
+            ("127.0.0.1".to_string(), local_port)
+        } else {
+            (config.host.clone(), config.port)
+        };
+
+        check_tool("mysqldump", "--version").await?;
+
+        let output_path = PathBuf::from(output_path);
+        if let Some(parent) = output_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).ok();
+            }
+        }
+
+        let defaults_file = write_mysql_defaults(&config.username, &config.password)
+            .context("创建 mysqldump 凭据临时文件失败")?;
+
+        let status = Command::new("mysqldump")
+            .arg(format!("--defaults-extra-file={}", defaults_file.display()))
+            .arg("--single-transaction")
+            .arg("--routines")
+            .arg("--triggers")
+            .arg("--events")
+            .arg("--host")
+            .arg(&host)
+            .arg("--port")
+            .arg(port.to_string())
+            .arg(&config.username)
+            .arg(database)
+            .stdout(Stdio::from(std::fs::File::create(&output_path).map_err(|e| {
+                anyhow!("创建导出文件失败：{}", e)
+            })?))
+            .stderr(Stdio::piped())
+            .status()
+            .await;
+
+        let _ = tokio::fs::remove_file(&defaults_file).await;
+
+        let exit = status.map_err(|e| anyhow!("启动 mysqldump 失败：{}", e))?;
+        if !exit.success() {
+            let _ = tokio::fs::remove_file(&output_path).await;
+            return Err(anyhow!(
+                "mysqldump 执行失败（退出码 {:?}），导出文件已删除",
+                exit.code()
+            ));
+        }
+
+        let file_size = tokio::fs::metadata(&output_path)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(0);
+
+        if file_size == 0 {
+            let _ = tokio::fs::remove_file(&output_path).await;
+            return Err(anyhow!("mysqldump 未产生任何输出，导出已取消"));
+        }
+
+        Ok(file_size)
     }
 
     /// 从 dump 文件还原数据库（MySQL 先用 stdin 管道实现）

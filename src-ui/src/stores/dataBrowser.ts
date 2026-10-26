@@ -312,6 +312,8 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
       pageSize?: number
       sortColumn?: string
       sortDirection?: 'asc' | 'desc'
+      /** 关键字：后端在所有可比较列上做 LIKE '%keyword%' 匹配 */
+      search?: string
     } = {}
   ) {
     loading.value = true
@@ -333,6 +335,7 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
           page_size: options.pageSize || pageSize.value,
           sort_column: options.sortColumn,
           sort_direction: sortDirection,
+          search: options.search || undefined,
         },
       })
       tableData.value = result
@@ -564,17 +567,6 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
     return await tauriInvoke<number>('clear_audit_logs')
   }
 
-  // 导出数据库SQL
-  async function exportDatabaseSql(
-    connectionId: string,
-    database: string
-  ): Promise<string> {
-    return await tauriInvoke<string>('export_database_sql', {
-      connectionId,
-      database
-    })
-  }
-
   // 导入数据库SQL
   async function importDatabaseSql(
     connectionId: string,
@@ -631,7 +623,6 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
     getServerMetrics,
     listAuditEntries,
     clearAuditLogs,
-    exportDatabaseSql,
     importDatabaseSql,
   }
 })

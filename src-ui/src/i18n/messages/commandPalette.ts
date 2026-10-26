@@ -14,6 +14,7 @@ export default {
     'commandPalette.categoryTabs': '标签',
     'commandPalette.categoryNav': '导航',
     'commandPalette.categoryApp': '应用',
+    'commandPalette.categoryTables': '表',
   },
   'en-US': {
     'commandPalette.placeholder': 'Type a command, Ctrl+K to close',
@@ -30,5 +31,6 @@ export default {
     'commandPalette.categoryTabs': 'Tabs',
     'commandPalette.categoryNav': 'Navigation',
     'commandPalette.categoryApp': 'App',
+    'commandPalette.categoryTables': 'Tables',
   },
 }

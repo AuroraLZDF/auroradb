@@ -2,10 +2,19 @@
   <div class="tree-section">
     <div class="section-header">
       <h3>{{ t('tree.myConnections') }}</h3>
+      <div class="filter-wrap">
+        <Search class="filter-icon" :size="12" />
+        <input
+          v-model="filter"
+          type="text"
+          class="filter-input"
+          :placeholder="t('tree.filterPlaceholder')"
+        />
+      </div>
     </div>
     <div class="section">
       <div
-        v-for="item in treeItems"
+        v-for="item in visibleItems"
         :key="item.key"
         class="connection-group"
       >
@@ -88,6 +97,7 @@
             :selected-info-type="selectedInfoType"
             :selected-info-data="selectedInfoData"
             :connection-database-tables="connectionDatabaseTables[item.active!.id] || {}"
+            :filter="filter"
             @select-database="(db) => emit('selectDatabase', item.active!.id, db)"
             @dblclick-database="(db) => emit('dblclickDatabase', item.active!.id, db)"
             @show-database-menu="(e, db) => emit('showDatabaseMenu', e, item.active!.id, db)"
@@ -100,15 +110,16 @@
         </template>
       </div>
 
-      <div v-if="treeItems.length === 0" class="empty">
-        {{ t('tree.noConnections') }}
+      <div v-if="visibleItems.length === 0" class="empty">
+        {{ filter.trim() ? t('tree.noMatch') : t('tree.noConnections') }}
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ChevronDown, ChevronRight } from 'lucide-vue-next'
+import { computed, ref } from 'vue'
+import { ChevronDown, ChevronRight, Search } from 'lucide-vue-next'
 import StatusDot from '@/components/icons/StatusDot.vue'
 import DatabaseTree from './DatabaseTree.vue'
 import { t } from '@/i18n'
@@ -140,7 +151,28 @@ interface Props {
   connectionDatabaseTables: Record<string, Record<string, DatabaseObject[]>>
 }
 
-defineProps<Props>()
+const props = defineProps<Props>()
+
+// 侧边栏过滤：连接名 / 库名 / 表名任一命中即保留该连接
+const filter = ref('')
+const keyword = computed(() => filter.value.trim().toLowerCase())
+
+function connectionMatches(item: TreeItem): boolean {
+  const k = keyword.value
+  if (!k) return true
+  if (item.name.toLowerCase().includes(k)) return true
+  const connId = item.type === 'active' ? item.active!.id : null
+  if (!connId) return false
+  const databases = props.connectionDatabases[connId] || []
+  if (databases.some(db => db.name.toLowerCase().includes(k))) return true
+  const tablesByDb = props.connectionDatabaseTables[connId] || {}
+  return Object.entries(tablesByDb).some(
+    ([dbName, tables]) =>
+      dbName.toLowerCase().includes(k) || tables.some(table => table.name.toLowerCase().includes(k))
+  )
+}
+
+const visibleItems = computed(() => props.treeItems.filter(connectionMatches))
 
 const emit = defineEmits<{
   openSavedConnection: [conn: SavedConnection]
@@ -191,6 +223,40 @@ function getConnectionStatus(state: string): 'online' | 'offline' | 'reconnectin
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
+}
+
+.filter-wrap {
+  position: relative;
+  margin-top: var(--space-2);
+}
+
+.filter-icon {
+  position: absolute;
+  left: var(--space-2);
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-tertiary);
+  pointer-events: none;
+}
+
+.filter-input {
+  width: 100%;
+  padding: var(--space-1) var(--space-2) var(--space-1) calc(var(--space-2) * 2 + 10px);
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+  background: var(--surface-default);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  outline: none;
+  transition: var(--transition-colors);
+}
+
+.filter-input:focus {
+  border-color: var(--brand-500);
+}
+
+.filter-input::placeholder {
+  color: var(--text-tertiary);
 }
 
 .section {

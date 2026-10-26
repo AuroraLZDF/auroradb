@@ -610,6 +610,8 @@ const selectedRows = ref<Set<number>>(new Set())
 
 // 搜索
 const searchText = ref('')
+// 当前生效的搜索关键字（由后端执行，用于分页/排序复用，并避免重复请求）
+const activeSearch = ref('')
 const { debouncedValue: debouncedSearchText, flush: flushSearch } = useDebounce(searchText, 300)
 
 // 右键菜单
@@ -706,16 +708,9 @@ const isAllSelected = computed(() => {
   return selectedRows.value.size === currentTableData.value.rows.length
 })
 
-// 过滤后的行
-const filteredRows = computed(() => {
-  if (!currentTableData.value?.rows) return []
-  if (!debouncedSearchText.value) return currentTableData.value.rows
-
-  const search = debouncedSearchText.value.toLowerCase()
-  return currentTableData.value.rows.filter(row =>
-    row.some(cell => String(cell).toLowerCase().includes(search))
-  )
-})
+// 过滤后的行（搜索已下沉到后端，这里不再做客户端过滤，
+// 否则会与后端的 LIKE 语义不一致，且只能覆盖当前页）
+const filteredRows = computed(() => currentTableData.value?.rows ?? [])
 
 // 大表虚拟滚动：只渲染可视区内的行，行索引仍对应 filteredRows
 const tableContainer = ref<HTMLElement | null>(null)
@@ -851,6 +846,7 @@ async function activateTab(tab: TableTab) {
   deletedRows.value = []
   selectedRows.value.clear()
   searchText.value = ''
+  activeSearch.value = ''
   flushSearch()
   
   // 重置排序状态，避免使用之前表的排序列
@@ -980,6 +976,7 @@ async function loadData() {
       pageSize: pageSize.value,
       sortColumn: sortColumn.value || undefined,
       sortDirection: sortDirection.value?.toLowerCase() as 'asc' | 'desc' | undefined,
+      search: activeSearch.value || undefined,
     })
   } catch (e) {
     const message = String(e)
@@ -997,6 +994,24 @@ async function refreshData() {
   }
   await loadData()
 }
+
+// 搜索：关键字变化后回到第一页，由后端做整表匹配
+watch(debouncedSearchText, async (value) => {
+  const keyword = value.trim()
+  if (!currentTab.value || keyword === activeSearch.value) return
+
+  if (hasUnsavedChanges.value) {
+    const confirmed = confirm(t('dataTable.searchDiscardConfirm'))
+    if (!confirmed) {
+      searchText.value = activeSearch.value
+      return
+    }
+  }
+
+  activeSearch.value = keyword
+  browserStore.setPage(1)
+  await loadData()
+})
 
 // 排序
 function sort(column: string) {

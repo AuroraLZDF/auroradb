@@ -266,6 +266,8 @@ pub struct DataQueryRequest {
     pub table: String,
     pub columns: Option<Vec<String>>,
     pub filter: Option<FilterCondition>,
+    /// 关键字搜索：在所有可比较列上做 LIKE '%keyword%' 的包含匹配
+    pub search: Option<String>,
     pub sort_column: Option<String>,
     pub sort_direction: Option<SortDirection>,
     pub page: usize,

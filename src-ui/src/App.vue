@@ -1147,15 +1147,14 @@ async function handleDatabaseMenu(action: string) {
       }
       break
     case 'export-sql':
-      // 导出SQL到文件 - 使用 Tauri 对话框
+      // 导出整库 SQL：让后端 mysqldump 直接写入用户选择的文件（无行数上限）
       if (!licenseStore.requirePro('import-export', t('license.feature.import-export'))) break
       try {
-        const sql = await invoke<string>('export_database_sql', { connectionId, database })
         const defaultFilename = `${database}_${new Date().toISOString().slice(0, 10)}.sql`
-        await invoke('save_file_to_dialog', {
-          content: sql,
-          defaultFilename: defaultFilename,
-          format: 'sql'
+        await invoke<string>('export_database_sql_to_file', {
+          connectionId,
+          database,
+          defaultFilename
         })
         showToast(t('app.databaseExported'))
       } catch (e: unknown) {
@@ -1391,6 +1390,38 @@ function registerCommands() {
   })
 }
 
+// 已注册的表命令 id，用于清理失效项
+const tableCommandIds = new Set<string>()
+
+/**
+ * 把已加载的表注册成命令面板里的「跳转到表」命令。
+ *
+ * 只覆盖当前已展开过的库，不做额外后端请求；表列表变化时整体对齐一次。
+ */
+function syncTableCommands() {
+  const current = new Set<string>()
+  for (const [connId, tablesByDb] of Object.entries(connectionDatabaseTables)) {
+    for (const [dbName, tables] of Object.entries(tablesByDb)) {
+      for (const table of tables) {
+        const id = `table:${connId}.${dbName}.${table.name}`
+        current.add(id)
+        registry.register({
+          id,
+          title: table.name,
+          category: `${t('commandPalette.categoryTables')} · ${dbName}`,
+          action: () => openTable(connId, dbName, table.name),
+        })
+      }
+    }
+  }
+  // 表被删除或连接断开后，清掉残留命令
+  for (const id of tableCommandIds) {
+    if (!current.has(id)) registry.unregister(id)
+  }
+  tableCommandIds.clear()
+  for (const id of current) tableCommandIds.add(id)
+}
+
 function onGlobalKeydown(e: KeyboardEvent) {
   // Ctrl/Cmd+K 打开/关闭命令面板
   if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
@@ -1416,6 +1447,8 @@ onMounted(() => {
   void licenseStore.loadStatus()
 
   registerCommands()
+  // 表列表加载/刷新后同步「跳转到表」命令
+  watch(connectionDatabaseTables, syncTableCommands, { deep: true })
   window.addEventListener('keydown', onGlobalKeydown)
   window.addEventListener('resize', () => {
     // 触发重新计算
