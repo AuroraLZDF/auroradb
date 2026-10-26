@@ -52,6 +52,15 @@
         </button>
         <button
           class="header-btn"
+          @click="emit('openErDiagram')"
+          :title="t('header.erDiagramHint')"
+          :disabled="connStore.activeConnections.length === 0 || !licenseStore.allows('er-diagram')"
+        >
+          <Network class="header-btn-icon" :size="16" />
+          <span class="header-btn-label u-hidden-mobile">{{ t('header.erDiagram') }}</span>
+        </button>
+        <button
+          class="header-btn"
           @click="emit('openMonitor')"
           :title="t('header.monitorHint')"
           :disabled="connStore.activeConnections.length === 0"
@@ -121,7 +130,7 @@ import { useConnectionStore } from '@/stores/connection'
 import { useUpdaterStore } from '@/stores/updater'
 import { useLicenseStore } from '@/stores/license'
 import { t, locale, toggleLocale } from '@/i18n'
-import { Menu, Plug, FileCode, Moon, Sun, PanelRight, Terminal, RefreshCw, GitCompare, Activity, Languages, KeyRound } from 'lucide-vue-next'
+import { Menu, Plug, FileCode, Moon, Sun, PanelRight, Terminal, RefreshCw, GitCompare, Activity, Languages, KeyRound, Network } from 'lucide-vue-next'
 
 const themeStore = useThemeStore()
 const connStore = useConnectionStore()
@@ -171,6 +180,7 @@ const emit = defineEmits<{
   openNewQueryTab: []
   openNewConsoleTab: []
   openSchemaDiff: []
+  openErDiagram: []
   openMonitor: []
   openLicense: []
 }>()

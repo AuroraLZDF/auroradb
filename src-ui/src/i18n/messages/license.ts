@@ -39,6 +39,8 @@ export default {
     'license.feature.audit': '操作审计',
     'license.feature.import-export': '导入导出',
     'license.feature.ssh-tunnel': 'SSH 隧道',
+    'license.feature.query-plan': '执行计划解释',
+    'license.feature.er-diagram': 'ER 图自动生成',
   },
   'en-US': {
     'header.license': 'Activate',
@@ -80,5 +82,7 @@ export default {
     'license.feature.audit': 'Audit log',
     'license.feature.import-export': 'Import/Export',
     'license.feature.ssh-tunnel': 'SSH tunnel',
+    'license.feature.query-plan': 'Query plan',
+    'license.feature.er-diagram': 'ER diagram',
   },
 }

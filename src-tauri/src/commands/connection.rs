@@ -1,8 +1,11 @@
 use crate::core::audit::{AuditEntry, AuditLog};
-use crate::core::connection::{ConnectionConfig, ConnectionManager, ConnectionRequest, ConnectionStatus, DataQueryRequest, ExplainPlan, SshConfig};
+use crate::core::connection::{
+    ConnectionConfig, ConnectionManager, ConnectionRequest, ConnectionStatus, DataQueryRequest,
+    ErDiagramData, ExplainPlan, SshConfig,
+};
 use crate::core::license::{
-    LicenseManager, FEATURE_IMPORT_EXPORT, FEATURE_MONITOR, FEATURE_QUERY_PLAN, FEATURE_SCHEMA_DIFF,
-    FEATURE_SSH_TUNNEL,
+    LicenseManager, FEATURE_ER_DIAGRAM, FEATURE_IMPORT_EXPORT, FEATURE_MONITOR, FEATURE_QUERY_PLAN,
+    FEATURE_SCHEMA_DIFF, FEATURE_SSH_TUNNEL,
 };
 use tauri::{command, State};
 use std::sync::Arc;
@@ -554,6 +557,25 @@ pub async fn explain_sql(
 
     match manager.explain(&connection_id, &database, &sql).await {
         Ok(plan) => Ok(plan),
+        Err(e) => Err(fail(&e)),
+    }
+}
+
+/// 拉取整个数据库的 ER 图数据（所有表 + 所有外键）
+///
+/// 前端调用：`invoke('get_er_diagram_data', { connectionId, database })`
+#[command]
+pub async fn get_er_diagram_data(
+    state: State<'_, ConnectionManagerState>,
+    license: State<'_, LicenseManager>,
+    connection_id: String,
+    database: String,
+) -> Result<ErDiagramData, String> {
+    license.ensure(FEATURE_ER_DIAGRAM, "ER 图").await?;
+    let manager = state.manager.read().await;
+
+    match manager.get_er_diagram_data(&connection_id, &database).await {
+        Ok(data) => Ok(data),
         Err(e) => Err(fail(&e)),
     }
 }

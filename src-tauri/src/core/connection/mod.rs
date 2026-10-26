@@ -1,5 +1,6 @@
 pub mod dialect;
 pub mod driver;
+pub mod er_diagram;
 pub mod executor;
 pub mod explain;
 pub mod export;
@@ -15,4 +16,5 @@ pub mod validation;
 
 pub use manager::ConnectionManager;
 pub use types::*;
-pub use explain::{ExplainNode, ExplainPlan};
+pub use explain::ExplainPlan;
+pub use er_diagram::ErDiagramData;

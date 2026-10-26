@@ -9,6 +9,7 @@
       @open-new-query-tab="openNewQueryTab"
       @open-new-console-tab="openNewConsoleTab"
       @open-schema-diff="handleOpenSchemaDiff"
+      @open-er-diagram="handleOpenErDiagram"
       @open-monitor="handleOpenMonitor"
       @open-license="licenseStore.openDialog()"
     />
@@ -432,6 +433,15 @@ function handleOpenSchemaDiff() {
   if (licenseStore.requirePro('schema-diff', t('license.feature.schema-diff'))) {
     showSchemaDiff.value = true
   }
+}
+
+function handleOpenErDiagram() {
+  if (!licenseStore.requirePro('er-diagram', t('license.feature.er-diagram'))) return
+  if (!selectedDatabase.value) {
+    showError(t('erDiagram.needsDatabase'))
+    return
+  }
+  mainContentRef.value?.openErDiagramTab(selectedDatabase.value)
 }
 
 function handleOpenMonitor() {

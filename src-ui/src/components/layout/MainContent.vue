@@ -61,6 +61,22 @@
               <X :size="12" />
             </span>
           </div>
+
+          <!-- ER 图 Tabs -->
+          <div
+            v-for="tab in erTabs"
+            :key="tab.id"
+            class="tab-item"
+            :class="{ active: activeTab?.id === tab.id }"
+            @click="switchTab(tab.id)"
+            @mousedown.middle="closeTab(tab.id)"
+          >
+            <Network :size="14" />
+            <span class="tab-title">{{ t('erDiagram.title') }} · {{ tab.database.split('.').pop() }}</span>
+            <span class="tab-close" :title="t('common.close')" @click.stop="closeTab(tab.id)">
+              <X :size="12" />
+            </span>
+          </div>
         </div>
 
         <!-- 内容区域 -->
@@ -105,6 +121,11 @@
             <Console :tabId="activeTab.id" />
           </div>
 
+          <!-- ER 图视图 -->
+          <div v-else-if="activeTab?.type === 'er'" class="er-view">
+            <ErDiagram :database="(activeTab as ErTab).database.split('.').pop() || ''" />
+          </div>
+
           <!-- 空状态 -->
           <div v-else-if="activeTab?.type !== 'table'" class="empty-view">
             <h2>{{ t('layout.welcomeTitle') }}</h2>
@@ -126,10 +147,11 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick, watch, onMounted } from 'vue'
-import { Database, Table2, FileCode, X, Terminal } from 'lucide-vue-next'
+import { Database, Table2, FileCode, X, Terminal, Network } from 'lucide-vue-next'
 import DataTable from '@/components/DataTable.vue'
 import SqlEditor from '@/components/SqlEditor.vue'
 import Console from '@/components/Console.vue'
+import ErDiagram from '@/components/ErDiagram.vue'
 import { useDataBrowserStore } from '@/stores/dataBrowser'
 import { useEditorTabsStore } from '@/stores/editorTabs'
 import { t } from '@/i18n'
@@ -162,7 +184,13 @@ interface ConsoleTab {
   title: string
 }
 
-type Tab = ObjectsTab | TableTab | SqlTab | ConsoleTab
+interface ErTab {
+  id: string
+  type: 'er'
+  database: string
+}
+
+type Tab = ObjectsTab | TableTab | SqlTab | ConsoleTab | ErTab
 
 interface Props {
   width: number
@@ -203,6 +231,10 @@ const sqlTabs = computed(() => {
 
 const consoleTabs = computed(() => {
   return tabs.value.filter(t => t.type === 'console') as ConsoleTab[]
+})
+
+const erTabs = computed(() => {
+  return tabs.value.filter(t => t.type === 'er') as ErTab[]
 })
 
 // 当前数据库的表列表
@@ -335,6 +367,29 @@ function newConsole() {
   activeTabId.value = tabId
 }
 
+// 打开 ER 图 tab（用当前选中的数据库）
+function openErDiagramTab(database: string) {
+  if (!database) {
+    // 优先用 props.selectedDatabase（已连接但未从 header 传入 database 参数的兜底）
+    const fallback = props.selectedDatabase
+    if (fallback) database = fallback
+  }
+  if (!database) {
+     
+    alert(t('erDiagram.needsDatabase'))
+    return
+  }
+  const tabId = `er-${database}`
+  const existingTab = tabs.value.find(t => t.id === tabId)
+  if (existingTab) {
+    activeTabId.value = tabId
+    return
+  }
+  const newTab: ErTab = { id: tabId, type: 'er', database }
+  tabs.value.push(newTab)
+  activeTabId.value = tabId
+}
+
 // 启动时从 localStorage 恢复上次未关闭的 SQL tab（P0-3 草稿自动保存）
 function restoreDrafts() {
   if (!props.currentConnection) return
@@ -431,6 +486,7 @@ defineExpose({
   openTable,
   newSqlQuery,
   newConsole,
+  openErDiagramTab,
   closeTab,
   closeDatabaseTabs,
   closeConnectionTabs,
