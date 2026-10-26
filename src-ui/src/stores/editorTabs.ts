@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 
 export interface EditorTabState {
   sql: string
@@ -7,16 +7,30 @@ export interface EditorTabState {
   lastExecutedAt?: number
 }
 
+const DRAFTS_KEY = 'auroradb.editor.drafts'
+const DRAFTS_VERSION = 1
+const MAX_DRAFTS = 30
+const DEBOUNCE_MS = 2000
+
+interface DraftPayload {
+  version: number
+  tabs: Record<string, EditorTabState>
+  restoredAt: number
+}
+
 /**
- * SQL 编辑器 tab 内容存储
+ * SQL 编辑器 tab 内容存储 + 草稿持久化
  *
  * MainContent.vue 负责 tab 元数据（id、title、激活态），本 store 负责内容：
  * SQL 文本、是否有未保存修改、上次执行时间。按 tabId 作 key。
  *
- * 这样拆分是为了后续草稿恢复（P0-3）可以独立持久化内容而不影响 UI 结构。
+ * 变更会以 2 秒 debounce 写入 localStorage（草稿自动保存）；启动时调用
+ * restore() 可恢复上次关闭时仍存在的 tab 内容，MainContent.vue 据此重建
+ * tab 栏。
  */
 export const useEditorTabsStore = defineStore('editorTabs', () => {
   const tabs = ref<Record<string, EditorTabState>>({})
+  let saveTimer: ReturnType<typeof setTimeout> | null = null
 
   function ensure(tabId: string) {
     if (!tabs.value[tabId]) {
@@ -60,6 +74,64 @@ export const useEditorTabsStore = defineStore('editorTabs', () => {
     return Object.values(tabs.value).filter(t => t.dirty).length
   }
 
+  /** 所有有内容的 tabId，按最后活动时间倒序 */
+  function restoredTabIds(): string[] {
+    return Object.entries(tabs.value)
+      .filter(([, v]) => v.sql.trim().length > 0)
+      .sort((a, b) => (b[1].lastExecutedAt ?? 0) - (a[1].lastExecutedAt ?? 0))
+      .map(([id]) => id)
+  }
+
+  /** 立即持久化，debounce 到期会自动调 */
+  function saveNow() {
+    try {
+      const payload: DraftPayload = {
+        version: DRAFTS_VERSION,
+        tabs: tabs.value,
+        restoredAt: Date.now(),
+      }
+      localStorage.setItem(DRAFTS_KEY, JSON.stringify(payload))
+    } catch {
+      // localStorage 可能在某些系统/沙箱中被禁用，静默降级
+    }
+  }
+
+  /** 启动时恢复上次的所有草稿 */
+  function restore() {
+    try {
+      const raw = localStorage.getItem(DRAFTS_KEY)
+      if (!raw) return
+      const payload = JSON.parse(raw) as DraftPayload
+      if (payload.version !== DRAFTS_VERSION) return
+      const valid: Record<string, EditorTabState> = {}
+      let count = 0
+      for (const [id, state] of Object.entries(payload.tabs)) {
+        if (!state || typeof state.sql !== 'string' || !state.sql.trim()) continue
+        if (count >= MAX_DRAFTS) break
+        valid[id] = { sql: state.sql, dirty: false, lastExecutedAt: state.lastExecutedAt }
+        count++
+      }
+      tabs.value = valid
+    } catch {
+      // 损坏则丢弃
+    }
+  }
+
+  /** 关闭应用前清掉 localStorage（仅在用户显式关闭主窗口时调） */
+  function clearDrafts() {
+    try { localStorage.removeItem(DRAFTS_KEY) } catch { /* noop */ }
+  }
+
+  // ====== 自动持久化 ======
+  watch(
+    tabs,
+    () => {
+      if (saveTimer) clearTimeout(saveTimer)
+      saveTimer = setTimeout(saveNow, DEBOUNCE_MS)
+    },
+    { deep: true }
+  )
+
   return {
     tabs,
     ensure,
@@ -69,6 +141,10 @@ export const useEditorTabsStore = defineStore('editorTabs', () => {
     markExecuted,
     remove,
     reset,
+    restore,
+    saveNow,
+    clearDrafts,
+    restoredTabIds,
     dirtyCount: computed(dirtyCount),
   }
 })

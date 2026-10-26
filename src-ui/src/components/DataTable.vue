@@ -285,6 +285,11 @@
     <!-- 右键菜单 -->
     <div v-if="contextMenu.show" class="context-menu" :style="contextMenu.style">
       <div class="menu-item" @click="copyCell">{{ t('common.copy') }}</div>
+      <div class="menu-item" @click="copyRow">{{ t('common.copyRow') }}</div>
+      <div class="menu-item" @click="copyColumn">{{ t('common.copyColumn') }}</div>
+      <div class="menu-item" @click="copyHeaderRow">{{ t('common.copyHeaderRow') }}</div>
+      <div class="menu-item" @click="copyAllRows">{{ t('common.copyAllRows') }}</div>
+      <div class="menu-divider"></div>
       <div class="menu-item" @click="pasteCell">{{ t('dataTable.paste') }}</div>
       <div class="menu-divider"></div>
       <div class="menu-item" @click="setNull">{{ t('dataTable.setNull') }}</div>
@@ -1487,6 +1492,51 @@ function hideContextMenu() {
 function copyCell() {
   const value = contextMenu.value.cellValue
   navigator.clipboard.writeText(value === null ? 'NULL' : String(value))
+  hideContextMenu()
+  showToast(t('dataTable.copiedToClipboard'))
+}
+
+function copyRow() {
+  const { rowIndex } = contextMenu.value
+  const row = currentTableData.value?.rows[rowIndex]
+  const columns = currentTableData.value?.columns
+  if (!row || !columns) return
+  const tsv = row.map((cell: unknown) => cell === null ? 'NULL' : String(cell).replace(/\t|\n/g, ' ')).join('\t')
+  navigator.clipboard.writeText(tsv)
+  hideContextMenu()
+  showToast(t('dataTable.copiedToClipboard'))
+}
+
+function copyColumn() {
+  const { colIndex } = contextMenu.value
+  const rows = currentTableData.value?.rows
+  if (!rows) return
+  const values = rows.map((row: unknown[]) => {
+    const cell = row[colIndex]
+    return cell === null ? 'NULL' : String(cell)
+  })
+  navigator.clipboard.writeText(values.join('\n'))
+  hideContextMenu()
+  showToast(t('dataTable.copiedToClipboard'))
+}
+
+function copyHeaderRow() {
+  const columns = currentTableData.value?.columns
+  if (!columns) return
+  navigator.clipboard.writeText(columns.map(c => c.name).join('\t'))
+  hideContextMenu()
+  showToast(t('dataTable.copiedToClipboard'))
+}
+
+function copyAllRows() {
+  const rows = currentTableData.value?.rows
+  const columns = currentTableData.value?.columns
+  if (!rows || !columns) return
+  const lines = [columns.map(c => c.name).join('\t')]
+  for (const row of rows) {
+    lines.push(row.map((cell: unknown) => cell === null ? 'NULL' : String(cell).replace(/\t|\n/g, ' ')).join('\t'))
+  }
+  navigator.clipboard.writeText(lines.join('\n'))
   hideContextMenu()
   showToast(t('dataTable.copiedToClipboard'))
 }

@@ -125,7 +125,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick } from 'vue'
+import { ref, computed, nextTick, watch, onMounted } from 'vue'
 import { Database, Table2, FileCode, X, Terminal } from 'lucide-vue-next'
 import DataTable from '@/components/DataTable.vue'
 import SqlEditor from '@/components/SqlEditor.vue'
@@ -334,6 +334,45 @@ function newConsole() {
   tabs.value.push(newTab)
   activeTabId.value = tabId
 }
+
+// 启动时从 localStorage 恢复上次未关闭的 SQL tab（P0-3 草稿自动保存）
+function restoreDrafts() {
+  if (!props.currentConnection) return
+  editorTabs.restore()
+  const savedIds = editorTabs.restoredTabIds()
+  if (savedIds.length === 0) return
+
+  // 避免重复恢复：tab 已存在就跳过
+  const existingIds = new Set(tabs.value.map(t => t.id))
+  let activated = false
+  for (const id of savedIds) {
+    if (existingIds.has(id)) continue
+    const newTab: SqlTab = { id, type: 'sql', title: 'Query' }
+    tabs.value.push(newTab)
+    if (!activated) {
+      activeTabId.value = id
+      activated = true
+    }
+  }
+}
+
+// 仅在连接刚建立时恢复一次（反复切换连接不会重复恢复，草稿是跨连接的）
+let draftsRestored = false
+watch(
+  () => props.currentConnection,
+  (conn) => {
+    if (conn && !draftsRestored) {
+      draftsRestored = true
+      restoreDrafts()
+    }
+  }
+)
+onMounted(() => {
+  if (props.currentConnection && !draftsRestored) {
+    draftsRestored = true
+    restoreDrafts()
+  }
+})
 
 // 关闭指定数据库下的所有表Tab
 function closeDatabaseTabs(connectionId: string, database: string) {
