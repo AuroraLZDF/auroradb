@@ -20,6 +20,9 @@
             <Save :size="14" />
             {{ t('common.save') }}
           </button>
+          <button @click="autoFitAllColumns" :disabled="loading || !currentTableData" :title="t('dataTable.autoFitAll')">
+            <AlignHorizontalDistributeCenter :size="14" />
+          </button>
           <span class="toolbar-divider"></span>
           <!-- 事务控制按钮 -->
           <button
@@ -71,13 +74,19 @@
       <table>
         <thead>
           <tr>
-            <th class="row-number-header"></th>
+            <th class="row-number-header frozen-row-number" style="left: 0"></th>
             <th
               v-for="(col, index) in currentTableData.columns"
               :key="col.name"
-              :style="{ width: columnWidths[index] + 'px' }"
+              :class="[
+                { sorted: sortColumn === col.name },
+                isColumnFrozen(index) ? 'frozen-col' : ''
+              ]"
+              :style="{
+                width: columnWidths[index] + 'px',
+                ...(isColumnFrozen(index) ? { left: getFrozenLeftOffset(index) + 'px' } : {})
+              }"
               @click="sort(col.name)"
-              :class="{ sorted: sortColumn === col.name }"
             >
               <div class="th-content">
                 <span class="col-name" :title="col.name">{{ col.name }}</span>
@@ -93,6 +102,7 @@
               <div
                 class="resize-handle"
                 @mousedown.stop="startResize($event, index)"
+                @dblclick.stop="autoFitColumn(index)"
               ></div>
             </th>
           </tr>
@@ -119,18 +129,24 @@
             :class="{ selected: isRowSelected(rowIndex), 'new-row': isNewRow(rowIndex) }"
             @click="selectRow(rowIndex, $event)"
           >
-            <td class="row-number">
+            <td class="row-number frozen-row-number" style="left: 0">
               <span class="row-num">{{ (page - 1) * pageSize + rowIndex + 1 }}</span>
             </td>
             <td
               v-for="(cell, cellIndex) in row"
               :key="cellIndex"
-              :class="{
-                editing: isEditing(rowIndex, cellIndex),
-                modified: isModified(rowIndex, cellIndex),
-                'is-null': cell === null || cell === undefined
+              :class="[
+                {
+                  editing: isEditing(rowIndex, cellIndex),
+                  modified: isModified(rowIndex, cellIndex),
+                  'is-null': cell === null || cell === undefined
+                },
+                isColumnFrozen(cellIndex) ? 'frozen-col' : ''
+              ]"
+              :style="{
+                width: columnWidths[cellIndex] + 'px',
+                ...(isColumnFrozen(cellIndex) ? { left: getFrozenLeftOffset(cellIndex) + 'px' } : {})
               }"
-              :style="{ width: columnWidths[cellIndex] + 'px' }"
               @click="startEdit(rowIndex, cellIndex, cell)"
               @contextmenu.prevent="showContextMenu($event, rowIndex, cellIndex, cell)"
               :title="getCellTitle(cell)"
@@ -286,9 +302,15 @@
     <div v-if="contextMenu.show" class="context-menu" :style="contextMenu.style">
       <div class="menu-item" @click="copyCell">{{ t('common.copy') }}</div>
       <div class="menu-item" @click="copyRow">{{ t('common.copyRow') }}</div>
+      <div v-if="hasSelection" class="menu-item" @click="copySelectedRows">{{ t('dataTable.copySelectedRows') }}</div>
       <div class="menu-item" @click="copyColumn">{{ t('common.copyColumn') }}</div>
       <div class="menu-item" @click="copyHeaderRow">{{ t('common.copyHeaderRow') }}</div>
       <div class="menu-item" @click="copyAllRows">{{ t('common.copyAllRows') }}</div>
+      <div class="menu-divider"></div>
+      <div class="menu-item" @click="autoFitColumnFromMenu">{{ t('dataTable.autoFitColumn') }}</div>
+      <div class="menu-item" @click="freezeColumnFromMenu">
+        {{ frozenCount > 0 && contextMenu.colIndex < frozenCount ? t('dataTable.unfreezeAll') : t('dataTable.freezeColumn') }}
+      </div>
       <div class="menu-divider"></div>
       <div class="menu-item" @click="pasteCell">{{ t('dataTable.paste') }}</div>
       <div class="menu-divider"></div>
@@ -451,7 +473,8 @@ import {
   ChevronUp,
   ChevronDown,
   Circle,
-  Folder
+  Folder,
+  AlignHorizontalDistributeCenter
 } from '@/components/icons'
 import { Calendar } from 'lucide-vue-next'
 
@@ -1541,6 +1564,21 @@ function copyAllRows() {
   showToast(t('dataTable.copiedToClipboard'))
 }
 
+/** 复制所有选中行（TSV），按选中顺序排序 */
+function copySelectedRows() {
+  const selectedIndices = Array.from(selectedRows.value).sort((a, b) => a - b)
+  const rows = filteredRows.value
+  if (!rows || selectedIndices.length === 0) return
+  const lines = selectedIndices.map(idx => {
+    const row = rows[idx]
+    if (!row) return ''
+    return row.map((cell: unknown) => cell === null ? 'NULL' : String(cell).replace(/\t|\n/g, ' ')).join('\t')
+  })
+  navigator.clipboard.writeText(lines.join('\n'))
+  hideContextMenu()
+  showToast(t('dataTable.copiedToClipboard'))
+}
+
 async function pasteCell() {
   if (!canEdit.value) {
     hideContextMenu()
@@ -1751,6 +1789,124 @@ function stopResize() {
   resizingCol = -1
   document.removeEventListener('mousemove', handleResize)
   document.removeEventListener('mouseup', stopResize)
+}
+
+// ========== 列宽自动适应 ==========
+/** 测量字符串像素宽度，使用共享的隐藏 canvas context */
+let measureCanvas: CanvasRenderingContext2D | null = null
+function getMeasureContext(): CanvasRenderingContext2D | null {
+  if (measureCanvas) return measureCanvas
+  try {
+    const canvas = document.createElement('canvas')
+    measureCanvas = canvas.getContext('2d')
+    return measureCanvas
+  } catch {
+    return null
+  }
+}
+
+function measureTextWidth(text: string): number {
+  const ctx = getMeasureContext()
+  if (!ctx) return text.length * 7 // 兜底：每字符 ~7px
+
+  // 尝试从现有单元格或表头取字体样式
+  const tableEl = tableContainer.value
+  let fontFamily = 'system-ui, sans-serif'
+  let fontSize = 12
+  if (tableEl) {
+    const firstCell = tableEl.querySelector('td, th') as HTMLElement | null
+    if (firstCell) {
+      const cs = getComputedStyle(firstCell)
+      fontFamily = cs.fontFamily || fontFamily
+      fontSize = parseFloat(cs.fontSize) || fontSize
+    }
+  }
+  ctx.font = `${fontSize}px ${fontFamily}`
+  // 加 2px 字符间距补偿，避免 "刚好装不下"
+  return ctx.measureText(text).width + 2
+}
+
+/** 自动适应单列：测量表头 + 当前页面所有可见数据行的最宽内容 */
+function autoFitColumn(colIndex: number) {
+  const columns = currentTableData.value?.columns
+  const rows = filteredRows.value
+  if (!columns) return
+  const col = columns[colIndex]
+  if (!col) return
+
+  const padding = 24 // 左右 padding 合计
+  const maxWidth = 500
+  const minWidth = 60
+
+  // 表头宽度（列名 + 数据类型）
+  const headerText = `${col.name}  ${col.data_type}`
+  let maxPx = measureTextWidth(headerText)
+
+  // 数据行：测所有 visibleRows（虚拟滚动可见行 + 抽样）
+  const rowLimit = Math.min(rows.length, visibleRows.value.length + 50) // 虚拟可见 + 抽样 50 行
+  for (let i = 0; i < rowLimit; i++) {
+    const cell = rows[i]?.[colIndex]
+    const text = cell === null || cell === undefined ? 'NULL' : String(cell)
+    maxPx = Math.max(maxPx, measureTextWidth(text))
+  }
+
+  const newWidth = Math.max(minWidth, Math.min(maxWidth, Math.ceil(maxPx + padding)))
+  columnWidths.value[colIndex] = newWidth
+}
+
+/** 对所有列执行 auto-fit */
+function autoFitAllColumns() {
+  const columns = currentTableData.value?.columns
+  if (!columns) return
+  columns.forEach((_, idx) => autoFitColumn(idx))
+}
+
+/** 右键菜单里的自动适应（使用右键点击的那列） */
+function autoFitColumnFromMenu() {
+  const { colIndex } = contextMenu.value
+  if (colIndex >= 0) autoFitColumn(colIndex)
+  hideContextMenu()
+}
+
+// ========== 冻结列 ==========
+const ROW_NUMBER_WIDTH = 40
+/** 冻结数据列数（不包含行号列） */
+const frozenCount = ref(0)
+
+/** 每个冻结数据列的 left offset（累加前面所有列宽 + 行号列） */
+const frozenLeftOffsets = computed<number[]>(() => {
+  const cols = currentTableData.value?.columns ?? []
+  const offsets: number[] = []
+  let acc = ROW_NUMBER_WIDTH
+  for (let i = 0; i < frozenCount.value && i < cols.length; i++) {
+    offsets.push(acc)
+    acc += columnWidths.value[i] ?? defaultColumnWidth
+  }
+  return offsets
+})
+
+function isColumnFrozen(colIndex: number): boolean {
+  return colIndex < frozenCount.value
+}
+
+function getFrozenLeftOffset(colIndex: number): number {
+  return frozenLeftOffsets.value[colIndex] ?? 0
+}
+
+function toggleFreezeBeforeCol(colIndex: number) {
+  // 如果这列已冻结（是当前最后一列），取消；否则冻结到这列
+  if (frozenCount.value === colIndex + 1) {
+    frozenCount.value = 0
+  } else {
+    frozenCount.value = colIndex + 1
+  }
+}
+
+/** 右键菜单里的冻结/取消冻结 */
+function freezeColumnFromMenu() {
+  const { colIndex } = contextMenu.value
+  if (colIndex >= 0) toggleFreezeBeforeCol(colIndex)
+  hideContextMenu()
 }
 
 function handleScroll() {
@@ -2089,7 +2245,8 @@ defineExpose({
 }
 
 table {
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: var(--text-sm);
   table-layout: fixed;
   width: auto;
@@ -2137,6 +2294,38 @@ th {
   position: sticky;
   top: 0;
   z-index: 1;
+}
+
+/* ========== 冻结列样式 ========== */
+.frozen-row-number,
+.frozen-col {
+  position: sticky !important;
+  /* 不透明背景：水平滚动时阻止下面单元格穿透 */
+  background: inherit;
+}
+
+/* thead 里的冻结列：同时 top + left 双向 sticky，层级要盖过普通表头(z-index:1)和普通冻结 td(z-index:2) */
+thead .frozen-row-number,
+thead .frozen-col {
+  z-index: 3;
+}
+
+/* 普通冻结单元格：高于默认 td、低于表头冻结 */
+.frozen-row-number,
+tbody .frozen-col {
+  z-index: 2;
+}
+
+/* 冻结列右边缘阴影，水平滚动时视觉分隔更清晰 */
+.frozen-row-number,
+.frozen-col {
+  box-shadow: 2px 0 4px -2px rgba(0, 0, 0, 0.18);
+}
+
+/* 选中行里的冻结单元格保持选中背景（tr.selected 里的 td 背景色） */
+tr.selected .frozen-row-number,
+tr.selected .frozen-col {
+  /* 背景色会由 tr.selected 里的 td 规则设定，z-index 仍保持 2 */
 }
 
 .th-content {

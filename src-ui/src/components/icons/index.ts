@@ -23,4 +23,5 @@ export {
   AlertTriangle,
   Info,
   Folder,
+  AlignHorizontalDistributeCenter,
 } from 'lucide-vue-next'

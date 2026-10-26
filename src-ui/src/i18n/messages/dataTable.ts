@@ -92,6 +92,11 @@ export default {
     'dataTable.importDataRequired': '请输入要导入的数据',
     'dataTable.importSuccess': '成功导入 {count} 条数据',
     'dataTable.importFailed': '导入失败: {error}',
+    'dataTable.copySelectedRows': '复制选中行',
+    'dataTable.autoFitAll': '自动适应所有列宽',
+    'dataTable.autoFitColumn': '自动适应此列宽',
+    'dataTable.freezeColumn': '冻结到此列',
+    'dataTable.unfreezeAll': '取消所有冻结',
   },
   'en-US': {
     'dataTable.refreshHint': 'Refresh (F5)',
@@ -186,5 +191,10 @@ export default {
     'dataTable.importDataRequired': 'Enter the data to import',
     'dataTable.importSuccess': 'Imported {count} rows successfully',
     'dataTable.importFailed': 'Import failed: {error}',
+    'dataTable.copySelectedRows': 'Copy selected rows',
+    'dataTable.autoFitAll': 'Auto-fit all columns',
+    'dataTable.autoFitColumn': 'Auto-fit this column',
+    'dataTable.freezeColumn': 'Freeze up to this column',
+    'dataTable.unfreezeAll': 'Unfreeze all',
   },
 }
