@@ -58,12 +58,18 @@
         </div>
       </div>
     </div>
+
+    <!-- 新建数据库入口 -->
+    <div class="database-item new-database" @click="emit('newDatabase')">
+      <Plus class="database-icon" :size="14" />
+      <span class="database-name">{{ t('app.newDatabase') }}</span>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Table2, Database, LayoutGrid, Wrench, Cog, ChevronDown, ChevronRight } from 'lucide-vue-next'
+import { Table2, Database, LayoutGrid, Wrench, Cog, ChevronDown, ChevronRight, Plus } from 'lucide-vue-next'
 import type { DatabaseObject } from '@/stores/dataBrowser'
 import { t } from '@/i18n'
 
@@ -96,6 +102,7 @@ const emit = defineEmits<{
   selectTable: [dbName: string, tableName: string]
   dblclickTable: [dbName: string, tableName: string]
   showTableMenu: [event: MouseEvent, dbName: string, tableName: string]
+  newDatabase: []
 }>()
 </script>
 
@@ -136,6 +143,24 @@ const emit = defineEmits<{
 
 .database-header:hover {
   background: var(--surface-hover);
+}
+
+/* 新建数据库入口：弱化为次要操作 */
+.new-database {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  color: var(--text-tertiary);
+  transition: var(--transition-colors);
+}
+
+.new-database:hover {
+  background: var(--surface-hover);
+  color: var(--brand-500);
 }
 
 .database-icon {

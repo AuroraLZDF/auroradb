@@ -45,6 +45,7 @@
           @select-table="selectTable"
           @dblclick-table="openTable"
           @show-table-menu="showTableContextMenu"
+          @new-database="handleNewDatabase"
         />
       </div>
 
@@ -201,6 +202,14 @@
       :style="{ top: activeConnectionContextMenu.y + 'px', left: activeConnectionContextMenu.x + 'px' }"
       @click.stop
     >
+      <div
+        v-if="activeConnectionContextMenu.driver !== 'postgres'"
+        class="menu-item"
+        @click="handleActiveConnectionMenu('new-database')"
+      >
+        <Plus class="menu-icon" :size="14" /> {{ t('app.newDatabase') }}
+      </div>
+      <div class="menu-divider"></div>
       <div class="menu-item menu-item-danger" @click="handleActiveConnectionMenu('disconnect')">
         <X class="menu-icon" :size="14" /> {{ t('app.disconnect') }}
       </div>
@@ -400,7 +409,8 @@ const activeConnectionContextMenu = ref({
   x: 0,
   y: 0,
   connectionId: '',
-  connectionName: ''
+  connectionName: '',
+  driver: 'mysql'
 })
 
 // 监听点击关闭菜单（排除右键菜单自身）
@@ -474,6 +484,12 @@ const databaseDesignerData = ref({
   database: '',
   isNewDatabase: false
 })
+
+/** 打开「新建数据库」设计器（侧边栏 + 连接右键菜单共用） */
+function handleNewDatabase(connectionId: string) {
+  databaseDesignerData.value = { connectionId, database: '', isNewDatabase: true }
+  showDatabaseDesigner.value = true
+}
 
 // 三栏宽度
 const leftWidth = ref(280)
@@ -1017,7 +1033,8 @@ function showActiveConnectionContextMenu(event: MouseEvent, conn: ConnectionStat
     x: event.clientX,
     y: event.clientY,
     connectionId: conn.id,
-    connectionName: conn.name
+    connectionName: conn.name,
+    driver: conn.driver ?? 'mysql'
   }
 }
 
@@ -1030,6 +1047,10 @@ async function handleActiveConnectionMenu(action: string) {
 
   if (action === 'disconnect') {
     await disconnectConnection(connectionId)
+  } else if (action === 'new-database') {
+    // 新建数据库：走数据库设计器（isNewDatabase = true）
+    databaseDesignerData.value = { connectionId, database: '', isNewDatabase: true }
+    showDatabaseDesigner.value = true
   }
 }
 

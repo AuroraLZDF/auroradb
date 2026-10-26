@@ -95,6 +95,7 @@
             @select-table="(db, table) => emit('selectTable', item.active!.id, db, table)"
             @dblclick-table="(db, table) => emit('dblclickTable', item.active!.id, db, table)"
             @show-table-menu="(e, db, table) => emit('showTableMenu', e, item.active!.id, db, table)"
+            @new-database="emit('newDatabase', item.active!.id)"
           />
         </template>
       </div>
@@ -154,6 +155,7 @@ const emit = defineEmits<{
   selectTable: [connectionId: string, dbName: string, tableName: string]
   dblclickTable: [connectionId: string, dbName: string, tableName: string]
   showTableMenu: [event: MouseEvent, connectionId: string, dbName: string, tableName: string]
+  newDatabase: [connectionId: string]
 }>()
 
 /** 驱动信息来自已保存配置或活跃连接状态，旧数据按 mysql 处理 */
