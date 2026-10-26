@@ -131,6 +131,7 @@ import DataTable from '@/components/DataTable.vue'
 import SqlEditor from '@/components/SqlEditor.vue'
 import Console from '@/components/Console.vue'
 import { useDataBrowserStore } from '@/stores/dataBrowser'
+import { useEditorTabsStore } from '@/stores/editorTabs'
 import { t } from '@/i18n'
 import type { ConnectionStatus } from '@/stores/connection'
 import type { DatabaseObject } from '@/stores/dataBrowser'
@@ -236,6 +237,7 @@ function switchTab(tabId: string) {
 }
 
 const browserStore = useDataBrowserStore()
+const editorTabs = useEditorTabsStore()
 
 function closeTab(tabId: string) {
   const tab = tabs.value.find(t => t.id === tabId)
@@ -263,6 +265,7 @@ function removeTab(tabId: string) {
   // 如果是 SQL Tab，清除缓存
   if (tab?.type === 'sql') {
     browserStore.clearQueryResult(tabId)
+    editorTabs.remove(tabId)
   }
 
   tabs.value.splice(index, 1)

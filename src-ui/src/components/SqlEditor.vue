@@ -312,6 +312,7 @@
 import { ref, computed, onMounted, nextTick, reactive, watch } from 'vue'
 import { useConnectionStore } from '@/stores/connection'
 import { useDataBrowserStore } from '@/stores/dataBrowser'
+import { useEditorTabsStore } from '@/stores/editorTabs'
 import { useQueryLibraryStore, type QueryHistoryEntry, type SavedQuery } from '@/stores/queryLibrary'
 import { Play, FileText, Trash2, Download, XCircle, CheckCircle, Loader2, Square, History, Bookmark, Save, X } from 'lucide-vue-next'
 import { t } from '@/i18n'
@@ -327,6 +328,7 @@ import {
 
 const connStore = useConnectionStore()
 const browserStore = useDataBrowserStore()
+const editorTabs = useEditorTabsStore()
 const queryLibrary = useQueryLibraryStore()
 const completionEngine = useSqlCompletion()
 
@@ -335,8 +337,19 @@ const props = defineProps<{
   tabId?: string
 }>()
 
+// 确保 store 中存在这个 tab 的内容记录
+if (props.tabId) editorTabs.ensure(props.tabId)
+
 const editorRef = ref<HTMLTextAreaElement>()
-const sql = ref('')
+
+// SQL 文本走 editorTabs store，组件只做读写代理
+const sql = computed({
+  get: () => props.tabId ? editorTabs.getSql(props.tabId) : '',
+  set: (v: string) => {
+    if (props.tabId) editorTabs.setSql(props.tabId, v)
+  },
+})
+
 const loading = ref(false)
 const error = ref('')
 const cancelled = ref(false)
@@ -554,6 +567,7 @@ async function executeQuery() {
     if (props.tabId && result.value) {
       browserStore.setQueryResult(props.tabId, result.value)
       browserStore.setQueryError(props.tabId, '')
+      editorTabs.markExecuted(props.tabId)
     }
 
     // 添加到历史
@@ -626,6 +640,7 @@ function clearEditor() {
   sql.value = ''
   error.value = ''
   result.value = null
+  if (props.tabId) editorTabs.markClean(props.tabId)
   editorRef.value?.focus()
 }
 
@@ -666,6 +681,13 @@ function handleKeydown(e: KeyboardEvent) {
   if (e.key === 'F5') {
     e.preventDefault()
     executeQuery()
+    return
+  }
+
+  // Shift+Alt+F 格式化
+  if (e.shiftKey && e.altKey && (e.key === 'f' || e.key === 'F')) {
+    e.preventDefault()
+    formatSql()
     return
   }
 
