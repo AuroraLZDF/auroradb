@@ -5,7 +5,7 @@ import { globalToast } from '@/composables/useToast'
 import { t } from '@/i18n'
 
 /** 专业版能力键，与后端 `core/license.rs` 中的常量保持一致 */
-export type ProFeature = 'schema-diff' | 'monitor' | 'audit' | 'import-export' | 'ssh-tunnel'
+export type ProFeature = 'schema-diff' | 'monitor' | 'audit' | 'import-export' | 'ssh-tunnel' | 'query-plan'
 
 interface LicenseStatus {
   activated: boolean

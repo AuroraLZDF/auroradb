@@ -34,6 +34,7 @@ pub const FEATURE_MONITOR: &str = "monitor";
 pub const FEATURE_AUDIT: &str = "audit";
 pub const FEATURE_IMPORT_EXPORT: &str = "import-export";
 pub const FEATURE_SSH_TUNNEL: &str = "ssh-tunnel";
+pub const FEATURE_QUERY_PLAN: &str = "query-plan";
 
 /// 命令层错误前缀：前端据此识别「需要激活」并弹出激活窗口
 pub const LICENSE_REQUIRED_PREFIX: &str = "LICENSE_REQUIRED:";

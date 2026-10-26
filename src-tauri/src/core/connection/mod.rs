@@ -1,6 +1,7 @@
 pub mod dialect;
 pub mod driver;
 pub mod executor;
+pub mod explain;
 pub mod export;
 pub mod manager;
 pub mod metadata;
@@ -14,3 +15,4 @@ pub mod validation;
 
 pub use manager::ConnectionManager;
 pub use types::*;
+pub use explain::{ExplainNode, ExplainPlan};

@@ -110,6 +110,7 @@ fn main() {
             commands::connection::get_process_list,
             commands::connection::kill_process,
             commands::connection::get_server_metrics,
+            commands::connection::explain_sql,
             commands::audit::list_audit_entries,
             commands::audit::clear_audit_logs,
             password_store::save_connection_password,

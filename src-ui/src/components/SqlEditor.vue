@@ -7,6 +7,10 @@
           <Play :size="14" />
           {{ t('sqlEditor.execute') }}
         </button>
+        <button @click="explainSql" :disabled="explaining || !sql.trim() || !licenseStore.allows('query-plan')" class="btn-explain">
+          <Cpu :size="14" />
+          {{ t('sqlEditor.explain') }}
+        </button>
         <button v-if="loading" @click="cancelQuery" class="btn-cancel">
           <Square :size="14" />
           {{ t('common.cancel') }}
@@ -114,6 +118,18 @@
         <span>{{ t('sqlEditor.executing') }}</span>
       </div>
       <div class="no-results">{{ t('sqlEditor.executingDetail') }}</div>
+    </div>
+
+    <div v-else-if="explaining" class="result-panel loading">
+      <div class="result-header">
+        <Loader2 class="loading-icon" :size="16" />
+        <span>{{ t('sqlEditor.explaining') }}</span>
+      </div>
+      <div class="no-results">{{ t('sqlEditor.explainingDetail') }}</div>
+    </div>
+
+    <div v-else-if="resultView === 'explain'" class="result-panel">
+      <ExplainTree :plan="explainResult" />
     </div>
 
     <div v-else-if="result" class="result-panel">
@@ -313,8 +329,9 @@ import { ref, computed, onMounted, nextTick, reactive, watch } from 'vue'
 import { useConnectionStore } from '@/stores/connection'
 import { useDataBrowserStore } from '@/stores/dataBrowser'
 import { useEditorTabsStore } from '@/stores/editorTabs'
+import { useLicenseStore } from '@/stores/license'
 import { useQueryLibraryStore, type QueryHistoryEntry, type SavedQuery } from '@/stores/queryLibrary'
-import { Play, FileText, Trash2, Download, XCircle, CheckCircle, Loader2, Square, History, Bookmark, Save, X } from 'lucide-vue-next'
+import { Play, FileText, Trash2, Download, XCircle, CheckCircle, Loader2, Square, History, Bookmark, Save, X, Cpu } from 'lucide-vue-next'
 import { t } from '@/i18n'
 import { findDangerousStatements, quoteIdentifier } from '@/utils/sql'
 import { invoke } from '@tauri-apps/api/core'
@@ -325,11 +342,14 @@ import {
   type CompletionItem,
   type CompletionKind,
 } from '@/composables/useSqlCompletion'
+import ExplainTree from './ExplainTree.vue'
+import type { ExplainPlan } from './ExplainTree.vue'
 
 const connStore = useConnectionStore()
 const browserStore = useDataBrowserStore()
 const editorTabs = useEditorTabsStore()
 const queryLibrary = useQueryLibraryStore()
+const licenseStore = useLicenseStore()
 const completionEngine = useSqlCompletion()
 
 // Props
@@ -362,6 +382,10 @@ const result = ref<{
   truncated?: boolean
   warning?: string
 } | null>(null)
+const explainResult = ref<ExplainPlan | null>(null)
+const explaining = ref(false)
+// 结果视图切换：'result' | 'explain'，默认跟执行走
+const resultView = ref<'result' | 'explain'>('result')
 // 查询历史 / 已保存查询面板
 const panelOpen = ref(false)
 const panelTab = ref<'history' | 'saved'>('history')
@@ -608,6 +632,39 @@ async function cancelQuery() {
     await connStore.cancelQuery(currentConnectionId.value)
   } catch (e) {
     console.error('取消查询失败:', e)
+  }
+}
+
+// EXPLAIN 执行计划（Pro 功能）
+async function explainSql() {
+  if (!sql.value.trim() || !currentConnectionId.value) return
+  if (!licenseStore.allows('query-plan')) {
+    licenseStore.openDialog()
+    return
+  }
+  explaining.value = true
+  explainResult.value = null
+  resultView.value = 'explain'
+
+  try {
+    const fallbackDb = connStore.currentConnection?.driver === 'postgres' ? '' : 'mysql'
+    const dbName = selectedDatabase.value || browserStore.currentDatabase || fallbackDb
+    const response = await invoke<ExplainPlan>('explain_sql', {
+      connectionId: currentConnectionId.value,
+      database: dbName,
+      sql: sql.value,
+    })
+    explainResult.value = response
+  } catch (e) {
+    const message = String(e)
+    if (message.includes('LICENSE_REQUIRED')) {
+      licenseStore.openDialog()
+    } else {
+      error.value = message
+      resultView.value = 'result'
+    }
+  } finally {
+    explaining.value = false
   }
 }
 

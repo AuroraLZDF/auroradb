@@ -1,7 +1,8 @@
 use crate::core::audit::{AuditEntry, AuditLog};
-use crate::core::connection::{ConnectionConfig, ConnectionManager, ConnectionRequest, ConnectionStatus, DataQueryRequest, SshConfig};
+use crate::core::connection::{ConnectionConfig, ConnectionManager, ConnectionRequest, ConnectionStatus, DataQueryRequest, ExplainPlan, SshConfig};
 use crate::core::license::{
-    LicenseManager, FEATURE_IMPORT_EXPORT, FEATURE_MONITOR, FEATURE_SCHEMA_DIFF, FEATURE_SSH_TUNNEL,
+    LicenseManager, FEATURE_IMPORT_EXPORT, FEATURE_MONITOR, FEATURE_QUERY_PLAN, FEATURE_SCHEMA_DIFF,
+    FEATURE_SSH_TUNNEL,
 };
 use tauri::{command, State};
 use std::sync::Arc;
@@ -533,6 +534,26 @@ pub async fn get_server_metrics(
 
     match manager.get_server_metrics(&connection_id).await {
         Ok(metrics) => Ok(metrics),
+        Err(e) => Err(fail(&e)),
+    }
+}
+
+/// 解释 SQL 执行计划（EXPLAIN FORMAT=JSON / EXPLAIN (FORMAT JSON)）
+///
+/// 前端调用：`invoke('explain_sql', { connectionId, database, sql })`
+#[command]
+pub async fn explain_sql(
+    state: State<'_, ConnectionManagerState>,
+    license: State<'_, LicenseManager>,
+    connection_id: String,
+    database: String,
+    sql: String,
+) -> Result<ExplainPlan, String> {
+    license.ensure(FEATURE_QUERY_PLAN, "执行计划解释").await?;
+    let manager = state.manager.read().await;
+
+    match manager.explain(&connection_id, &database, &sql).await {
+        Ok(plan) => Ok(plan),
         Err(e) => Err(fail(&e)),
     }
 }
