@@ -175,6 +175,24 @@ if [[ ${#FILES[@]} -eq 0 ]]; then
 fi
 
 # 3. 逐个上传，超过 100MB 直接失败（否则 AppImage 会被静默漏发）
+#    同名附件先删除，重复发布时覆盖旧产物而不是报错
+declare -A EXISTING_ATTACH=()
+HTTP_CODE="$(curl -sS -o "$TMP" -w '%{http_code}' \
+    "$API/releases/$RELEASE_ID/attach_files?access_token=$GITEE_TOKEN")"
+if [[ "$HTTP_CODE" == "200" ]]; then
+    while IFS=$'\t' read -r ATTACH_ID ATTACH_NAME; do
+        [[ -n "$ATTACH_ID" ]] && EXISTING_ATTACH["$ATTACH_NAME"]="$ATTACH_ID"
+    done < <(python3 - "$TMP" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding='utf-8') as f:
+    for a in json.load(f) or []:
+        print(f"{a.get('id', '')}\t{a.get('name', '')}")
+PY
+)
+fi
+
 UPLOADED=0
 for f in "${FILES[@]}"; do
     NAME_ONLY="$(basename "$f")"
@@ -183,6 +201,17 @@ for f in "${FILES[@]}"; do
         echo -e "${RED}  ✗ $NAME_ONLY ($((SIZE / 1024 / 1024))MB) 超过 Gitee 单附件上限${NC}"
         echo "  AppImage 需先重打包: ./repack-appimage.sh $f"
         exit 1
+    fi
+
+    if [[ -n "${EXISTING_ATTACH[$NAME_ONLY]:-}" ]]; then
+        HTTP_CODE="$(curl -sS -X DELETE -o "$TMP" -w '%{http_code}' \
+            "$API/releases/$RELEASE_ID/attach_files/${EXISTING_ATTACH[$NAME_ONLY]}?access_token=$GITEE_TOKEN")"
+        if [[ "$HTTP_CODE" != "204" && "$HTTP_CODE" != "200" ]]; then
+            echo -e "${RED}  ✗ 删除同名旧附件 $NAME_ONLY 失败 (HTTP $HTTP_CODE)${NC}"
+            cat "$TMP"
+            exit 1
+        fi
+        echo -e "${YELLOW}  - 已删除同名旧附件 $NAME_ONLY${NC}"
     fi
 
     HTTP_CODE="$(curl -sS -X POST -o "$TMP" -w '%{http_code}' \

@@ -7,8 +7,11 @@
 #
 # 原理:
 #   复用原 AppImage 的 runtime（文件前 OFFSET 字节，OFFSET 由 ELF 节头表末尾算出），
-#   解开 squashfs 后 strip 掉未剥离符号（主要是主程序），再用 xz、1MB 块重新压缩，
-#   拼接回 runtime。内容不变，只有压缩方式与符号表变化。
+#   解开 squashfs 后 strip 掉未剥离符号（主要是主程序），再用 zstd 最高级别、1MB 块
+#   重新压缩，拼接回 runtime。内容不变，只有压缩方式与符号表变化。
+#
+#   注意：必须用 zstd。Tauri 的 AppImage runtime 只支持 zlib/zstd，用 xz 会导致
+#   "Squashfs image uses xz compression, this version supports only zlib, zstd"。
 #
 # 签名:
 #   重打包后原更新签名失效。脚本会用 TAURI_SIGNING_PRIVATE_KEY（内容）或
@@ -81,10 +84,10 @@ while IFS= read -r -d '' f; do
     fi
 done < <(find "$WORKDIR/AppDir/usr/bin" -maxdepth 1 -type f -print0 2>/dev/null)
 
-# 各版本 AppImage runtime 都支持 xz，兼容性优于 zstd
+# runtime 内置的 squashfs reader 只认 zlib/zstd，xz 会导致无法挂载
 echo "  重新压缩 squashfs..."
 mksquashfs "$WORKDIR/AppDir" "$WORKDIR/root.squashfs" \
-    -comp xz -b 1M -noappend -no-progress -all-root >/dev/null
+    -comp zstd -Xcompression-level 22 -b 1M -noappend -no-progress -all-root >/dev/null
 
 head -c "$OFFSET" "$IMG" > "$WORKDIR/new.AppImage"
 cat "$WORKDIR/root.squashfs" >> "$WORKDIR/new.AppImage"
