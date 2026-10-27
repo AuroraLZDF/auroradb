@@ -1,5 +1,5 @@
 <template>
-  <div class="app">
+  <div class="app" :class="{ 'modal-open': hasOpenModal }">
     <HeaderToolbar
       :active-tool="activeTool"
       :info-panel-open="infoPanelOpen"
@@ -63,6 +63,7 @@
         @new-query="openNewQueryTab"
         @select-table="onSelectTableFromObjects"
         @open-table="onOpenTableFromObjects"
+        @show-table-menu="showTableContextMenu"
       />
 
       <!-- 右分隔条 -->
@@ -267,7 +268,7 @@
 
     <!-- 表格设计器弹窗 -->
     <div v-if="showTableDesigner" class="modal-overlay">
-      <div class="modal-content modal-large">
+      <div class="modal-content modal-large modal-designer">
         <TableDesigner
           :connection-id="tableDesignerData.connectionId"
           :database="tableDesignerData.database"
@@ -512,6 +513,18 @@ const databaseDesignerData = ref({
   database: '',
   isNewDatabase: false
 })
+
+// 是否有弹层打开：用于隐藏背景区域的滚动条，避免其残影绘制在遮罩之上
+const hasOpenModal = computed(() =>
+  showConnectionForm.value ||
+  licenseStore.dialogVisible ||
+  showSchemaDiff.value ||
+  showMonitor.value ||
+  showBackup.value ||
+  showGlobalSearch.value ||
+  showTableDesigner.value ||
+  showDatabaseDesigner.value
+)
 
 /** 打开「新建数据库」设计器（侧边栏 + 连接右键菜单共用） */
 function handleNewDatabase(connectionId: string) {
@@ -1273,6 +1286,7 @@ async function handleTableMenu(action: string) {
           connectionDatabaseTables[connectionId] = {}
         }
         connectionDatabaseTables[connectionId][database] = result
+        showToast(t('app.refreshSuccess'))
       } catch (e) {
         console.error('Failed to refresh tables:', e)
       }
@@ -1288,6 +1302,7 @@ async function handleTableMenu(action: string) {
           connectionDatabaseTables[connectionId] = {}
         }
         connectionDatabaseTables[connectionId][database] = result
+        showToast(t('app.copyTableSuccess', { name: newTableName }))
       } catch (e: unknown) {
         alert(t('app.copyTableFailed', { error: String(e) }))
       }
@@ -1338,6 +1353,7 @@ async function handleTableMenu(action: string) {
             connectionDatabaseTables[connectionId] = {}
           }
           connectionDatabaseTables[connectionId][database] = result
+          showToast(t('app.deleteTableSuccess', { name: tableName }))
         } catch (e: unknown) {
           alert(t('app.deleteTableFailed', { error: String(e) }))
         }
@@ -2046,6 +2062,20 @@ body {
   max-width: 1200px;
   width: 95%;
   height: 85vh;
+}
+
+/* 表格设计器：弹层本身不滚动，由内部 .designer-content 单层滚动 */
+.modal-content.modal-designer {
+  overflow: hidden;
+}
+
+/* 弹层打开时隐藏背景布局的滚动条，避免其在遮罩之上留下残影 */
+.app.modal-open .app-body * {
+  scrollbar-width: none;
+}
+
+.app.modal-open .app-body *::-webkit-scrollbar {
+  display: none;
 }
 
 .modal-content.modal-connection {

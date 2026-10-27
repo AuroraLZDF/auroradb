@@ -12,7 +12,10 @@ use crate::core::connection::driver::DriverKind;
 /// 仅 MySQL 做库名前缀重写：PostgreSQL 的 database 与 schema 是两层结构，
 /// 自动补 database 会改变语义，因此只解析取得「可解析」标志，SQL 原样返回。
 pub fn rewrite_table_names(database: &str, sql: &str, driver: DriverKind) -> (String, bool) {
-    use sqlparser::ast::{Ident, ObjectName, ObjectNamePart, VisitMut, VisitorMut};
+    use sqlparser::ast::{
+        CreateTableLikeKind, Ident, ObjectName, ObjectNamePart, ObjectType, Statement, VisitMut,
+        VisitorMut,
+    };
     use sqlparser::dialect::{MySqlDialect, PostgreSqlDialect};
     use sqlparser::parser::Parser;
     use std::ops::ControlFlow;
@@ -20,6 +23,20 @@ pub fn rewrite_table_names(database: &str, sql: &str, driver: DriverKind) -> (St
     if !driver.supports_db_prefix_rewrite() {
         let parsed = Parser::parse_sql(&PostgreSqlDialect {}, sql).is_ok();
         return (sql.to_string(), parsed);
+    }
+
+    /// 仅当表名没有 schema 前缀（如 `db`.`table`）时才添加前缀，保留跨库引用
+    fn prefix_relation(relation: &mut ObjectName, database: &str) {
+        if relation.0.len() == 1 {
+            if let Some(ObjectNamePart::Identifier(ident)) = relation.0.first() {
+                let table = ident.value.clone();
+                // 数据库名和表名都需要用反引号包裹，以支持特殊字符（如连字符）
+                relation.0 = vec![
+                    ObjectNamePart::Identifier(Ident::with_quote('`', database)),
+                    ObjectNamePart::Identifier(Ident::with_quote('`', table)),
+                ];
+            }
+        }
     }
 
     struct TablePrefixer {
@@ -30,17 +47,7 @@ pub fn rewrite_table_names(database: &str, sql: &str, driver: DriverKind) -> (St
         type Break = ();
 
         fn pre_visit_relation(&mut self, relation: &mut ObjectName) -> ControlFlow<Self::Break> {
-            // 仅当表名没有 schema 前缀（如 `db`.`table`）时才添加前缀，保留跨库引用
-            if relation.0.len() == 1 {
-                if let Some(ObjectNamePart::Identifier(ident)) = relation.0.first() {
-                    let table = ident.value.clone();
-                    // 数据库名和表名都需要用反引号包裹，以支持特殊字符（如连字符）
-                    relation.0 = vec![
-                        ObjectNamePart::Identifier(Ident::with_quote('`', self.database.clone())),
-                        ObjectNamePart::Identifier(Ident::with_quote('`', table)),
-                    ];
-                }
-            }
+            prefix_relation(relation, &self.database);
             ControlFlow::Continue(())
         }
     }
@@ -50,6 +57,47 @@ pub fn rewrite_table_names(database: &str, sql: &str, driver: DriverKind) -> (St
             let _ = statements.visit(&mut TablePrefixer {
                 database: database.to_string(),
             });
+            // CREATE TABLE ... LIKE/CLONE 的源表、DROP TABLE/VIEW 的目标表在 AST 中
+            // 不是 relation 位置，visitor 不会访问到，需单独补前缀，
+            // 否则会报 3D000（未选择数据库）
+            for statement in &mut statements {
+                match statement {
+                    Statement::CreateTable(create) => {
+                        if let Some(like) = &mut create.like {
+                            let source = match like {
+                                CreateTableLikeKind::Plain(like)
+                                | CreateTableLikeKind::Parenthesized(like) => &mut like.name,
+                            };
+                            prefix_relation(source, database);
+                        }
+                        if let Some(clone) = &mut create.clone {
+                            prefix_relation(clone, database);
+                        }
+                    }
+                    Statement::Drop {
+                        object_type,
+                        names,
+                        table,
+                        ..
+                    } => {
+                        if matches!(
+                            object_type,
+                            ObjectType::Table | ObjectType::View | ObjectType::MaterializedView
+                        ) {
+                            for name in names.iter_mut() {
+                                prefix_relation(name, database);
+                            }
+                        }
+                        // MySQL 的 DROP INDEX idx ON tbl 语法：tbl 才是表名，索引名不加前缀
+                        if *object_type == ObjectType::Index {
+                            if let Some(table) = table {
+                                prefix_relation(table, database);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
             let rewritten = statements
                 .iter()
                 .map(|s| s.to_string())
@@ -59,6 +107,35 @@ pub fn rewrite_table_names(database: &str, sql: &str, driver: DriverKind) -> (St
         }
         Err(_) => (sql.to_string(), false),
     }
+}
+
+/// 判断 SQL 是否会改变库/表结构（DDL）。
+///
+/// 用于执行成功后失效元数据缓存：对象树与表结构有 30 秒 TTL，
+/// 建表/删表后若不失效，界面刷新会拿到旧快照。
+pub fn is_schema_changing(sql: &str) -> bool {
+    let upper = sql.trim_start().to_uppercase();
+    const PREFIXES: &[&str] = &[
+        "CREATE TABLE",
+        "CREATE TEMPORARY TABLE",
+        "CREATE VIEW",
+        "CREATE OR REPLACE VIEW",
+        "CREATE INDEX",
+        "CREATE UNIQUE INDEX",
+        "CREATE DATABASE",
+        "CREATE SCHEMA",
+        "ALTER TABLE",
+        "ALTER VIEW",
+        "ALTER DATABASE",
+        "ALTER SCHEMA",
+        "DROP TABLE",
+        "DROP VIEW",
+        "DROP INDEX",
+        "DROP DATABASE",
+        "DROP SCHEMA",
+        "RENAME TABLE",
+    ];
+    PREFIXES.iter().any(|prefix| upper.starts_with(prefix))
 }
 
 /// 安全分割 SQL 语句，忽略字符串字面量、反引号标识符和注释中的分号
@@ -169,7 +246,7 @@ pub fn split_sql_statements(sql: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::rewrite_table_names;
+    use super::{is_schema_changing, rewrite_table_names};
     use crate::core::connection::driver::DriverKind;
 
     #[test]
@@ -243,6 +320,77 @@ mod tests {
             rewrite_table_names("mydb", "TRUNCATE TABLE users", DriverKind::MySql);
         assert!(parsed);
         assert!(sql.contains("`mydb`.`users`"), "got: {sql}");
+    }
+
+    #[test]
+    fn test_rewrite_create_table_like() {
+        let (sql, parsed) = rewrite_table_names(
+            "mydb",
+            "CREATE TABLE `t_copy` LIKE `users`",
+            DriverKind::MySql,
+        );
+        assert!(parsed);
+        assert!(sql.contains("`mydb`.`t_copy`"), "got: {sql}");
+        assert!(sql.contains("`mydb`.`users`"), "got: {sql}");
+    }
+
+    #[test]
+    fn test_rewrite_create_table_like_preserves_cross_database() {
+        let (sql, parsed) = rewrite_table_names(
+            "mydb",
+            "CREATE TABLE t_copy LIKE otherdb.users",
+            DriverKind::MySql,
+        );
+        assert!(parsed);
+        assert!(sql.contains("`mydb`.`t_copy`"), "got: {sql}");
+        assert!(sql.contains("otherdb.users"), "got: {sql}");
+    }
+
+    #[test]
+    fn test_rewrite_drop_table() {
+        let (sql, parsed) = rewrite_table_names(
+            "mydb",
+            "DROP TABLE IF EXISTS `users`",
+            DriverKind::MySql,
+        );
+        assert!(parsed);
+        assert!(sql.contains("`mydb`.`users`"), "got: {sql}");
+    }
+
+    #[test]
+    fn test_rewrite_drop_view_preserves_cross_database() {
+        let (sql, parsed) = rewrite_table_names(
+            "mydb",
+            "DROP VIEW IF EXISTS v1, otherdb.v2",
+            DriverKind::MySql,
+        );
+        assert!(parsed);
+        assert!(sql.contains("`mydb`.`v1`"), "got: {sql}");
+        assert!(sql.contains("otherdb.v2"), "got: {sql}");
+    }
+
+    #[test]
+    fn test_rewrite_drop_index_keeps_index_name() {
+        let (sql, parsed) = rewrite_table_names(
+            "mydb",
+            "DROP INDEX `idx_name` ON `users`",
+            DriverKind::MySql,
+        );
+        assert!(parsed);
+        assert!(sql.contains("`mydb`.`users`"), "got: {sql}");
+        assert!(!sql.contains("`mydb`.`idx_name`"), "got: {sql}");
+    }
+
+    #[test]
+    fn test_is_schema_changing() {
+        assert!(is_schema_changing("CREATE TABLE `t` (id INT)"));
+        assert!(is_schema_changing("  drop table `t`"));
+        assert!(is_schema_changing("ALTER TABLE `t` ADD COLUMN c INT"));
+        assert!(is_schema_changing("CREATE OR REPLACE VIEW v AS SELECT 1"));
+        assert!(is_schema_changing("RENAME TABLE a TO b"));
+        assert!(!is_schema_changing("SELECT * FROM t"));
+        assert!(!is_schema_changing("INSERT INTO t VALUES (1)"));
+        assert!(!is_schema_changing("TRUNCATE TABLE t"));
     }
 
     #[test]

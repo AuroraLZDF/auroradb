@@ -1073,7 +1073,8 @@ onMounted(() => {
 
 .designer-content {
   flex: 1;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: 0;
 }
 
@@ -1088,6 +1089,11 @@ onMounted(() => {
   width: 100%;
   border-collapse: collapse;
   font-size: 13px;
+}
+
+/* 固定列宽布局，避免内容撑宽表格产生横向滚动条 */
+.fields-table {
+  table-layout: fixed;
 }
 
 .fields-table th,

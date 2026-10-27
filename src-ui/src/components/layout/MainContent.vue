@@ -98,6 +98,7 @@
                 class="object-item"
                 @click="emit('selectTable', table)"
                 @dblclick="emit('openTable', table)"
+                @contextmenu.prevent="onObjectContextMenu($event, table)"
               >
                 <Table2 :size="16" />
                 <span>{{ table }}</span>
@@ -206,6 +207,8 @@ const emit = defineEmits<{
   newConsole: []
   selectTable: [tableName: string]
   openTable: [tableName: string]
+  // 对象列表右键菜单：与左侧连接树共用同一套表操作菜单
+  showTableMenu: [event: MouseEvent, connectionId: string, database: string, tableName: string]
 }>()
 
 const dataTableRef = ref<InstanceType<typeof DataTable> | null>(null)
@@ -255,6 +258,14 @@ const currentTables = computed(() => {
 const filteredObjects = computed(() => {
   return currentTables.value
 })
+
+// 对象列表中的表右键菜单，交由外层复用左侧连接树的表菜单
+function onObjectContextMenu(event: MouseEvent, tableName: string) {
+  if (!props.currentConnection || !props.selectedDatabase) return
+  const dbName = props.selectedDatabase.split('.').pop()
+  if (!dbName) return
+  emit('showTableMenu', event, props.currentConnection.id, dbName, tableName)
+}
 
 // 方法
 function switchTab(tabId: string) {

@@ -226,10 +226,18 @@ impl ConnectionManager {
         // 复位上一次的取消标志，确保新查询不被旧取消信号误杀
         conn.query_cancel.store(false, Ordering::SeqCst);
 
-        match pool {
+        let result = match pool {
             AnyPool::MySql(pool) => self.execute_mysql(conn, &pool, connection_id, database, sql).await,
             AnyPool::Postgres(pool) => self.execute_postgres(conn, &pool, connection_id, database, sql).await,
+        }?;
+
+        // 结构变更成功后立刻失效元数据缓存，否则对象树/表结构会在 TTL（30s）内返回旧快照，
+        // 表现为建表后刷新列表看不到新表
+        if crate::core::sql::is_schema_changing(sql) {
+            conn.metadata_cache.lock().await.clear();
         }
+
+        Ok(result)
     }
 
     /// MySQL 执行路径（原有逻辑）
