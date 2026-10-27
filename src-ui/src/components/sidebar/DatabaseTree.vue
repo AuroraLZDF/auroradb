@@ -176,6 +176,9 @@ function isCategoryExpanded(dbName: string, categoryType: string): boolean {
   cursor: pointer;
   font-size: var(--text-sm);
   transition: var(--transition-colors);
+  /* 双击展开数据库时不要选中库名文字 */
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .database-header:hover {

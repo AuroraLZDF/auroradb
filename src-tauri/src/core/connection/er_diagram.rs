@@ -24,7 +24,13 @@ pub struct ErTableNode {
 pub struct ErColumn {
     pub name: String,
     pub data_type: String,
+    /// 含长度的完整类型，如 varchar(255)、decimal(10,2)
+    pub column_type: String,
     pub is_primary: bool,
+    pub is_unique: bool,
+    pub nullable: bool,
+    pub default_value: Option<String>,
+    pub comment: String,
 }
 
 /// ER 图的外键边
@@ -102,12 +108,27 @@ impl ConnectionManager {
         .await
         .context("ER 图查询超时")??;
 
-        // 2. 拉取所有列（含主键标记）
-        let columns: Vec<(String, String, String, bool)> = timeout(
+        // 2. 拉取所有列（含主键/唯一键标记、可空、默认值、注释）
+        type MySqlErColumn = (
+            String,
+            String,
+            String,
+            String,
+            bool,
+            bool,
+            Option<String>,
+            String,
+            bool,
+        );
+        let columns: Vec<MySqlErColumn> = timeout(
             ER_QUERY_TIMEOUT,
             sqlx::query_as(
-                "SELECT c.TABLE_NAME, c.COLUMN_NAME, c.DATA_TYPE,
-                        (c.COLUMN_KEY = 'PRI') AS is_pri
+                "SELECT c.TABLE_NAME, c.COLUMN_NAME, c.DATA_TYPE, c.COLUMN_TYPE,
+                        (c.COLUMN_KEY = 'PRI') AS is_pri,
+                        (c.IS_NULLABLE = 'YES') AS nullable,
+                        c.COLUMN_DEFAULT,
+                        COALESCE(c.COLUMN_COMMENT, '') AS comment,
+                        (c.COLUMN_KEY = 'UNI') AS is_uni
                  FROM INFORMATION_SCHEMA.COLUMNS c
                  WHERE c.TABLE_SCHEMA = ?
                  ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION",
@@ -138,12 +159,19 @@ impl ConnectionManager {
         for (table_name,) in table_names {
             table_map.insert(table_name.clone(), ErTableNode { name: table_name, columns: vec![] });
         }
-        for (table, col, dtype, is_pri) in columns {
+        for (table, col, dtype, column_type, is_pri, nullable, default_value, comment, is_uni) in
+            columns
+        {
             if let Some(node) = table_map.get_mut(&table) {
                 node.columns.push(ErColumn {
                     name: col,
                     data_type: dtype,
+                    column_type,
                     is_primary: is_pri,
+                    is_unique: is_uni,
+                    nullable,
+                    default_value,
+                    comment,
                 });
             }
         }
@@ -181,18 +209,59 @@ impl ConnectionManager {
         .await
         .context("ER 图查询超时")??;
 
-        let columns: Vec<(String, String, String, bool)> = timeout(
+        type PgErColumn = (
+            String,
+            String,
+            String,
+            String,
+            bool,
+            bool,
+            Option<String>,
+            String,
+            bool,
+        );
+        let columns: Vec<PgErColumn> = timeout(
             ER_QUERY_TIMEOUT,
             sqlx::query_as(
                 "SELECT c.TABLE_NAME, c.COLUMN_NAME, c.DATA_TYPE,
+                        CASE
+                            WHEN c.CHARACTER_MAXIMUM_LENGTH IS NOT NULL
+                                THEN c.DATA_TYPE || '(' || c.CHARACTER_MAXIMUM_LENGTH::text || ')'
+                            WHEN c.NUMERIC_PRECISION IS NOT NULL AND c.NUMERIC_SCALE IS NOT NULL
+                                THEN c.DATA_TYPE || '(' || c.NUMERIC_PRECISION::text || ',' || c.NUMERIC_SCALE::text || ')'
+                            WHEN c.NUMERIC_PRECISION IS NOT NULL
+                                THEN c.DATA_TYPE || '(' || c.NUMERIC_PRECISION::text || ')'
+                            WHEN c.DATETIME_PRECISION IS NOT NULL
+                                THEN c.DATA_TYPE || '(' || c.DATETIME_PRECISION::text || ')'
+                            ELSE c.DATA_TYPE
+                        END AS column_type,
                         EXISTS(
                             SELECT 1 FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
                             WHERE kcu.TABLE_SCHEMA = c.TABLE_SCHEMA
                               AND kcu.TABLE_NAME = c.TABLE_NAME
                               AND kcu.COLUMN_NAME = c.COLUMN_NAME
                               AND kcu.CONSTRAINT_NAME LIKE '%_pkey'
-                        ) AS is_pri
+                        ) AS is_pri,
+                        (c.IS_NULLABLE = 'YES') AS nullable,
+                        c.COLUMN_DEFAULT,
+                        COALESCE(pgd.description, '') AS comment,
+                        EXISTS(
+                            SELECT 1
+                            FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+                            JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+                              ON kcu.CONSTRAINT_NAME = tc.CONSTRAINT_NAME
+                             AND kcu.TABLE_SCHEMA = tc.TABLE_SCHEMA
+                             AND kcu.TABLE_NAME = tc.TABLE_NAME
+                            WHERE tc.TABLE_SCHEMA = c.TABLE_SCHEMA
+                              AND tc.TABLE_NAME = c.TABLE_NAME
+                              AND tc.CONSTRAINT_TYPE = 'UNIQUE'
+                              AND kcu.COLUMN_NAME = c.COLUMN_NAME
+                        ) AS is_uni
                  FROM INFORMATION_SCHEMA.COLUMNS c
+                 LEFT JOIN pg_catalog.pg_statio_all_tables st
+                   ON st.schemaname = c.TABLE_SCHEMA AND st.relname = c.TABLE_NAME
+                 LEFT JOIN pg_catalog.pg_description pgd
+                   ON pgd.objoid = st.relid AND pgd.objsubid = c.ORDINAL_POSITION
                  WHERE c.TABLE_SCHEMA = $1
                  ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION",
             )
@@ -225,12 +294,19 @@ impl ConnectionManager {
         for (table_name,) in table_names {
             table_map.insert(table_name.clone(), ErTableNode { name: table_name, columns: vec![] });
         }
-        for (table, col, dtype, is_pri) in columns {
+        for (table, col, dtype, column_type, is_pri, nullable, default_value, comment, is_uni) in
+            columns
+        {
             if let Some(node) = table_map.get_mut(&table) {
                 node.columns.push(ErColumn {
                     name: col,
                     data_type: dtype,
+                    column_type,
                     is_primary: is_pri,
+                    is_unique: is_uni,
+                    nullable,
+                    default_value,
+                    comment,
                 });
             }
         }

@@ -353,6 +353,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useDataBrowserStore } from '@/stores/dataBrowser'
+import { useToast } from '@/composables/useToast'
+import { confirmDanger } from '@/composables/useConfirm'
 import {
   Save, Plus, CornerDownLeft, Trash2, Key, ArrowUp, ArrowDown, X, Copy
 } from 'lucide-vue-next'
@@ -415,6 +417,7 @@ const emit = defineEmits<{
 }>()
 
 const browserStore = useDataBrowserStore()
+const { success: showToast } = useToast()
 
 // 标签页
 const tabs = computed(() => [
@@ -776,12 +779,17 @@ function insertField() {
 }
 
 // 删除字段
-function deleteField() {
+async function deleteField() {
   if (selectedFieldIndex.value === null) return
   const field = fields.value[selectedFieldIndex.value]!
   if (field.isNew) {
     fields.value.splice(selectedFieldIndex.value, 1)
   } else {
+    const confirmed = await confirmDanger({
+      message: t('tableDesigner.deleteFieldConfirm', { name: field.name }),
+      requireAcknowledge: true,
+    })
+    if (!confirmed) return
     field.isDeleted = true
   }
   selectedFieldIndex.value = null
@@ -850,12 +858,17 @@ function addIndex() {
 }
 
 // 删除索引
-function deleteIndex() {
+async function deleteIndex() {
   if (selectedIndexIndex.value === null) return
   const index = indexes.value[selectedIndexIndex.value]!
   if (index.isNew) {
     indexes.value.splice(selectedIndexIndex.value, 1)
   } else {
+    const confirmed = await confirmDanger({
+      message: t('tableDesigner.deleteIndexConfirm', { name: index.name }),
+      requireAcknowledge: true,
+    })
+    if (!confirmed) return
     index.isDeleted = true
   }
   selectedIndexIndex.value = null
@@ -879,12 +892,17 @@ function addForeignKey() {
 }
 
 // 删除外键
-function deleteForeignKey() {
+async function deleteForeignKey() {
   if (selectedFkIndex.value === null) return
   const fk = foreignKeys.value[selectedFkIndex.value]!
   if (fk.isNew) {
     foreignKeys.value.splice(selectedFkIndex.value, 1)
   } else {
+    const confirmed = await confirmDanger({
+      message: t('tableDesigner.deleteForeignKeyConfirm', { name: fk.name }),
+      requireAcknowledge: true,
+    })
+    if (!confirmed) return
     fk.isDeleted = true
   }
   selectedFkIndex.value = null
@@ -914,7 +932,8 @@ async function saveChanges() {
     }
     
     await browserStore.executeSql(props.connectionId, props.database, sql)
-    
+    showToast(t('tableDesigner.saveSuccess'))
+
     emit('saved')
     
     // 如果是编辑模式，重新加载结构

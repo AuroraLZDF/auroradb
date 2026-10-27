@@ -3,11 +3,9 @@ export default {
     'backup.title': '备份 / 还原',
     'backup.tabBackup': '备份',
     'backup.tabRestore': '还原',
-    'backup.tabHistory': '历史',
 
     'backup.selectConnection': '选择连接',
     'backup.selectDatabase': '选择数据库',
-    'backup.labelOptional': '标签（可选）',
     'backup.startBackup': '开始备份',
     'backup.backuping': '备份中…',
 
@@ -16,13 +14,6 @@ export default {
     'backup.noFile': '未选择文件',
     'backup.startRestore': '执行还原',
     'backup.restoring': '还原中…',
-
-    'backup.historyEmpty': '暂无备份记录',
-    'backup.fileSize': '文件大小',
-    'backup.createdAt': '创建时间',
-    'backup.driver': '驱动',
-    'backup.delete': '删除',
-    'backup.deleteConfirm': '确定删除这条备份记录吗？磁盘文件也会一并删除。',
 
     'backup.success': '备份成功，已保存到 {path}',
     'backup.restoreSuccess': '还原成功',
@@ -34,11 +25,9 @@ export default {
     'backup.title': 'Backup / Restore',
     'backup.tabBackup': 'Backup',
     'backup.tabRestore': 'Restore',
-    'backup.tabHistory': 'History',
 
     'backup.selectConnection': 'Select connection',
     'backup.selectDatabase': 'Select database',
-    'backup.labelOptional': 'Label (optional)',
     'backup.startBackup': 'Start Backup',
     'backup.backuping': 'Backing up…',
 
@@ -47,13 +36,6 @@ export default {
     'backup.noFile': 'No file selected',
     'backup.startRestore': 'Execute Restore',
     'backup.restoring': 'Restoring…',
-
-    'backup.historyEmpty': 'No backup records yet',
-    'backup.fileSize': 'Size',
-    'backup.createdAt': 'Created',
-    'backup.driver': 'Driver',
-    'backup.delete': 'Delete',
-    'backup.deleteConfirm': 'Delete this backup record? The disk file will also be removed.',
 
     'backup.success': 'Backup saved to {path}',
     'backup.restoreSuccess': 'Restore completed',

@@ -16,7 +16,6 @@ pub mod tunnel;
 pub mod types;
 pub mod validation;
 
-pub use backup::BackupRecord;
 pub use manager::ConnectionManager;
 pub use types::*;
 pub use explain::ExplainPlan;

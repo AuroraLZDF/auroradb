@@ -674,7 +674,8 @@ defineExpose({
 /* 表格、SQL 和控制台视图 */
 .table-view,
 .sql-view,
-.console-view {
+.console-view,
+.er-view {
   flex: 1;
   overflow: hidden;
   display: flex;

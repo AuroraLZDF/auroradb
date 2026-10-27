@@ -608,8 +608,9 @@ watch(() => [props.type, props.data], () => {
   overflow: auto;
   padding: 12px;
   position: relative;
-  user-select: none;
-  -webkit-user-select: none;
+  /* 允许选中/复制信息值（如库名、表名、字符集等） */
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 /* 信息区块 */

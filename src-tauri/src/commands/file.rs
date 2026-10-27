@@ -375,6 +375,54 @@ pub async fn save_file_to_dialog(
     }
 }
 
+/// 保存二进制内容（前端以 base64 传入）到用户选择的对话框路径
+#[command]
+pub async fn save_binary_file_to_dialog(
+    window: tauri::Window,
+    content_base64: String,
+    default_filename: String,
+    filter_name: String,
+    extensions: Vec<String>,
+) -> Result<String, String> {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine as _;
+
+    let bytes = STANDARD
+        .decode(content_base64.as_bytes())
+        .map_err(|e| format!("解析文件内容失败: {}", e))?;
+
+    let ext_refs: Vec<&str> = extensions.iter().map(|e| e.as_str()).collect();
+
+    let (tx, rx) = tokio::sync::oneshot::channel::<Option<FilePath>>();
+
+    let mut dialog = window
+        .dialog()
+        .file()
+        .set_title("保存文件")
+        .set_file_name(&default_filename);
+    if !ext_refs.is_empty() {
+        dialog = dialog.add_filter(&filter_name, &ext_refs);
+    }
+    dialog
+        .add_filter("所有文件", &["*"])
+        .save_file(move |path| {
+            let _ = tx.send(path);
+        });
+
+    match rx.await {
+        Ok(Some(path)) => {
+            let path_str = path.to_string();
+            let path_buf = std::path::PathBuf::from(&path_str);
+            match tokio::fs::write(&path_buf, &bytes).await {
+                Ok(_) => Ok(path_str),
+                Err(e) => Err(format!("保存文件失败: {}", e)),
+            }
+        }
+        Ok(None) => Err("用户取消了保存操作".to_string()),
+        Err(_) => Err("对话框操作被取消".to_string()),
+    }
+}
+
 /// 从文件选择对话框读取文件内容
 #[command]
 pub async fn read_file_from_dialog(

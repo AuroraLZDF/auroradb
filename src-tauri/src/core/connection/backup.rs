@@ -8,137 +8,36 @@
 //! - PostgreSQL：`PGPASSWORD` 环境变量
 //!
 //! SSH 隧道复用：已建立的隧道绑定本地随机端口，dump/restore 工具指向 `127.0.0.1:<本地端口>`。
+//!
+//! TLS：外部客户端不会继承应用内的 SSL 配置，必须显式传递，否则遇到自签证书会被
+//! MariaDB 11.x 客户端默认开启的证书校验拒绝。
 
 use super::driver::DriverKind;
 use super::manager::ConnectionManager;
+use super::types::{SslConfig, SslMode};
 use super::validation::validate_identifier;
 use anyhow::{anyhow, Context, Result};
-use chrono::Utc;
-use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::process::Command;
 
-/// 单条备份记录
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BackupRecord {
-    pub id: String,
-    pub connection_id: String,
-    pub database: String,
-    pub driver: String,
-    /// 备份文件绝对路径
-    pub file_path: String,
-    /// 文件大小（字节）
-    pub file_size: u64,
-    /// 创建时间（RFC3339 UTC）
-    pub created_at: String,
-    /// 用户可选标签，便于识别
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-}
-
-impl BackupRecord {
-    fn new(
-        connection_id: &str,
-        database: &str,
-        driver: DriverKind,
-        file_path: PathBuf,
-        file_size: u64,
-        label: Option<String>,
-    ) -> Self {
-        Self {
-            id: format!(
-                "bk_{}",
-                chrono::Utc::now().format("%Y%m%d%H%M%S%3f")
-            ),
-            connection_id: connection_id.to_string(),
-            database: database.to_string(),
-            driver: driver.display_name().to_string(),
-            file_path: file_path.to_string_lossy().to_string(),
-            file_size,
-            created_at: Utc::now().to_rfc3339(),
-            label,
-        }
-    }
-}
-
-/// 备份历史：持久化在 `<app data dir>/mysql-client/backup_history.json`
-pub struct BackupHistory {
-    path: PathBuf,
-}
-
-impl BackupHistory {
-    pub fn new() -> Self {
-        let path = dirs::data_dir()
-            .map(|dir| dir.join("mysql-client").join("backup_history.json"))
-            .unwrap_or_else(|| PathBuf::from("backup_history.json"));
-        Self { path }
-    }
-
-    /// 载入全部历史（空或损坏时返回空 vec）
-    pub fn load(&self) -> Vec<BackupRecord> {
-        std::fs::read_to_string(&self.path)
-            .ok()
-            .and_then(|txt| serde_json::from_str::<Vec<BackupRecord>>(&txt).ok())
-            .unwrap_or_default()
-    }
-
-    /// 把新记录追加到历史文件
-    pub fn append(&self, record: &BackupRecord) -> Result<()> {
-        let mut list = self.load();
-        list.push(record.clone());
-        self.save(&list)
-    }
-
-    /// 按 ID 删除（同时尝试删除磁盘文件）
-    pub fn remove(&self, id: &str) -> Result<()> {
-        let mut list = self.load();
-        let file_to_delete = list
-            .iter()
-            .find(|r| r.id == id)
-            .map(|r| r.file_path.clone());
-        list.retain(|r| r.id != id);
-        if let Some(path) = file_to_delete {
-            let _ = std::fs::remove_file(&path);
-        }
-        self.save(&list)
-    }
-
-    /// 查询某连接某库的历史记录
-    pub fn list_for_db(&self, connection_id: &str, database: &str) -> Vec<BackupRecord> {
-        self.load()
-            .into_iter()
-            .filter(|r| r.connection_id == connection_id && r.database == database)
-            .rev() // 最新在前
-            .collect()
-    }
-
-    fn save(&self, list: &[BackupRecord]) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        let json = serde_json::to_string_pretty(list)
-            .map_err(|e| anyhow!("序列化备份历史失败：{}", e))?;
-        std::fs::write(&self.path, json)
-            .map_err(|e| anyhow!("写入备份历史失败：{}", e))?;
-        Ok(())
-    }
-}
-
-impl Default for BackupHistory {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ConnectionManager {
-    /// 触发完整备份：根据驱动调用 mysqldump / pg_dump，输出到应用备份目录并登记历史。
+    /// 外部客户端执行的脚本绕过了连接池，元数据缓存不会自动失效，
+    /// 必须手动清空，否则对象树/表结构会在 TTL（30s）内返回执行前的旧快照。
+    async fn invalidate_metadata_cache(&self, connection_id: &str) {
+        let connections = self.connections.read().await;
+        if let Some(conn) = connections.get(connection_id) {
+            conn.metadata_cache.lock().await.clear();
+        }
+    }
+
+    /// 触发完整备份：根据驱动调用 mysqldump / pg_dump，写入用户选择的路径。
     pub async fn backup_database(
         &self,
         connection_id: &str,
         database: &str,
-        label: Option<String>,
-    ) -> Result<BackupRecord> {
+        output_path: &str,
+    ) -> Result<u64> {
         // 取连接配置与隧道状态
         let (config, tunnel_port) = {
             let connections = self.connections.read().await;
@@ -163,52 +62,28 @@ impl ConnectionManager {
             (config.host.clone(), config.port)
         };
 
-        // 确保备份目录存在
-        let backup_dir = dirs::data_dir()
-            .map(|d| d.join("mysql-client").join("backups"))
-            .unwrap_or_else(|| PathBuf::from("backups"));
-        std::fs::create_dir_all(&backup_dir).ok();
+        // 确保输出目录存在（用户可能在对话框中输入了尚不存在的目录）
+        let output_path = PathBuf::from(output_path);
+        if let Some(parent) = output_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).ok();
+            }
+        }
 
-        // 输出文件：库名_日期.sql
-        let safe_db = database.replace(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-', "_");
-        let filename = format!(
-            "{}_{}.sql",
-            safe_db,
-            Utc::now().format("%Y%m%d_%H%M%S")
-        );
-        let output_path = backup_dir.join(&filename);
-
-        let file_size = run_mysqldump_to_file(
+        run_mysqldump_to_file(
             &host,
             port,
             database,
             &config.username,
             &config.password,
+            &config.ssl_config,
             &output_path,
         )
-        .await?;
-
-        let record = BackupRecord::new(
-            connection_id,
-            database,
-            config.driver,
-            output_path,
-            file_size,
-            label,
-        );
-
-        // 写历史
-        let history = BackupHistory::new();
-        history
-            .append(&record)
-            .unwrap_or_else(|e| tracing::warn!("写入备份历史失败：{}", e));
-
-        Ok(record)
+        .await
     }
 
     /// 导出整库 SQL 到用户指定路径（mysqldump 直写文件，不经内存/IPC）。
     ///
-    /// 与 `backup_database` 的区别：输出路径由用户选择、不登记备份历史。
     /// 相比旧版逐表拼接 SQL 的实现，这里没有 1 万行上限，也不会在超时后静默跳过表，
     /// 并且天然包含视图、触发器、存储过程与事件。
     pub async fn export_database_sql_to_file(
@@ -217,8 +92,7 @@ impl ConnectionManager {
         database: &str,
         output_path: &str,
     ) -> Result<u64> {
-        validate_identifier(database)
-            .map_err(|e| anyhow!("数据库名验证失败：{}", e))?;
+        validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败：{}", e))?;
 
         let (config, tunnel_port) = {
             let connections = self.connections.read().await;
@@ -249,6 +123,7 @@ impl ConnectionManager {
             database,
             &config.username,
             &config.password,
+            &config.ssl_config,
             &output_path,
         )
         .await
@@ -271,9 +146,7 @@ impl ConnectionManager {
         };
 
         if config.driver == DriverKind::Postgres {
-            return Err(anyhow!(
-                "PostgreSQL 还原将在后续版本提供"
-            ));
+            return Err(anyhow!("PostgreSQL 还原将在后续版本提供"));
         }
 
         let (host, port) = if let Some(local_port) = tunnel_port {
@@ -287,8 +160,20 @@ impl ConnectionManager {
             return Err(anyhow!("备份文件不存在：{}", dump_path));
         }
 
-        run_mysql_script_file(&host, port, database, &config.username, &config.password, &path, "还原")
-            .await
+        run_mysql_script_file(
+            &host,
+            port,
+            database,
+            &config.username,
+            &config.password,
+            &config.ssl_config,
+            &path,
+            "还原",
+        )
+        .await?;
+        // 还原脚本可能重建表结构，清空缓存让刷新能拿到最新列表
+        self.invalidate_metadata_cache(connection_id).await;
+        Ok(())
     }
 
     /// 流式导入 SQL 文件（大文件不经过 IPC / 内存，因此没有 10MB 上限）
@@ -301,8 +186,7 @@ impl ConnectionManager {
         database: &str,
         file_path: &str,
     ) -> Result<()> {
-        validate_identifier(database)
-            .map_err(|e| anyhow!("数据库名验证失败：{}", e))?;
+        validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败：{}", e))?;
 
         let (config, tunnel_port) = {
             let connections = self.connections.read().await;
@@ -330,22 +214,20 @@ impl ConnectionManager {
             return Err(anyhow!("SQL 文件不存在：{}", file_path));
         }
 
-        run_mysql_script_file(&host, port, database, &config.username, &config.password, &path, "导入")
-            .await
-    }
-
-    /// 查询某连接某库的备份历史
-    pub fn list_backup_history(
-        &self,
-        connection_id: &str,
-        database: &str,
-    ) -> Vec<BackupRecord> {
-        BackupHistory::new().list_for_db(connection_id, database)
-    }
-
-    /// 从历史中删除一条记录（同时尝试清理磁盘文件）
-    pub fn delete_backup_record(&self, id: &str) -> Result<()> {
-        BackupHistory::new().remove(id)
+        run_mysql_script_file(
+            &host,
+            port,
+            database,
+            &config.username,
+            &config.password,
+            &config.ssl_config,
+            &path,
+            "导入",
+        )
+        .await?;
+        // 导入脚本会创建表，清空缓存让刷新能拿到最新列表
+        self.invalidate_metadata_cache(connection_id).await;
+        Ok(())
     }
 }
 
@@ -407,18 +289,30 @@ fn quote_option_value(value: &str) -> String {
     out
 }
 
-/// 检测外部工具是否可执行（mysqldump / mysql / pg_dump / psql）
-async fn check_tool(name: &str, version_arg: &str) -> Result<()> {
+/// MySQL 客户端工具的实现分支：两者 TLS 参数不同
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MysqlClientFlavor {
+    /// Oracle MySQL：使用 `--ssl-mode`
+    MySql,
+    /// MariaDB：使用 `--ssl` / `--ssl-verify-server-cert`
+    MariaDb,
+}
+
+/// 检测外部工具是否可执行（mysqldump / mysql / pg_dump / psql），返回版本信息
+async fn check_tool(name: &str, version_arg: &str) -> Result<String> {
     let result = Command::new(name)
         .arg(version_arg)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
         .await;
 
     match result {
-        Ok(status) if status.success() => Ok(()),
-        Ok(_) => Ok(()), // 版本命令返回非 0 也算存在
+        Ok(output) => Ok(format!(
+            "{} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )),
         Err(e) => {
             let hint = if name == "mysqldump" {
                 "请安装 MySQL 客户端工具（Debian/Ubuntu: apt install mysql-client-core / \
@@ -439,6 +333,79 @@ async fn check_tool(name: &str, version_arg: &str) -> Result<()> {
     }
 }
 
+/// 从 `--version` 输出判断客户端实现
+fn detect_flavor(version: &str) -> MysqlClientFlavor {
+    if version.to_ascii_lowercase().contains("mariadb") {
+        MysqlClientFlavor::MariaDb
+    } else {
+        MysqlClientFlavor::MySql
+    }
+}
+
+/// 把应用的 SSL 配置翻译为外部客户端参数
+///
+/// MariaDB 11.4+ 默认开启 `ssl-verify-server-cert`，因此「首选 / 必须加密」必须显式
+/// 关闭校验，否则连接自签证书的服务端会直接失败。
+fn mysql_ssl_args(flavor: MysqlClientFlavor, ssl: &SslConfig) -> Vec<String> {
+    let mut args = Vec::new();
+    let ca = ssl
+        .ca_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty());
+    let cert = ssl
+        .cert_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty());
+    let key = ssl
+        .key_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty());
+
+    match flavor {
+        MysqlClientFlavor::MySql => {
+            let mode = match ssl.mode {
+                SslMode::Disabled => "DISABLED",
+                SslMode::Preferred => "PREFERRED",
+                SslMode::Required => "REQUIRED",
+                SslMode::VerifyCa => "VERIFY_CA",
+                SslMode::VerifyIdentity => "VERIFY_IDENTITY",
+            };
+            args.push(format!("--ssl-mode={}", mode));
+        }
+        MysqlClientFlavor::MariaDb => match ssl.mode {
+            SslMode::Disabled => args.push("--skip-ssl".to_string()),
+            // 加密但不校验服务端证书（MariaDB 客户端 ssl 默认开启）
+            SslMode::Preferred => args.push("--skip-ssl-verify-server-cert".to_string()),
+            SslMode::Required => {
+                args.push("--ssl".to_string());
+                args.push("--skip-ssl-verify-server-cert".to_string());
+            }
+            // MariaDB 只有「校验/不校验」两档，verify-ca 与 verify-identity 同样处理
+            SslMode::VerifyCa | SslMode::VerifyIdentity => {
+                args.push("--ssl".to_string());
+                args.push("--ssl-verify-server-cert".to_string());
+            }
+        },
+    }
+
+    if ssl.mode != SslMode::Disabled {
+        if let Some(path) = ca {
+            args.push(format!("--ssl-ca={}", path));
+        }
+        if let Some(path) = cert {
+            args.push(format!("--ssl-cert={}", path));
+        }
+        if let Some(path) = key {
+            args.push(format!("--ssl-key={}", path));
+        }
+    }
+
+    args
+}
+
 /// 把 SQL 脚本文件流式送入 `mysql` 客户端执行（还原 / 导入共用）。
 ///
 /// 文件内容直接经 stdin 管道传给子进程，全程不做字符串拼接、不经过 IPC，
@@ -449,17 +416,20 @@ async fn run_mysql_script_file(
     database: &str,
     username: &str,
     password: &str,
+    ssl: &SslConfig,
     path: &Path,
     action: &str,
 ) -> Result<()> {
-    check_tool("mysql", "--version").await?;
+    let version = check_tool("mysql", "--version").await?;
+    let ssl_args = mysql_ssl_args(detect_flavor(&version), ssl);
 
-    let defaults_file = write_mysql_defaults(username, password)
-        .context("创建 mysql 凭据临时文件失败")?;
+    let defaults_file =
+        write_mysql_defaults(username, password).context("创建 mysql 凭据临时文件失败")?;
 
     // 启动 mysql 进程，stdin 接脚本文件
     let mut child = match Command::new("mysql")
         .arg(format!("--defaults-extra-file={}", defaults_file.display()))
+        .args(&ssl_args)
         .arg("--host")
         .arg(host)
         .arg("--port")
@@ -554,9 +524,11 @@ async fn run_mysqldump_to_file(
     database: &str,
     username: &str,
     password: &str,
+    ssl: &SslConfig,
     output_path: &Path,
 ) -> Result<u64> {
-    check_tool("mysqldump", "--version").await?;
+    let version = check_tool("mysqldump", "--version").await?;
+    let ssl_args = mysql_ssl_args(detect_flavor(&version), ssl);
 
     if let Some(parent) = output_path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -564,10 +536,11 @@ async fn run_mysqldump_to_file(
         }
     }
 
-    let defaults_file = write_mysql_defaults(username, password)
-        .context("创建 mysqldump 凭据临时文件失败")?;
+    let defaults_file =
+        write_mysql_defaults(username, password).context("创建 mysqldump 凭据临时文件失败")?;
 
-    let result = dump_to_temp_file(&defaults_file, host, port, database, output_path).await;
+    let result =
+        dump_to_temp_file(&defaults_file, host, port, database, &ssl_args, output_path).await;
 
     let _ = tokio::fs::remove_file(&defaults_file).await;
     result
@@ -578,15 +551,17 @@ async fn dump_to_temp_file(
     host: &str,
     port: u16,
     database: &str,
+    ssl_args: &[String],
     output_path: &Path,
 ) -> Result<u64> {
     let temp_path = dump_part_path(output_path);
 
-    let stdout_file = std::fs::File::create(&temp_path)
-        .map_err(|e| anyhow!("创建导出临时文件失败：{}", e))?;
+    let stdout_file =
+        std::fs::File::create(&temp_path).map_err(|e| anyhow!("创建导出临时文件失败：{}", e))?;
 
     let child = match Command::new("mysqldump")
         .arg(format!("--defaults-extra-file={}", defaults_file.display()))
+        .args(ssl_args)
         .arg("--single-transaction")
         .arg("--routines")
         .arg("--triggers")
@@ -660,11 +635,7 @@ async fn verify_dump_complete(path: &Path) -> Result<()> {
     let mut file = tokio::fs::File::open(path)
         .await
         .map_err(|e| anyhow!("读取导出文件失败：{}", e))?;
-    let len = file
-        .metadata()
-        .await
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let len = file.metadata().await.map(|m| m.len()).unwrap_or(0);
     if len == 0 {
         return Err(anyhow!("mysqldump 未产生任何输出，导出已取消"));
     }
@@ -725,48 +696,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn backup_history_round_trip() {
-        let dir = std::env::temp_dir().join(format!(
-            "auroradb-backup-test-{}-{}",
-            std::process::id(),
-            chrono::Utc::now().timestamp_millis()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let history_path = dir.join("backup_history.json");
-
-        // 用临时路径替换 BackupHistory::new 的路径
-        let record = BackupRecord::new(
-            "c1",
-            "mydb",
-            DriverKind::MySql,
-            PathBuf::from("/tmp/test.sql"),
-            1024,
-            Some("first backup".to_string()),
-        );
-
-        let json = serde_json::to_string_pretty(&[record.clone()]).unwrap();
-        std::fs::write(&history_path, &json).unwrap();
-
-        // 手动构造一个指向临时路径的 BackupHistory
-        let bh = BackupHistory {
-            path: history_path.clone(),
-        };
-
-        let loaded = bh.load();
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].id, record.id);
-
-        let filtered = bh.list_for_db("c1", "mydb");
-        assert_eq!(filtered.len(), 1);
-
-        bh.remove(&record.id).unwrap();
-        let after = bh.load();
-        assert!(after.is_empty());
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
     fn quotes_special_chars_in_option_file() {
         // `#`/`;` 等字符未加引号会被 option file 当作注释，导致密码被截断
         assert_eq!(quote_option_value("p#ss;word"), "\"p#ss;word\"");
@@ -803,15 +732,76 @@ mod tests {
     }
 
     #[test]
-    fn backup_record_uses_mysql_driver_name() {
-        let record = BackupRecord::new(
-            "c1",
-            "testdb",
-            DriverKind::MySql,
-            PathBuf::from("/tmp/x.sql"),
-            0,
-            None,
+    fn detects_client_flavor_from_version_output() {
+        assert_eq!(
+            detect_flavor("mysqldump from 11.8.1-MariaDB, client 10.19 for debian-linux-gnu"),
+            MysqlClientFlavor::MariaDb
         );
-        assert_eq!(record.driver, "MySQL");
+        assert_eq!(
+            detect_flavor("mysqldump  Ver 8.0.36 for Linux on x86_64 (MySQL Community Server)"),
+            MysqlClientFlavor::MySql
+        );
+    }
+
+    #[test]
+    fn mysql_ssl_args_follow_connection_mode() {
+        // MySQL 客户端：--ssl-mode 一一对应
+        let mysql = MysqlClientFlavor::MySql;
+        assert_eq!(
+            mysql_ssl_args(mysql, &SslConfig::default()),
+            vec!["--ssl-mode=PREFERRED".to_string()]
+        );
+        assert_eq!(
+            mysql_ssl_args(
+                mysql,
+                &SslConfig {
+                    mode: SslMode::VerifyCa,
+                    ca_path: Some("/etc/ca.pem".to_string()),
+                    cert_path: None,
+                    key_path: None,
+                }
+            ),
+            vec![
+                "--ssl-mode=VERIFY_CA".to_string(),
+                "--ssl-ca=/etc/ca.pem".to_string()
+            ]
+        );
+
+        // MariaDB 客户端：默认会校验证书，未启用校验的模式必须显式关闭
+        let mariadb = MysqlClientFlavor::MariaDb;
+        assert_eq!(
+            mysql_ssl_args(mariadb, &SslConfig::default()),
+            vec!["--skip-ssl-verify-server-cert".to_string()]
+        );
+        assert_eq!(
+            mysql_ssl_args(
+                mariadb,
+                &SslConfig {
+                    mode: SslMode::VerifyIdentity,
+                    ca_path: Some("/etc/ca.pem".to_string()),
+                    cert_path: Some("/etc/client.pem".to_string()),
+                    key_path: Some("/etc/client.key".to_string()),
+                }
+            ),
+            vec![
+                "--ssl".to_string(),
+                "--ssl-verify-server-cert".to_string(),
+                "--ssl-ca=/etc/ca.pem".to_string(),
+                "--ssl-cert=/etc/client.pem".to_string(),
+                "--ssl-key=/etc/client.key".to_string()
+            ]
+        );
+        assert_eq!(
+            mysql_ssl_args(
+                mariadb,
+                &SslConfig {
+                    mode: SslMode::Disabled,
+                    ca_path: Some("/etc/ca.pem".to_string()),
+                    cert_path: None,
+                    key_path: None,
+                }
+            ),
+            vec!["--skip-ssl".to_string()]
+        );
     }
 }

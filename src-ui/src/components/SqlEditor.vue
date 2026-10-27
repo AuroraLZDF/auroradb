@@ -3,17 +3,17 @@
     <!-- 工具栏 -->
     <div class="toolbar">
       <div class="toolbar-left">
-        <button @click="executeQuery" :disabled="loading || !sql.trim()" class="btn-execute">
+        <button v-if="!showCancel" @click="executeQuery" :disabled="loading || !sql.trim()" class="btn-execute">
           <Play :size="14" />
           {{ t('sqlEditor.execute') }}
+        </button>
+        <button v-else @click="cancelQuery" class="btn-cancel">
+          <Square :size="14" />
+          {{ t('common.cancel') }}
         </button>
         <button @click="explainSql" :disabled="explaining || !sql.trim() || !licenseStore.allows('query-plan')" class="btn-explain">
           <Cpu :size="14" />
           {{ t('sqlEditor.explain') }}
-        </button>
-        <button v-if="loading" @click="cancelQuery" class="btn-cancel">
-          <Square :size="14" />
-          {{ t('common.cancel') }}
         </button>
         <button @click="formatSql" :disabled="!sql.trim()" class="btn-format">
           <FileText :size="14" />
@@ -24,24 +24,12 @@
           {{ t('common.clear') }}
         </button>
         <button
-          @click="togglePanel('history')"
+          @click="panelOpen = !panelOpen"
           class="btn-format"
-          :class="{ 'is-active': panelOpen && panelTab === 'history' }"
+          :class="{ 'is-active': panelOpen }"
         >
           <History :size="14" />
-          {{ t('sqlEditor.history') }}
-        </button>
-        <button
-          @click="togglePanel('saved')"
-          class="btn-format"
-          :class="{ 'is-active': panelOpen && panelTab === 'saved' }"
-        >
-          <Bookmark :size="14" />
-          {{ t('sqlEditor.saved') }}
-        </button>
-        <button @click="openSaveForm" :disabled="!sql.trim()" class="btn-format">
-          <Save :size="14" />
-          {{ t('common.save') }}
+          {{ t('sqlEditor.queryLibrary') }}
         </button>
       </div>
       <div class="toolbar-right">
@@ -225,30 +213,6 @@
       </div>
     </div>
 
-    <!-- 保存查询表单 -->
-    <div v-if="saveFormOpen" class="save-form">
-      <input
-        v-model="saveName"
-        class="save-input"
-        :placeholder="t('sqlEditor.saveNamePlaceholder')"
-        @keydown.enter="confirmSave"
-        @keydown.esc="saveFormOpen = false"
-      />
-      <input
-        v-model="saveFolder"
-        class="save-input folder"
-        list="sql-folder-options"
-        :placeholder="t('sqlEditor.saveFolderPlaceholder')"
-        @keydown.enter="confirmSave"
-        @keydown.esc="saveFormOpen = false"
-      />
-      <datalist id="sql-folder-options">
-        <option v-for="folder in queryLibrary.folders" :key="folder" :value="folder" />
-      </datalist>
-      <button @click="confirmSave" class="btn-execute">{{ t('common.save') }}</button>
-      <button @click="saveFormOpen = false" class="btn-format">{{ t('common.cancel') }}</button>
-    </div>
-
     <!-- 查询历史 / 已保存查询 -->
     <div v-if="panelOpen" class="library-panel">
       <div class="library-header">
@@ -325,13 +289,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick, reactive, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, reactive, watch } from 'vue'
 import { useConnectionStore } from '@/stores/connection'
 import { useDataBrowserStore } from '@/stores/dataBrowser'
 import { useEditorTabsStore } from '@/stores/editorTabs'
 import { useLicenseStore } from '@/stores/license'
 import { useQueryLibraryStore, type QueryHistoryEntry, type SavedQuery } from '@/stores/queryLibrary'
-import { Play, FileText, Trash2, Download, XCircle, CheckCircle, Loader2, Square, History, Bookmark, Save, X, Cpu } from 'lucide-vue-next'
+import { Play, FileText, Trash2, Download, XCircle, CheckCircle, Loader2, Square, History, X, Cpu } from 'lucide-vue-next'
 import { t } from '@/i18n'
 import { findDangerousStatements, quoteIdentifier } from '@/utils/sql'
 import { invoke } from '@tauri-apps/api/core'
@@ -371,6 +335,9 @@ const sql = computed({
 })
 
 const loading = ref(false)
+// 查询执行超过一定时间才显示「取消」，避免快速查询时按钮闪现
+const showCancel = ref(false)
+let cancelTimer: ReturnType<typeof setTimeout> | undefined
 const error = ref('')
 const cancelled = ref(false)
 const result = ref<{
@@ -390,9 +357,6 @@ const resultView = ref<'result' | 'explain'>('result')
 const panelOpen = ref(false)
 const panelTab = ref<'history' | 'saved'>('history')
 const librarySearch = ref('')
-const saveFormOpen = ref(false)
-const saveName = ref('')
-const saveFolder = ref('')
 
 // 导出格式
 const exportFormat = ref<'csv' | 'json' | 'xlsx' | 'sql'>('csv')
@@ -555,6 +519,22 @@ const visibleResultRows = computed(() => {
     .map((row, offset) => ({ row, index: resultVirtualStart.value + offset }))
 })
 
+// 更新执行状态：执行超过 300ms 才把「执行」切换为「取消」，避免快速查询时按钮闪现
+function setLoading(value: boolean) {
+  if (cancelTimer) {
+    clearTimeout(cancelTimer)
+    cancelTimer = undefined
+  }
+  loading.value = value
+  if (value) {
+    cancelTimer = setTimeout(() => {
+      showCancel.value = loading.value
+    }, 300)
+  } else {
+    showCancel.value = false
+  }
+}
+
 // 执行 SQL
 async function executeQuery() {
   if (!sql.value.trim() || !currentConnectionId.value) return
@@ -567,10 +547,12 @@ async function executeQuery() {
     }
   }
 
-  loading.value = true
+  setLoading(true)
   error.value = ''
   cancelled.value = false
   result.value = null
+  // 切回结果视图，避免上次 EXPLAIN 的执行计划残留在面板中
+  resultView.value = 'result'
 
   try {
     // PG 没有「默认 mysql 库」的概念，空串表示沿用服务端默认 search_path
@@ -621,7 +603,7 @@ async function executeQuery() {
       }
     }
   } finally {
-    loading.value = false
+    setLoading(false)
   }
 }
 
@@ -808,37 +790,6 @@ const savedGroups = computed(() => {
     })
     .map(([folder, list]) => ({ folder, items: list }))
 })
-
-function togglePanel(tab: 'history' | 'saved') {
-  if (panelOpen.value && panelTab.value === tab) {
-    panelOpen.value = false
-    return
-  }
-  panelTab.value = tab
-  panelOpen.value = true
-}
-
-function openSaveForm() {
-  if (!sql.value.trim()) return
-  const firstLine = (sql.value.trim().split('\n')[0] ?? '').trim()
-  saveName.value = firstLine.length > 40 ? firstLine.slice(0, 40) : firstLine
-  saveFolder.value = ''
-  saveFormOpen.value = true
-}
-
-function confirmSave() {
-  if (!sql.value.trim()) return
-  queryLibrary.saveQuery({
-    name: saveName.value,
-    sql: sql.value,
-    folder: saveFolder.value,
-    connectionId: currentConnectionId.value
-  })
-  saveFormOpen.value = false
-  librarySearch.value = ''
-  panelTab.value = 'saved'
-  panelOpen.value = true
-}
 
 function loadHistoryItem(item: QueryHistoryEntry) {
   sql.value = item.sql
@@ -1201,6 +1152,10 @@ onMounted(() => {
       error.value = cachedError
     }
   }
+})
+
+onUnmounted(() => {
+  if (cancelTimer) clearTimeout(cancelTimer)
 })
 </script>
 
@@ -1653,37 +1608,6 @@ html[data-theme="dark"] .export-format-select {
 
 .completion-item.active .completion-detail {
   color: rgba(255, 255, 255, 0.8);
-}
-
-/* 保存查询表单 */
-.save-form {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 16px;
-  background: var(--color-background-soft);
-  border-top: 1px solid var(--color-border);
-  flex-shrink: 0;
-}
-
-.save-input {
-  flex: 1;
-  min-width: 0;
-  padding: 7px 10px;
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
-  font-size: 13px;
-  background: var(--color-background);
-  color: var(--color-text);
-}
-
-.save-input.folder {
-  flex: 0 0 180px;
-}
-
-.save-input:focus {
-  outline: none;
-  border-color: var(--color-primary);
 }
 
 /* 查询历史 / 已保存查询面板 */

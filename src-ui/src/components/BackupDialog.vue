@@ -27,13 +27,6 @@
         <Upload :size="14" />
         {{ t('backup.tabRestore') }}
       </button>
-      <button
-        :class="['tab-btn', { active: activeTab === 'history' }]"
-        @click="switchToHistory"
-      >
-        <History :size="14" />
-        {{ t('backup.tabHistory') }}
-      </button>
     </div>
 
     <div class="dialog-body">
@@ -55,15 +48,6 @@
             :disabled="!backupConnId || backupDbLoading"
             :placeholder="backupDbLoading ? t('common.loading') : t('backup.selectDatabase')"
             searchable
-          />
-        </div>
-        <div class="form-row">
-          <label>{{ t('backup.labelOptional') }}</label>
-          <input
-            v-model="backupLabel"
-            type="text"
-            class="text-input"
-            maxlength="64"
           />
         </div>
         <Button
@@ -133,43 +117,6 @@
           <AlertCircle :size="14" /> {{ restoreError }}
         </p>
       </div>
-
-      <!-- History tab -->
-      <div v-if="activeTab === 'history'" class="tab-panel">
-        <div v-if="historyLoading" class="empty-state">
-          <RefreshCw :size="24" class="spinning" />
-          {{ t('common.loading') }}
-        </div>
-        <div v-else-if="history.length === 0" class="empty-state">
-          <History :size="40" class="empty-icon" />
-          {{ t('backup.historyEmpty') }}
-        </div>
-        <table v-else class="history-table">
-          <thead>
-            <tr>
-              <th>{{ t('backup.createdAt') }}</th>
-              <th>{{ t('backup.driver') }}</th>
-              <th>{{ t('backup.fileSize') }}</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="rec in history" :key="rec.id">
-              <td>
-                <div>{{ rec.created_at.replace('T', ' ').slice(0, 19) }}</div>
-                <div v-if="rec.label" class="record-label">{{ rec.label }}</div>
-              </td>
-              <td>{{ rec.driver }}</td>
-              <td>{{ formatSize(rec.file_size) }}</td>
-              <td class="action-cell">
-                <button class="icon-btn danger" @click="confirmDelete(rec.id)">
-                  <Trash2 :size="14" />
-                </button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
     </div>
   </div>
 </template>
@@ -186,30 +133,18 @@ import {
   X,
   Download,
   Upload,
-  History,
   AlertCircle,
   AlertTriangle,
   FolderOpen,
-  Trash2,
-  RefreshCw,
 } from 'lucide-vue-next'
 
 const emit = defineEmits<{
   close: []
+  /** 还原成功：通知父组件刷新该连接下数据库的表列表 */
+  restored: [connectionId: string, database: string]
 }>()
 
-const { success: showToast, error: showError } = useToast()
-
-interface BackupRecord {
-  id: string
-  connection_id: string
-  database: string
-  driver: string
-  file_path: string
-  file_size: number
-  created_at: string
-  label?: string
-}
+const { success: showToast } = useToast()
 
 interface ConnectionOption { value: string; label: string }
 
@@ -230,7 +165,6 @@ const activeConnections = computed(() => connStore.activeConnections)
 // ---------- Backup ----------
 const backupConnId = ref('')
 const backupDatabase = ref('')
-const backupLabel = ref('')
 const backuping = ref(false)
 const backupError = ref('')
 const backupDbLoading = ref(false)
@@ -245,38 +179,7 @@ const restoreError = ref('')
 const restoreDbLoading = ref(false)
 const restoreDbOptions = computed(() => dbOptionsFor(restoreConnId.value))
 
-// ---------- History ----------
-const activeTab = ref<'backup' | 'restore' | 'history'>('backup')
-const history = ref<BackupRecord[]>([])
-const historyLoading = ref(false)
-
-function switchToHistory() {
-  activeTab.value = 'history'
-  loadHistory()
-}
-
-async function loadHistory() {
-  if (!backupConnId.value || !backupDatabase.value) {
-    history.value = []
-    return
-  }
-  historyLoading.value = true
-  try {
-    history.value = await invoke<BackupRecord[]>('list_backup_history', {
-      connectionId: backupConnId.value,
-      database: backupDatabase.value,
-    })
-  } catch (e) {
-    showError(t('backup.error', { error: String(e) }))
-  } finally {
-    historyLoading.value = false
-  }
-}
-
-// 当用户切换连接/数据库时，若在 history tab 自动刷新
-watch([backupConnId, backupDatabase], () => {
-  if (activeTab.value === 'history') loadHistory()
-})
+const activeTab = ref<'backup' | 'restore'>('backup')
 
 onMounted(() => {
   // 自动选中首个可用连接
@@ -298,19 +201,19 @@ async function runBackup() {
   }
   backuping.value = true
   try {
-    const record = await invoke<BackupRecord>('backup_database', {
+    // 默认文件名：库名_时间戳.sql，路径由用户在系统保存对话框中选择
+    const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)
+    const defaultFilename = `${backupDatabase.value}_${stamp}.sql`
+    const path = await invoke<string>('backup_database', {
       connectionId: backupConnId.value,
       database: backupDatabase.value,
-      label: backupLabel.value || undefined,
+      defaultFilename,
     })
-    showToast(t('backup.success', { path: record.file_path }))
-    // 切到 history 并刷新
-    if (activeTab.value === 'backup') activeTab.value = 'history'
-    loadHistory()
-    // 还原标签输入
-    backupLabel.value = ''
+    showToast(t('backup.success', { path }))
   } catch (e) {
     const msg = String(e)
+    // 用户在保存对话框中取消，不当作错误提示
+    if (msg.includes('取消')) return
     backupError.value = t('backup.error', { error: msg })
   } finally {
     backuping.value = false
@@ -341,22 +244,12 @@ async function runRestore() {
       dumpPath: restoreFilePath.value,
     })
     showToast(t('backup.restoreSuccess'))
+    emit('restored', restoreConnId.value, restoreDatabase.value)
     emit('close')
   } catch (e) {
     restoreError.value = t('backup.error', { error: String(e) })
   } finally {
     restoring.value = false
-  }
-}
-
-async function confirmDelete(id: string) {
-  if (!confirm(t('backup.deleteConfirm'))) return
-  try {
-    await invoke('delete_backup_record', { id })
-    showToast(t('common.deleted'))
-    loadHistory()
-  } catch (e) {
-    showError(t('backup.error', { error: String(e) }))
   }
 }
 
@@ -406,20 +299,12 @@ async function refreshDbList(connId: string) {
 function databasesByConn(connId: string): string[] {
   return connectionDatabases.value[connId] ?? []
 }
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  if (bytes < 1024 ** 3) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-  return `${(bytes / 1024 ** 3).toFixed(2)} GB`
-}
 </script>
 
 <style scoped>
 .backup-dialog {
   display: flex;
   flex-direction: column;
-  height: 100%;
 }
 
 .dialog-header {
@@ -463,10 +348,6 @@ function formatSize(bytes: number): string {
   color: var(--text-primary);
 }
 
-.icon-btn.danger:hover {
-  color: var(--color-danger, #ef4444);
-}
-
 .dialog-tabs {
   display: flex;
   gap: var(--space-1);
@@ -499,9 +380,7 @@ function formatSize(bytes: number): string {
 }
 
 .dialog-body {
-  flex: 1;
-  overflow: auto;
-  padding: var(--space-4);
+  padding: var(--space-5);
 }
 
 .tab-panel {
@@ -569,58 +448,5 @@ function formatSize(bytes: number): string {
   font-size: var(--text-sm);
   margin: 0;
   align-items: center;
-}
-
-.empty-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-3);
-  padding: var(--space-8);
-  color: var(--text-tertiary);
-}
-
-.empty-icon {
-  color: var(--text-tertiary);
-}
-
-.spinning {
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-.history-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.history-table th,
-.history-table td {
-  text-align: left;
-  padding: var(--space-3);
-  border-bottom: 1px solid var(--border-default);
-  font-size: var(--text-sm);
-}
-
-.history-table th {
-  color: var(--text-secondary);
-  font-weight: var(--font-medium);
-}
-
-.history-table tbody tr:hover {
-  background: var(--surface-hover);
-}
-
-.record-label {
-  font-size: var(--text-xs);
-  color: var(--text-tertiary);
-}
-
-.action-cell {
-  text-align: right;
 }
 </style>

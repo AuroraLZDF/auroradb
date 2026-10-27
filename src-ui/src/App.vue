@@ -249,8 +249,8 @@
 
     <!-- 备份还原弹窗 -->
     <div v-if="showBackup" class="modal-overlay">
-      <div class="modal-content modal-large">
-        <BackupDialog @close="showBackup = false" />
+      <div class="modal-content modal-backup">
+        <BackupDialog @close="showBackup = false" @restored="onDatabaseRestored" />
       </div>
     </div>
 
@@ -296,6 +296,9 @@
     <!-- Toast 通知 -->
     <ToastNotification ref="toastRef" />
 
+    <!-- 危险操作二次确认弹框 -->
+    <ConfirmDialog />
+
     <!-- 命令面板 Ctrl+K -->
     <CommandPalette />
   </div>
@@ -322,11 +325,13 @@ import SchemaDiff from '@/components/SchemaDiff.vue'
 import MonitorPanel from '@/components/MonitorPanel.vue'
 import LicenseDialog from '@/components/LicenseDialog.vue'
 import ToastNotification from '@/components/ui/Toast.vue'
+import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import CommandPalette from '@/components/CommandPalette.vue'
 import BackupDialog from '@/components/BackupDialog.vue'
 import GlobalSearchDialog from '@/components/GlobalSearchDialog.vue'
 import { useCommandRegistryStore } from '@/stores/commandRegistry'
 import { useToast } from '@/composables/useToast'
+import { confirmDanger } from '@/composables/useConfirm'
 import { useBreakpoints } from '@/composables/useBreakpoints'
 import {
   Database,
@@ -772,29 +777,33 @@ async function disconnectConnection(connectionId: string) {
   }
 }
 
-// 加载连接的数据库列表
-async function loadConnectionDatabases(connectionId: string) {
-  if (connectionDatabases[connectionId]) return // 已加载
+// 加载连接的数据库列表，force=true 时忽略缓存强制重新拉取
+async function loadConnectionDatabases(connectionId: string, force = false): Promise<boolean> {
+  if (!force && connectionDatabases[connectionId]) return true // 已加载
   // PostgreSQL 的对象树尚未迁移，跳过请求避免无谓的后端报错
-  if (activeConnections.value.find(c => c.id === connectionId)?.driver === 'postgres') return
+  if (activeConnections.value.find(c => c.id === connectionId)?.driver === 'postgres') return false
 
   try {
     const result = await browserStore.loadObjectTree(connectionId)
     connectionDatabases[connectionId] = result
-    // 确保所有数据库默认都是折叠状态
-    for (const key of expandedDatabases) {
-      if (key.startsWith(connectionId + '.')) {
-        expandedDatabases.delete(key)
-      }
+    // 只清理已被删除的数据库的展开状态，保留仍然存在的数据库
+    const prefix = connectionId + '.'
+    const names = result.filter(obj => obj.object_type === 'Database').map(obj => obj.name)
+    const stillExists = (key: string) =>
+      names.some(name => key === prefix + name || key.startsWith(prefix + name + '.'))
+    for (const key of Array.from(expandedDatabases)) {
+      if (key.startsWith(prefix) && !stillExists(key)) expandedDatabases.delete(key)
     }
-    // 同时清理该连接下的所有分类展开状态
-    for (const key of expandedCategories) {
-      if (key.startsWith(connectionId + '.')) {
-        expandedCategories.delete(key)
-      }
+    for (const key of Array.from(expandedCategories)) {
+      if (key.startsWith(prefix) && !stillExists(key)) expandedCategories.delete(key)
     }
+    for (const key of Array.from(activeDatabases)) {
+      if (key.startsWith(prefix) && !stillExists(key)) activeDatabases.delete(key)
+    }
+    return true
   } catch (e) {
     console.error('Failed to load databases:', e)
+    return false
   }
 }
 
@@ -931,10 +940,11 @@ async function onDatabaseDesignerSaved(databaseName: string) {
   const { connectionId, isNewDatabase } = databaseDesignerData.value
   // 关闭弹窗
   showDatabaseDesigner.value = false
-  // 刷新数据库列表
-  await loadConnectionDatabases(connectionId)
+  // 强制刷新数据库列表，确保新建的库立即出现在侧边栏
+  await loadConnectionDatabases(connectionId, true)
   // 如果是新建数据库，自动展开
   if (isNewDatabase) {
+    delete connectionDatabaseTables[connectionId]?.[databaseName]
     await openDatabase(connectionId, databaseName)
   } else {
     // 编辑现有数据库：刷新右侧信息面板，显示最新字符集/排序规则
@@ -946,7 +956,18 @@ async function onDatabaseDesignerSaved(databaseName: string) {
       }
     }
   }
-  showToast(t('app.databaseSaved'))
+  showToast(isNewDatabase
+    ? t('app.databaseCreated', { name: databaseName })
+    : t('app.databaseSaved'))
+}
+
+// 备份还原完成后刷新受影响的数据库
+async function onDatabaseRestored(connectionId: string, database: string) {
+  // 旧表可能已被还原脚本删除，关闭该库下的表 Tab，避免残留失效数据
+  mainContentRef.value?.closeDatabaseTabs(connectionId, database)
+  delete connectionDatabaseTables[connectionId]?.[database]
+  await loadConnectionDatabases(connectionId, true)
+  await loadDatabaseTables(connectionId, database, true)
 }
 
 // 打开表（双击）
@@ -1171,22 +1192,39 @@ async function handleDatabaseMenu(action: string) {
         showError(t('app.refreshFailed'))
       }
       break
-    case 'delete':
+    case 'delete': {
       // 删除数据库
-      if (confirm(t('app.deleteDatabaseConfirm', { name: database }))) {
-        try {
-          await browserStore.executeSql(connectionId, database, `DROP DATABASE ${quoteIdentifier(database)}`)
-          // 从展开列表中移除
-          expandedDatabases.delete(`${connectionId}.${database}`)
-          // 删除缓存中的数据库列表
-          delete connectionDatabases[connectionId]
-          // 重新加载数据库列表
-          await loadConnectionDatabases(connectionId)
-        } catch (e: unknown) {
-          alert(t('app.deleteDatabaseFailed', { error: String(e) }))
+      const confirmed = await confirmDanger({
+        message: t('app.deleteDatabaseConfirm', { name: database }),
+        requireAcknowledge: true,
+      })
+      if (!confirmed) break
+      try {
+        await browserStore.executeSql(connectionId, database, `DROP DATABASE ${quoteIdentifier(database)}`)
+        const key = `${connectionId}.${database}`
+        // 关闭该数据库下已打开的表 Tab，再清理所有相关缓存与选中状态
+        mainContentRef.value?.closeDatabaseTabs(connectionId, database)
+        expandedDatabases.delete(key)
+        activeDatabases.delete(key)
+        for (const catKey of Array.from(expandedCategories)) {
+          if (catKey.startsWith(key + '.')) expandedCategories.delete(catKey)
         }
+        delete connectionDatabaseTables[connectionId]?.[database]
+        if (selectedDatabase.value === key) selectedDatabase.value = ''
+        if (selectedInfoType.value === 'database' && selectedInfoData.value.database === database) {
+          closeInfoPanel()
+        }
+        if (browserStore.currentDatabase === database) {
+          browserStore.currentDatabase = ''
+        }
+        // 重新加载数据库列表
+        await loadConnectionDatabases(connectionId, true)
+        showToast(t('app.deleteDatabaseSuccess', { name: database }))
+      } catch (e: unknown) {
+        alert(t('app.deleteDatabaseFailed', { error: String(e) }))
       }
       break
+    }
     case 'export-sql':
       // 导出整库 SQL：让后端 mysqldump 直接写入用户选择的文件（无行数上限）
       if (!licenseStore.requirePro('import-export', t('license.feature.import-export'))) break
@@ -1210,12 +1248,18 @@ async function handleDatabaseMenu(action: string) {
     case 'import-sql': {
       // 导入SQL文件 - 使用 Tauri 对话框
       if (!licenseStore.requirePro('import-export', t('license.feature.import-export'))) break
+      const confirmed = await confirmDanger({
+        message: t('app.importSqlConfirm', { name: database }),
+        requireAcknowledge: true,
+      })
+      if (!confirmed) break
       try {
         const filePath = await invoke<string>('pick_file_path', { format: 'sql' })
         await browserStore.importSqlFile(connectionId, database, filePath)
-        // 刷新表列表
-        delete connectionDatabaseTables[connectionId]
-        await loadConnectionDatabases(connectionId)
+        // 导入脚本可能重建表结构，关闭旧 Tab 并强制刷新表列表
+        mainContentRef.value?.closeDatabaseTabs(connectionId, database)
+        delete connectionDatabaseTables[connectionId]?.[database]
+        await loadConnectionDatabases(connectionId, true)
         await loadDatabaseTables(connectionId, database, true)
         showToast(t('app.databaseImported'))
       } catch (e: unknown) {
@@ -1310,53 +1354,66 @@ async function handleTableMenu(action: string) {
     }
     case 'clear-table': {
       // 清空表（DELETE - 不清除ID自增值）
-      if (confirm(t('app.clearTableConfirm', { name: tableName }))) {
-        try {
-          await browserStore.clearTable(connectionId, database, tableName)
-          // 如果当前正在查看该表数据，刷新数据
-          if (selectedTable.value === `${connectionId}.${database}.${tableName}`) {
-            mainContentRef.value?.dataTableRef?.refreshData?.()
-          }
-        } catch (e: unknown) {
-          alert(t('app.clearTableFailed', { error: String(e) }))
+      const confirmed = await confirmDanger({
+        message: t('app.clearTableConfirm', { name: tableName }),
+        requireAcknowledge: true,
+      })
+      if (!confirmed) break
+      try {
+        await browserStore.clearTable(connectionId, database, tableName)
+        // 如果当前正在查看该表数据，刷新数据
+        if (selectedTable.value === `${connectionId}.${database}.${tableName}`) {
+          mainContentRef.value?.dataTableRef?.refreshData?.()
         }
+        showToast(t('app.clearTableSuccess', { name: tableName }))
+      } catch (e: unknown) {
+        alert(t('app.clearTableFailed', { error: String(e) }))
       }
       break
     }
     case 'truncate-table': {
       // 截断表（清空表数据）
-      if (confirm(t('app.truncateTableConfirm', { name: tableName }))) {
-        try {
-          await browserStore.truncateTable(connectionId, database, tableName)
-          // 如果当前正在查看该表数据，刷新数据
-          if (selectedTable.value === `${connectionId}.${database}.${tableName}`) {
-            mainContentRef.value?.dataTableRef?.refreshData?.()
-          }
-        } catch (e: unknown) {
-          alert(t('app.truncateTableFailed', { error: String(e) }))
+      const confirmed = await confirmDanger({
+        message: t('app.truncateTableConfirm', { name: tableName }),
+        requireAcknowledge: true,
+      })
+      if (!confirmed) break
+      try {
+        await browserStore.truncateTable(connectionId, database, tableName)
+        // 如果当前正在查看该表数据，刷新数据
+        if (selectedTable.value === `${connectionId}.${database}.${tableName}`) {
+          mainContentRef.value?.dataTableRef?.refreshData?.()
         }
+        showToast(t('app.truncateTableSuccess', { name: tableName }))
+      } catch (e: unknown) {
+        alert(t('app.truncateTableFailed', { error: String(e) }))
       }
       break
     }
     case 'delete-table': {
       // 删除表
-      if (confirm(t('app.deleteTableConfirm', { name: tableName }))) {
-        try {
-          await browserStore.dropTable(connectionId, database, tableName)
-          // 如果当前正在查看该表，清除选择
-          if (selectedTable.value === `${connectionId}.${database}.${tableName}`) {
-            selectedTable.value = ''
-          }
-          // 刷新表列表并更新缓存
-          const result = await browserStore.loadObjectTree(connectionId, database)
-          if (!connectionDatabaseTables[connectionId]) {
-            connectionDatabaseTables[connectionId] = {}
-          }
-          connectionDatabaseTables[connectionId][database] = result
-          showToast(t('app.deleteTableSuccess', { name: tableName }))
-        } catch (e: unknown) {
-          alert(t('app.deleteTableFailed', { error: String(e) }))
+      const confirmed = await confirmDanger({
+        message: t('app.deleteTableConfirm', { name: tableName }),
+        requireAcknowledge: true,
+      })
+      if (!confirmed) break
+      try {
+        await browserStore.dropTable(connectionId, database, tableName)
+        // 关闭该表已打开的 Tab，避免残留失效数据
+        mainContentRef.value?.dataTableRef?.closeTableById(`${connectionId}.${database}.${tableName}`)
+        // 如果当前正在查看该表，清除选择
+        if (selectedTable.value === `${connectionId}.${database}.${tableName}`) {
+          selectedTable.value = ''
         }
+        // 刷新表列表并更新缓存
+        const result = await browserStore.loadObjectTree(connectionId, database)
+        if (!connectionDatabaseTables[connectionId]) {
+          connectionDatabaseTables[connectionId] = {}
+        }
+        connectionDatabaseTables[connectionId][database] = result
+        showToast(t('app.deleteTableSuccess', { name: tableName }))
+      } catch (e: unknown) {
+        alert(t('app.deleteTableFailed', { error: String(e) }))
       }
       break
     }
@@ -1400,8 +1457,10 @@ function registerCommands() {
     available: () => !!currentConnection.value,
     action: () => {
       if (currentConnection.value) {
-        void loadConnectionDatabases(currentConnection.value.id)
-        showToast(t('app.refreshSuccess'))
+        void loadConnectionDatabases(currentConnection.value.id, true).then(ok => {
+          if (ok) showToast(t('app.refreshSuccess'))
+          else showError(t('app.refreshFailed'))
+        })
       }
     },
   })
@@ -2081,6 +2140,13 @@ body {
 .modal-content.modal-connection {
   max-width: 760px;
   width: 92%;
+}
+
+/* 备份还原：内容较少，使用紧凑宽度，并保证下拉列表有足够展开空间 */
+.modal-content.modal-backup {
+  max-width: 560px;
+  width: 92%;
+  min-height: 480px;
 }
 
 .modal-content.modal-license {

@@ -31,6 +31,8 @@ export default {
     'common.success': '成功',
     'common.failed': '失败',
     'common.deleted': '已删除',
+    'confirm.title': '警告',
+    'confirm.acknowledge': '我已知晓此操作不可恢复',
   },
   'en-US': {
     'common.cancel': 'Cancel',
@@ -60,5 +62,7 @@ export default {
     'common.success': 'Success',
     'common.failed': 'Failed',
     'common.deleted': 'Deleted',
+    'confirm.title': 'Warning',
+    'confirm.acknowledge': 'I understand that this action is permanent and cannot be undone',
   },
 }

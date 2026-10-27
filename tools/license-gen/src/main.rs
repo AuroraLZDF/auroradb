@@ -4,7 +4,8 @@
 //!   license-gen keygen [--out <私钥路径>] [--force]
 //!   license-gen sign --fingerprint <机器码> [--key <私钥路径>] [--license-id <编号>]
 //!                    [--days <有效天数，0=永久>] [--edition pro]
-//!                    [--features schema-diff,monitor,audit,import-export,ssh-tunnel]
+//!                    [--features schema-diff,monitor,audit,import-export,ssh-tunnel,
+//!                                query-plan,er-diagram,backup,global-search]
 //!
 //! 激活码格式：`AURORADB1.<base64url(payload_json)>.<base64url(ed25519_signature)>`
 //! 签名对象为 payload 段（base64url 字符串）的 ASCII 字节。
@@ -17,7 +18,8 @@ use std::path::PathBuf;
 
 const LICENSE_PREFIX: &str = "AURORADB1";
 const PRODUCT_ID: &str = "auroradb";
-const DEFAULT_FEATURES: &str = "schema-diff,monitor,audit,import-export,ssh-tunnel";
+/// 专业版默认包含全部能力；`*` 与空列表等价，新增能力时无需再改签发工具
+const DEFAULT_FEATURES: &str = "*";
 
 #[derive(Serialize)]
 struct LicensePayload {

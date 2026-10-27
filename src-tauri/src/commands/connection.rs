@@ -1,8 +1,7 @@
 use crate::core::audit::{AuditEntry, AuditLog};
 use crate::core::connection::{
-    BackupRecord, ConnectionConfig, ConnectionManager, ConnectionRequest, ConnectionStatus,
-    DataQueryRequest, ErDiagramData, ExplainPlan, GlobalSearchRequest, GlobalSearchResult,
-    SshConfig,
+    ConnectionConfig, ConnectionManager, ConnectionRequest, ConnectionStatus, DataQueryRequest,
+    ErDiagramData, ExplainPlan, GlobalSearchRequest, GlobalSearchResult, SshConfig,
 };
 use crate::core::license::{
     LicenseManager, FEATURE_BACKUP, FEATURE_ER_DIAGRAM, FEATURE_GLOBAL_SEARCH,
@@ -634,24 +633,44 @@ pub async fn get_er_diagram_data(
 }
 
 /// 触发完整数据库备份（mysqldump / pg_dump 子进程）
+///
+/// 由用户在系统保存对话框中选择输出路径，后端直接把 dump 写入该文件。
 #[command]
 pub async fn backup_database(
+    window: tauri::Window,
     state: State<'_, ConnectionManagerState>,
     license: State<'_, LicenseManager>,
     connection_id: String,
     database: String,
-    label: Option<String>,
-) -> Result<BackupRecord, String> {
+    default_filename: String,
+) -> Result<String, String> {
     license.ensure(FEATURE_BACKUP, "数据库备份").await?;
-    let manager = state.manager.read().await;
 
-    match manager
-        .backup_database(&connection_id, &database, label)
+    let (tx, rx) = tokio::sync::oneshot::channel::<Option<FilePath>>();
+    window
+        .dialog()
+        .file()
+        .set_title("备份数据库")
+        .set_file_name(&default_filename)
+        .add_filter("SQL 文件", &["sql"])
+        .add_filter("所有文件", &["*"])
+        .save_file(move |path| {
+            let _ = tx.send(path);
+        });
+
+    let output_path = match rx.await {
+        Ok(Some(path)) => path.to_string(),
+        Ok(None) => return Err("用户取消了保存操作".to_string()),
+        Err(_) => return Err("对话框操作被取消".to_string()),
+    };
+
+    let manager = state.manager.read().await;
+    manager
+        .backup_database(&connection_id, &database, &output_path)
         .await
-    {
-        Ok(record) => Ok(record),
-        Err(e) => Err(fail(&e)),
-    }
+        .map_err(|e| fail(&e))?;
+
+    Ok(output_path)
 }
 
 /// 从 dump 文件还原数据库
@@ -675,17 +694,6 @@ pub async fn restore_database(
     }
 }
 
-/// 查询某连接某库的备份历史
-#[command]
-pub async fn list_backup_history(
-    state: State<'_, ConnectionManagerState>,
-    connection_id: String,
-    database: String,
-) -> Result<Vec<BackupRecord>, String> {
-    let manager = state.manager.read().await;
-    Ok(manager.list_backup_history(&connection_id, &database))
-}
-
 /// 跨库全局搜索（Pro）：按表名 / 字段名 / 数据内容查找
 #[command]
 pub async fn global_search(
@@ -700,14 +708,3 @@ pub async fn global_search(
     manager.global_search(request).await.map_err(|e| fail(&e))
 }
 
-/// 从历史中删除一条备份记录（同时清理磁盘文件）
-#[command]
-pub async fn delete_backup_record(
-    state: State<'_, ConnectionManagerState>,
-    id: String,
-) -> Result<(), String> {
-    let manager = state.manager.read().await;
-    manager
-        .delete_backup_record(&id)
-        .map_err(|e| fail(&e))
-}

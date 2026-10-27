@@ -10,39 +10,41 @@
       <ChevronDown class="select-arrow" :size="16" />
     </div>
 
-    <!-- 下拉选项列表 -->
-    <Transition name="dropdown">
-      <div v-if="isOpen" class="select-dropdown">
-        <!-- 搜索框（可选） -->
-        <div v-if="searchable" class="select-search">
-          <input
-            ref="searchInputRef"
-            v-model="searchText"
-            type="text"
-            :placeholder="t('common.search')"
-            @click.stop
-            @keydown.esc="closeDropdown"
-          />
-        </div>
+    <!-- 下拉选项列表：挂载到 body，避免被弹窗等滚动容器裁剪 -->
+    <Teleport to="body">
+      <Transition name="dropdown">
+        <div v-if="isOpen" ref="dropdownRef" class="select-dropdown" :style="dropdownStyle">
+          <!-- 搜索框（可选） -->
+          <div v-if="searchable" class="select-search">
+            <input
+              ref="searchInputRef"
+              v-model="searchText"
+              type="text"
+              :placeholder="t('common.search')"
+              @click.stop
+              @keydown.esc="closeDropdown"
+            />
+          </div>
 
-        <!-- 选项列表（可滚动） -->
-        <div class="select-options" ref="optionsRef">
-          <div
-            v-for="option in filteredOptions"
-            :key="option.value"
-            class="select-option"
-            :class="{ selected: option.value === modelValue }"
-            @click="selectOption(option)"
-          >
-            <span class="option-label">{{ option.label }}</span>
-            <Check v-if="option.value === modelValue" class="option-check" :size="14" />
-          </div>
-          <div v-if="filteredOptions.length === 0" class="select-empty">
-            {{ t('ui.noMatchOptions') }}
+          <!-- 选项列表（可滚动） -->
+          <div class="select-options" ref="optionsRef" :style="{ maxHeight: optionsMaxHeight }">
+            <div
+              v-for="option in filteredOptions"
+              :key="option.value"
+              class="select-option"
+              :class="{ selected: option.value === modelValue }"
+              @click="selectOption(option)"
+            >
+              <span class="option-label">{{ option.label }}</span>
+              <Check v-if="option.value === modelValue" class="option-check" :size="14" />
+            </div>
+            <div v-if="filteredOptions.length === 0" class="select-empty">
+              {{ t('ui.noMatchOptions') }}
+            </div>
           </div>
         </div>
-      </div>
-    </Transition>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
@@ -72,10 +74,22 @@ const emit = defineEmits<{
 }>()
 
 const selectRef = ref<HTMLElement | null>(null)
+const dropdownRef = ref<HTMLElement | null>(null)
 const optionsRef = ref<HTMLElement | null>(null)
 const searchInputRef = ref<HTMLInputElement | null>(null)
 const isOpen = ref(false)
 const searchText = ref('')
+const dropdownStyle = ref<Record<string, string>>({})
+const optionsMaxHeight = ref('240px')
+
+/** 下拉框与触发框的间距 */
+const DROPDOWN_GAP = 4
+/** 下拉框与视口边缘的最小间距 */
+const VIEWPORT_MARGIN = 8
+/** 选项列表优先展示的最大高度 */
+const OPTIONS_MAX_HEIGHT = 240
+/** 搜索框占用的高度（用于计算剩余可用空间） */
+const SEARCH_AREA_HEIGHT = 49
 
 // 标准化选项格式
 const normalizedOptions = computed<Option[]>(() => {
@@ -108,17 +122,21 @@ const placeholderText = computed(() => props.placeholder ?? t('common.pleaseSele
 // 切换下拉框
 function toggleDropdown() {
   if (props.disabled) return
-  isOpen.value = !isOpen.value
   if (isOpen.value) {
-    searchText.value = ''
-    nextTick(() => {
-      if (props.searchable && searchInputRef.value) {
-        searchInputRef.value.focus()
-      }
-      // 滚动到选中项
-      scrollToSelected()
-    })
+    closeDropdown()
+    return
   }
+  searchText.value = ''
+  // 先算好位置再打开，避免下拉框闪现到错误位置
+  updateDropdownPosition()
+  isOpen.value = true
+  nextTick(() => {
+    if (props.searchable && searchInputRef.value) {
+      searchInputRef.value.focus()
+    }
+    // 滚动到选中项
+    scrollToSelected()
+  })
 }
 
 // 关闭下拉框
@@ -142,19 +160,52 @@ function scrollToSelected() {
   }
 }
 
+/**
+ * 计算下拉框的固定定位坐标：
+ * 优先向下展开，下方空间不足时向上展开，并按剩余空间限制选项列表高度。
+ */
+function updateDropdownPosition() {
+  const trigger = selectRef.value?.querySelector('.select-trigger') as HTMLElement | null
+  if (!trigger) return
+  const rect = trigger.getBoundingClientRect()
+  const searchHeight = props.searchable ? SEARCH_AREA_HEIGHT : 0
+  const spaceBelow = window.innerHeight - rect.bottom - DROPDOWN_GAP - VIEWPORT_MARGIN
+  const spaceAbove = rect.top - DROPDOWN_GAP - VIEWPORT_MARGIN
+  const openUp = spaceBelow < 160 && spaceAbove > spaceBelow
+  const available = Math.max(96, (openUp ? spaceAbove : spaceBelow) - searchHeight)
+  optionsMaxHeight.value = `${Math.min(OPTIONS_MAX_HEIGHT, available)}px`
+  dropdownStyle.value = {
+    position: 'fixed',
+    left: `${Math.round(rect.left)}px`,
+    width: `${Math.round(rect.width)}px`,
+    top: openUp ? 'auto' : `${Math.round(rect.bottom + DROPDOWN_GAP)}px`,
+    bottom: openUp ? `${Math.round(window.innerHeight - rect.top + DROPDOWN_GAP)}px` : 'auto',
+  }
+}
+
+// 滚动或窗口尺寸变化时重新定位，避免下拉框错位
+function handleViewportChange() {
+  if (isOpen.value) updateDropdownPosition()
+}
+
 // 点击外部关闭
 function handleClickOutside(e: MouseEvent) {
-  if (selectRef.value && !selectRef.value.contains(e.target as Node)) {
-    closeDropdown()
-  }
+  const target = e.target as Node
+  if (selectRef.value?.contains(target)) return
+  if (dropdownRef.value?.contains(target)) return
+  closeDropdown()
 }
 
 onMounted(() => {
   document.addEventListener('click', handleClickOutside)
+  window.addEventListener('resize', handleViewportChange)
+  window.addEventListener('scroll', handleViewportChange, true)
 })
 
 onUnmounted(() => {
   document.removeEventListener('click', handleClickOutside)
+  window.removeEventListener('resize', handleViewportChange)
+  window.removeEventListener('scroll', handleViewportChange, true)
 })
 </script>
 
@@ -213,12 +264,8 @@ onUnmounted(() => {
   transform: rotate(180deg);
 }
 
-/* 下拉列表 */
+/* 下拉列表（坐标与宽度由 JS 以内联样式注入） */
 .select-dropdown {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  right: 0;
   background: var(--bg-primary);
   border: 1px solid var(--border-default);
   border-radius: 6px;
