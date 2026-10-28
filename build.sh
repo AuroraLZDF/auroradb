@@ -22,7 +22,8 @@ show_help() {
     echo "  --deb         只打包 .deb 格式 (Debian/Ubuntu)"
     echo "  --appimage    只打包 .AppImage 格式 (需要下载工具)"
     echo "  --rpm         只打包 .rpm 格式 (Fedora/CentOS)"
-    echo "  --all         打包所有格式 (默认)"
+    echo "  --bundles X   自定义格式，逗号分隔，如 deb,appimage"
+    echo "  --all         打包所有格式 (deb,appimage,rpm)"
     echo "  --help        显示帮助信息"
     echo ""
     echo "注意: AppImage 打包需要从 GitHub 下载工具，"
@@ -45,6 +46,14 @@ while [[ $# -gt 0 ]]; do
         --rpm)
             BUNDLE_TYPE="rpm"
             shift
+            ;;
+        --bundles)
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                echo "错误: --bundles 需要参数，如 --bundles deb,appimage"
+                exit 1
+            fi
+            BUNDLE_TYPE="$2"
+            shift 2
             ;;
         --all)
             BUNDLE_TYPE="deb,appimage,rpm"
