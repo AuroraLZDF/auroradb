@@ -1057,7 +1057,10 @@ function openNewConsoleTab() {
 // 从对象列表单击选择表
 function onSelectTableFromObjects(tableName: string) {
   if (!currentConnection.value || !selectedDatabase.value) return
-  selectedTable.value = `${currentConnection.value.id}.${selectedDatabase.value}.${tableName}`
+  // selectedDatabase 格式: "connectionId.dbName"
+  const dbName = selectedDatabase.value.split('.').pop()
+  if (!dbName) return
+  selectTable(currentConnection.value.id, dbName, tableName)
 }
 
 // 从对象列表双击打开表
