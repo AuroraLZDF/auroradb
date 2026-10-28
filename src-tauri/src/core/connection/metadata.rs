@@ -1,6 +1,7 @@
 //! 元数据模块
 //! 对象树、表结构、数据库信息的查询，带 TTL 缓存与超时兜底。
 
+use super::driver::DriverKind;
 use super::manager::{ConnectionManager, MetadataCacheValue};
 use super::resultset::parse_column_type_precision;
 use super::types::*;
@@ -31,6 +32,27 @@ where
     }
 }
 
+/// PG 对象的展示名：public 下直出表名，其他 schema 加前缀（树节点以此为 key，须同库唯一）
+fn pg_display_name(schema: &str, name: &str) -> String {
+    if schema == "public" {
+        name.to_string()
+    } else {
+        format!("{}.{}", schema, name)
+    }
+}
+
+/// 构造 PG 表/视图节点：展示名同时作为后续浏览数据时的表标识
+fn pg_object(database: &str, schema: &str, name: &str, object_type: ObjectType) -> DatabaseObject {
+    let display = pg_display_name(schema, name);
+    DatabaseObject {
+        id: format!("{}.{}", database, display),
+        name: display,
+        object_type,
+        schema: Some(schema.to_string()),
+        children: None,
+    }
+}
+
 impl ConnectionManager {
     /// 获取数据库对象树
     pub async fn get_object_tree(
@@ -38,22 +60,20 @@ impl ConnectionManager {
         connection_id: &str,
         database: Option<&str>,
     ) -> Result<Vec<DatabaseObject>> {
+        // PG 的第一层是真实数据库（而非 schema），需要跨库建连，走独立实现
+        if self.driver_of(connection_id).await? == DriverKind::Postgres {
+            return self.get_postgres_object_tree(connection_id, database).await;
+        }
+
         let connections = self.connections.read().await;
 
         let conn = connections
             .get(connection_id)
-            .ok_or_else(|| anyhow!("Connection {} not found", connection_id))?;
+            .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
 
-        let pool = conn
-            .pool
-            .as_ref()
-            .ok_or_else(|| anyhow!("Connection {} not available", connection_id))?
-            .as_mysql("对象树")?;
-
-        // 元数据缓存：按「数据库」区分对象树；None 表示查询库列表
         let cache_key = match database {
-            Some(db) => format!("tree:db:{}", db),
-            None => "tree:root".to_string(),
+            Some(db) => format!("tree:mysql:db:{}", db),
+            None => "tree:mysql:root".to_string(),
         };
         if let Some((at, MetadataCacheValue::ObjectTree(objects))) =
             conn.metadata_cache.lock().await.get(&cache_key)
@@ -62,6 +82,12 @@ impl ConnectionManager {
                 return Ok(objects.clone());
             }
         }
+
+        let pool = conn
+            .pool
+            .as_ref()
+            .ok_or_else(|| anyhow!("连接不可用: {}", connection_id))?
+            .as_mysql("获取对象树")?;
 
         let mut objects = vec![];
 
@@ -134,6 +160,112 @@ impl ConnectionManager {
         Ok(objects)
     }
 
+    /// PostgreSQL 对象树
+    ///
+    /// 第一层是数据库（`pg_database`）；展开某个库时切换到该库的连接池，跨用户 schema 汇总
+    /// 表/视图。展示名对 public 直出表名、其余加 `schema.` 前缀（保证同一库内唯一，树节点以
+    /// 展示名作为后续查询的标识）。
+    async fn get_postgres_object_tree(
+        &self,
+        connection_id: &str,
+        database: Option<&str>,
+    ) -> Result<Vec<DatabaseObject>> {
+        let cache_key = match database {
+            Some(db) => format!("tree:postgres:db:{}", db),
+            None => "tree:postgres:root".to_string(),
+        };
+
+        let cached = {
+            let connections = self.connections.read().await;
+            let conn = connections
+                .get(connection_id)
+                .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
+            let cached = conn
+                .metadata_cache
+                .lock()
+                .await
+                .get(&cache_key)
+                .and_then(|(at, value)| match value {
+                    MetadataCacheValue::ObjectTree(objects) if at.elapsed() < METADATA_CACHE_TTL => {
+                        Some(objects.clone())
+                    }
+                    _ => None,
+                });
+            cached
+        };
+        if let Some(objects) = cached {
+            return Ok(objects);
+        }
+
+        let mut objects = vec![];
+
+        match database {
+            Some(db) => {
+                let pool = self.pg_pool_for(connection_id, db).await?;
+
+                // table_type 分两段查询，保持「表在前、视图在后」的顺序
+                let tables: Vec<(String, String)> = with_metadata_timeout(sqlx::query_as(
+                    "SELECT table_schema, table_name FROM information_schema.tables
+                     WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+                       AND table_schema NOT LIKE 'pg\\_%'
+                       AND table_type = 'BASE TABLE'
+                     ORDER BY (table_schema = 'public') DESC, table_schema ASC, table_name ASC",
+                )
+                .fetch_all(&pool))
+                .await?;
+
+                for (schema, table_name) in tables {
+                    objects.push(pg_object(db, &schema, &table_name, ObjectType::Table));
+                }
+
+                let views: Vec<(String, String)> = with_metadata_timeout(sqlx::query_as(
+                    "SELECT table_schema, table_name FROM information_schema.tables
+                     WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+                       AND table_schema NOT LIKE 'pg\\_%'
+                       AND table_type = 'VIEW'
+                     ORDER BY (table_schema = 'public') DESC, table_schema ASC, table_name ASC",
+                )
+                .fetch_all(&pool))
+                .await?;
+
+                for (schema, view_name) in views {
+                    objects.push(pg_object(db, &schema, &view_name, ObjectType::View));
+                }
+            }
+            None => {
+                // 第一层为真实数据库：排除模板库与不允许连接的库
+                let (pool, _) = self.pg_main_pool(connection_id).await?;
+                let databases: Vec<(String,)> = with_metadata_timeout(sqlx::query_as(
+                    "SELECT datname FROM pg_database
+                     WHERE datistemplate = false AND datallowconn = true
+                     ORDER BY datname ASC",
+                )
+                .fetch_all(&pool))
+                .await?;
+
+                for (db_name,) in databases {
+                    objects.push(DatabaseObject {
+                        id: db_name.clone(),
+                        name: db_name,
+                        object_type: ObjectType::Database,
+                        schema: None,
+                        children: None,
+                    });
+                }
+            }
+        }
+
+        let connections = self.connections.read().await;
+        if let Some(conn) = connections.get(connection_id) {
+            conn.metadata_cache.lock().await.insert(
+                cache_key,
+                (Instant::now(), MetadataCacheValue::ObjectTree(objects.clone())),
+            );
+        }
+
+        Ok(objects)
+    }
+
     /// 获取数据库 schema 快照（表/视图 + 列），供 SQL 编辑器补全使用
     ///
     /// 只发一条 INFORMATION_SCHEMA 查询，避免按表逐个拉列造成 N+1；
@@ -149,12 +281,12 @@ impl ConnectionManager {
         let connections = self.connections.read().await;
         let conn = connections
             .get(connection_id)
-            .ok_or_else(|| anyhow!("Connection not found: {}", connection_id))?;
+            .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
 
         let pool = conn
             .pool
             .as_ref()
-            .ok_or_else(|| anyhow!("Connection not established"))?
+            .ok_or_else(|| anyhow!("连接尚未建立"))?
             .as_mysql("Schema 快照")?;
 
         let cache_key = format!("snapshot:db:{}", database);
@@ -241,10 +373,10 @@ impl ConnectionManager {
 
         let connections = self.connections.read().await;
         let conn = connections.get(connection_id)
-            .ok_or_else(|| anyhow!("Connection not found: {}", connection_id))?;
+            .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
 
         let pool = conn.pool.as_ref()
-            .ok_or_else(|| anyhow!("Connection not established"))?
+            .ok_or_else(|| anyhow!("连接尚未建立"))?
             .as_mysql("表结构")?;
 
         // 元数据缓存：表结构按「数据库.表」区分
@@ -415,7 +547,9 @@ impl ConnectionManager {
             .bind(database)
             .bind(&fk.0)
             .fetch_optional(pool))
-            .await?;
+            .await
+            // 不能静默回落 RESTRICT：会把 CASCADE / SET NULL 误报成 RESTRICT
+            .map_err(|e| anyhow!("查询外键 {} 的更新/删除规则失败: {}", fk.0, e))?;
 
             let (on_delete, on_update) = match fk_detail {
                 Some(d) => (
@@ -507,14 +641,14 @@ impl ConnectionManager {
     ) -> Result<DatabaseInfo> {
         let connections = self.connections.read().await;
         let conn = connections.get(connection_id)
-            .ok_or_else(|| anyhow!("Connection not found: {}", connection_id))?;
+            .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
 
         let pool = conn.pool.as_ref()
-            .ok_or_else(|| anyhow!("Connection not established"))?
+            .ok_or_else(|| anyhow!("连接尚未建立"))?
             .as_mysql("数据库信息")?;
 
         // 获取数据库基本信息
-        let db_info: (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+        let db_info: (Option<String>, Option<String>, Option<String>) = with_metadata_timeout(sqlx::query_as(
             "SELECT DEFAULT_CHARACTER_SET_NAME, DEFAULT_COLLATION_NAME, 
                     CAST(COALESCE((SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = ?), 0) AS CHAR)
              FROM INFORMATION_SCHEMA.SCHEMATA 
@@ -522,33 +656,46 @@ impl ConnectionManager {
         )
         .bind(database)
         .bind(database)
-        .fetch_one(pool)
+        .fetch_one(pool))
         .await
-        .map_err(|e| anyhow!("Query failed: {}", e))?;
+        .map_err(|e| anyhow!("查询数据库信息失败: {}", e))?;
 
         // 获取数据库大小
         // 使用 CAST 将数值转为字符串，兼容不同 MySQL 版本
-        let size_info: (Option<String>, Option<String>) = sqlx::query_as(
+        let size_info = with_metadata_timeout(sqlx::query_as::<_, (Option<String>, Option<String>)>(
             "SELECT CAST(SUM(DATA_LENGTH) AS CHAR), CAST(SUM(INDEX_LENGTH) AS CHAR)
              FROM INFORMATION_SCHEMA.TABLES
              WHERE TABLE_SCHEMA = ?"
         )
         .bind(database)
-        .fetch_one(pool)
-        .await
-        .unwrap_or((Some("0".to_string()), Some("0".to_string())));
+        .fetch_one(pool))
+        .await;
 
-        let data_size = size_info.0.and_then(|s| s.parse().ok()).unwrap_or(0);
-        let index_size = size_info.1.and_then(|s| s.parse().ok()).unwrap_or(0);
+        // 查询失败时保持「未知」（界面显示 `-`），不能伪装成 0 字节
+        let (data_size, index_size, total_size) = match size_info {
+            Ok((data, index)) => {
+                let data = data.and_then(|s| s.parse::<u64>().ok());
+                let index = index.and_then(|s| s.parse::<u64>().ok());
+                let total = match (data, index) {
+                    (Some(d), Some(i)) => Some(d + i),
+                    _ => None,
+                };
+                (data, index, total)
+            }
+            Err(e) => {
+                tracing::warn!("查询数据库 {} 的占用空间失败：{}", database, e);
+                (None, None, None)
+            }
+        };
 
         Ok(DatabaseInfo {
             name: database.to_string(),
             charset: db_info.0.filter(|s: &String| !s.is_empty()),
             collation: db_info.1.filter(|s: &String| !s.is_empty()),
             table_count: db_info.2.and_then(|s: String| s.parse().ok()).unwrap_or(0),
-            data_size: Some(data_size),
-            index_size: Some(index_size),
-            total_size: Some(data_size + index_size),
+            data_size,
+            index_size,
+            total_size,
             create_time: None, // MySQL 不直接提供数据库创建时间
         })
     }
