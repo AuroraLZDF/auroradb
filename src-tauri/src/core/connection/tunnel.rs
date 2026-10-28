@@ -6,15 +6,19 @@
 //! 隧道随 `ManagedConnection` 存活，连接断开时 Drop 终止本地监听任务并关闭 SSH 会话。
 //!
 //! 第一版限制：
-//! - 认证方式仅支持密码与私钥（不含 SSH Agent）；
-//! - 不做 known_hosts 校验，仅记录服务端主机密钥指纹。
+//! - 认证方式仅支持密码与私钥（不含 SSH Agent）。
+//!
+//! 主机密钥按 `~/.ssh/known_hosts` 校验：已记录但不一致时拒绝连接（防中间人），
+//! 未记录时按 TOFU 记录后再放行（等价 OpenSSH 的 `StrictHostKeyChecking=accept-new`）。
 
 use super::types::{SshAuthType, SshConfig};
 use anyhow::{anyhow, Context, Result};
 use russh::client::{self, AuthResult, Handle, Msg};
+use russh::keys::known_hosts::{check_known_hosts_path, learn_known_hosts_path};
 use russh::keys::{load_secret_key, HashAlg, PrivateKeyWithHashAlg, PublicKey};
 use russh::Channel;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -48,17 +52,32 @@ impl SshTunnel {
             ..Default::default()
         });
 
+        // russh 拒绝主机密钥时只报「key rejected」，具体原因由 handler 记在这里
+        let host_key_failure: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let handler = ClientHandler {
+            host: config.host.trim().to_string(),
+            port: config.port,
+            known_hosts: known_hosts_file(),
+            failure: Arc::clone(&host_key_failure),
+        };
+
         let mut handle = tokio::time::timeout(
             CONNECT_TIMEOUT,
             client::connect(
                 ssh_config,
                 (config.host.trim(), config.port),
-                ClientHandler,
+                handler,
             ),
         )
         .await
         .map_err(|_| anyhow!("SSH 连接超时（{}:{}）", config.host, config.port))?
-        .map_err(|e| anyhow!("SSH 连接失败（{}:{}）：{}", config.host, config.port, e))?;
+        .map_err(|e| {
+            let reason = host_key_failure.lock().ok().and_then(|slot| slot.clone());
+            match reason {
+                Some(reason) => anyhow!("SSH 连接失败（{}:{}）：{}", config.host, config.port, reason),
+                None => anyhow!("SSH 连接失败（{}:{}）：{}", config.host, config.port, e),
+            }
+        })?;
 
         authenticate(&mut handle, config).await?;
 
@@ -204,8 +223,60 @@ async fn authenticate(handle: &mut Handle<ClientHandler>, config: &SshConfig) ->
     Ok(())
 }
 
-/// SSH 客户端回调：第一版接受所有主机密钥并记录指纹
-struct ClientHandler;
+/// `~/.ssh/known_hosts` 路径；取不到主目录时返回 None（无法校验）
+fn known_hosts_file() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join(".ssh").join("known_hosts"))
+}
+
+/// 校验服务端主机密钥。
+///
+/// - known_hosts 已有该主机且密钥一致 → 通过
+/// - 已有记录但密钥不一致 → 拒绝（可能是中间人攻击）
+/// - 无记录 → 记录后放行（TOFU；写入失败只告警，不阻断首次连接）
+fn verify_host_key(path: &Path, host: &str, port: u16, key: &PublicKey) -> Result<(), String> {
+    match check_known_hosts_path(host, port, key, path) {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            let fingerprint = key.fingerprint(HashAlg::Sha256);
+            match learn_known_hosts_path(host, port, key, path) {
+                Ok(()) => tracing::warn!(
+                    "首次连接 SSH 主机 {}:{}，已记录主机密钥指纹 {}（写入 {}）",
+                    host,
+                    port,
+                    fingerprint,
+                    path.display()
+                ),
+                Err(e) => tracing::warn!(
+                    "首次连接 SSH 主机 {}:{}，主机密钥指纹 {} 写入 {} 失败：{}",
+                    host,
+                    port,
+                    fingerprint,
+                    path.display(),
+                    e
+                ),
+            }
+            Ok(())
+        }
+        Err(russh::keys::Error::KeyChanged { line }) => Err(format!(
+            "SSH 主机 {}:{} 的主机密钥与 known_hosts 第 {} 行记录不一致，可能存在中间人攻击；\
+             确认无误后请删除该条目再重试（{}）",
+            host,
+            port,
+            line,
+            path.display()
+        )),
+        Err(e) => Err(format!("SSH 主机 {}:{} 的主机密钥校验失败：{}", host, port, e)),
+    }
+}
+
+/// SSH 客户端回调：按 known_hosts 校验服务端主机密钥
+struct ClientHandler {
+    host: String,
+    port: u16,
+    known_hosts: Option<PathBuf>,
+    /// 校验失败原因（russh 只会返回「主机密钥被拒绝」）
+    failure: Arc<Mutex<Option<String>>>,
+}
 
 impl client::Handler for ClientHandler {
     type Error = russh::Error;
@@ -214,11 +285,32 @@ impl client::Handler for ClientHandler {
         &mut self,
         server_public_key: &PublicKey,
     ) -> Result<bool, Self::Error> {
-        tracing::warn!(
-            "未校验 SSH 主机密钥（暂未支持 known_hosts），服务端指纹：{}",
-            server_public_key.fingerprint(HashAlg::Sha256)
-        );
-        Ok(true)
+        let Some(path) = self.known_hosts.clone() else {
+            tracing::warn!(
+                "未找到用户主目录，跳过 SSH 主机密钥校验；服务端指纹：{}",
+                server_public_key.fingerprint(HashAlg::Sha256)
+            );
+            return Ok(true);
+        };
+
+        let host = self.host.clone();
+        let port = self.port;
+        let key = server_public_key.clone();
+        // known_hosts 是同步文件读写，放到阻塞线程池，避免卡住 async 运行时
+        let outcome = tokio::task::spawn_blocking(move || verify_host_key(&path, &host, port, &key))
+            .await;
+
+        let rejection = match outcome {
+            Ok(Ok(())) => return Ok(true),
+            Ok(Err(reason)) => reason,
+            Err(e) => format!("SSH 主机密钥校验任务异常：{}", e),
+        };
+
+        tracing::error!("{}", rejection);
+        if let Ok(mut slot) = self.failure.lock() {
+            *slot = Some(rejection);
+        }
+        Ok(false)
     }
 }
 
@@ -335,5 +427,53 @@ mod tests {
     #[test]
     fn validate_accepts_password_auth() {
         assert!(validate(&ssh(SshAuthType::Password), "db.internal", 3306).is_ok());
+    }
+
+    const TEST_KEY: &str =
+        "AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ";
+    const OTHER_KEY: &str =
+        "AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G2sz07DnfFlrouTcysQlj2P+jpNSOEWD9OJ3X";
+
+    /// 独立临时文件，避免测试并行时互相干扰，也不碰用户真实的 known_hosts
+    fn temp_known_hosts(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "auroradb-known-hosts-{}-{}.txt",
+            std::process::id(),
+            tag
+        ))
+    }
+
+    fn test_key(base64: &str) -> PublicKey {
+        russh::keys::parse_public_key_base64(base64).expect("测试公钥应可解析")
+    }
+
+    #[test]
+    fn verify_host_key_records_unknown_host_then_accepts() {
+        let path = temp_known_hosts("tofu");
+        let _ = std::fs::remove_file(&path);
+        let key = test_key(TEST_KEY);
+
+        verify_host_key(&path, "jump.example.com", 2222, &key).expect("首次连接应放行并记录");
+        assert!(
+            check_known_hosts_path("jump.example.com", 2222, &key, &path).unwrap(),
+            "首次连接后应写入 known_hosts"
+        );
+        verify_host_key(&path, "jump.example.com", 2222, &key).expect("同密钥再次连接应通过");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn verify_host_key_rejects_changed_key() {
+        let path = temp_known_hosts("mismatch");
+        let _ = std::fs::remove_file(&path);
+
+        verify_host_key(&path, "jump.example.com", 22, &test_key(TEST_KEY)).expect("首次记录应放行");
+        let err = verify_host_key(&path, "jump.example.com", 22, &test_key(OTHER_KEY))
+            .expect_err("主机密钥变化必须拒绝连接");
+        assert!(err.contains("不一致"), "{err}");
+        assert!(err.contains("中间人"), "{err}");
+
+        let _ = std::fs::remove_file(&path);
     }
 }
