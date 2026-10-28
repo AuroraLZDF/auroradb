@@ -132,7 +132,6 @@ import {
   Activity,
   ScrollText,
   HardDrive,
-  ArrowDownUp,
   Search,
   Network,
 } from 'lucide-vue-next'
@@ -159,7 +158,6 @@ const proFeatures: FeatureItem[] = [
   { key: 'monitor', icon: Activity },
   { key: 'audit', icon: ScrollText },
   { key: 'backup', icon: HardDrive },
-  { key: 'import-export', icon: ArrowDownUp },
   { key: 'global-search', icon: Search },
   { key: 'ssh-tunnel', icon: Network },
 ]

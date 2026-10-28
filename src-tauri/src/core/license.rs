@@ -32,7 +32,6 @@ pub const PRODUCT_ID: &str = "auroradb";
 pub const FEATURE_SCHEMA_DIFF: &str = "schema-diff";
 pub const FEATURE_MONITOR: &str = "monitor";
 pub const FEATURE_AUDIT: &str = "audit";
-pub const FEATURE_IMPORT_EXPORT: &str = "import-export";
 pub const FEATURE_SSH_TUNNEL: &str = "ssh-tunnel";
 pub const FEATURE_QUERY_PLAN: &str = "query-plan";
 pub const FEATURE_ER_DIAGRAM: &str = "er-diagram";

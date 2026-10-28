@@ -1269,7 +1269,6 @@ async function handleDatabaseMenu(action: string) {
     }
     case 'export-sql':
       // 导出整库 SQL：让后端 mysqldump 直接写入用户选择的文件（无行数上限）
-      if (!licenseStore.requirePro('import-export', t('license.feature.import-export'))) break
       try {
         const defaultFilename = `${database}_${new Date().toISOString().slice(0, 10)}.sql`
         await invoke<string>('export_database_sql_to_file', {
@@ -1280,7 +1279,6 @@ async function handleDatabaseMenu(action: string) {
         showToast(t('app.databaseExported'))
       } catch (e: unknown) {
         console.error('Export SQL failed:', e)
-        if (licenseStore.handleError(e)) break
         const errorMessage = String(e)
         if (!errorMessage.includes('用户取消')) {
           showError(t('app.exportSqlFailed', { error: errorMessage }))
@@ -1289,7 +1287,6 @@ async function handleDatabaseMenu(action: string) {
       break
     case 'import-sql': {
       // 导入SQL文件 - 使用 Tauri 对话框
-      if (!licenseStore.requirePro('import-export', t('license.feature.import-export'))) break
       const confirmed = await confirmDanger({
         message: t('app.importSqlConfirm', { name: database }),
         requireAcknowledge: true,
@@ -1305,7 +1302,6 @@ async function handleDatabaseMenu(action: string) {
         await loadDatabaseTables(connectionId, database, true)
         showToast(t('app.databaseImported'))
       } catch (e: unknown) {
-        if (licenseStore.handleError(e)) break
         const errorMessage = String(e)
         if (!errorMessage.includes('用户取消')) {
           showError(t('app.importSqlFailed', { error: errorMessage }))
@@ -1338,7 +1334,6 @@ async function handleTableMenu(action: string) {
       break
     case 'export':
       // 切换到数据浏览视图并打开表
-      if (!licenseStore.requirePro('import-export', t('license.feature.import-export'))) break
       currentView.value = 'data'
       selectedDatabase.value = `${connectionId}.${database}`
       selectTable(connectionId, database, tableName)
@@ -1350,7 +1345,6 @@ async function handleTableMenu(action: string) {
       break
     case 'import':
       // 切换到数据浏览视图并打开表
-      if (!licenseStore.requirePro('import-export', t('license.feature.import-export'))) break
       currentView.value = 'data'
       selectedDatabase.value = `${connectionId}.${database}`
       selectTable(connectionId, database, tableName)

@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use crate::commands::connection::ConnectionManagerState;
 use crate::core::connection::export::{ExportColumn, ExportFormat};
 use crate::core::connection::CellValue;
-use crate::core::license::{LicenseManager, FEATURE_IMPORT_EXPORT};
 
 /// 列定义
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -21,12 +20,10 @@ pub struct ExcelColumn {
 #[command]
 pub async fn export_to_excel(
     window: tauri::Window,
-    license: State<'_, LicenseManager>,
     columns: Vec<ExcelColumn>,
     data: Vec<serde_json::Map<String, serde_json::Value>>,
     filename: String,
 ) -> Result<String, String> {
-    license.ensure(FEATURE_IMPORT_EXPORT, "导出 Excel").await?;
     // 前端传入的文件名只允许纯文件名：直接 join 绝对路径或 `../` 会写到临时目录之外，
     // 后面的 remove_file 更可能删掉用户文件。
     let filename = sanitize_file_name(&filename, "export.xlsx");
@@ -153,13 +150,11 @@ pub async fn export_to_excel(
 pub async fn export_table_to_excel(
     window: tauri::Window,
     state: State<'_, ConnectionManagerState>,
-    license: State<'_, LicenseManager>,
     connection_id: String,
     database: String,
     table: String,
     filename: String,
 ) -> Result<String, String> {
-    license.ensure(FEATURE_IMPORT_EXPORT, "导出 Excel").await?;
     let data = {
         let manager = state.manager.read().await;
         manager
@@ -207,14 +202,12 @@ pub async fn export_table_to_excel(
 pub async fn export_table_to_file(
     window: tauri::Window,
     state: State<'_, ConnectionManagerState>,
-    license: State<'_, LicenseManager>,
     connection_id: String,
     database: String,
     table: String,
     format: String,
     filename: String,
 ) -> Result<String, String> {
-    license.ensure(FEATURE_IMPORT_EXPORT, "导出数据").await?;
     let export_format =
         ExportFormat::parse(&format).map_err(|e| crate::core::error::user_message(&e))?;
     // 用户传入的文件名只允许纯文件名，避免路径穿越

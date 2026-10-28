@@ -452,7 +452,6 @@ import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useDataBrowserStore, type TableChange } from '@/stores/dataBrowser'
 import { useConnectionStore } from '@/stores/connection'
-import { useLicenseStore } from '@/stores/license'
 import { useDebounce } from '@/composables/useDebounce'
 import { confirmAction } from '@/composables/useConfirm'
 import { useUnsavedGuard } from '@/composables/useUnsavedGuard'
@@ -499,7 +498,6 @@ interface NewRow {
 
 const browserStore = useDataBrowserStore()
 const connectionStore = useConnectionStore()
-const licenseStore = useLicenseStore()
 
 // 表标签真正关闭后通知外层，保证外层 Tab 与内部表状态同步
 const emit = defineEmits<{
@@ -2174,9 +2172,7 @@ async function executeExport() {
     // 用户取消保存时不提示错误
     if (!errorMessage.includes('用户取消')) {
       console.error('Export failed:', e)
-      if (!licenseStore.handleError(e)) {
-        showToast(t('dataTable.exportFailed', { error: errorMessage }), 'error')
-      }
+      showToast(t('dataTable.exportFailed', { error: errorMessage }), 'error')
     }
   } finally {
     exportDialog.value.loading = false
@@ -2213,9 +2209,7 @@ async function executeImport() {
     await loadData()
   } catch (e: unknown) {
     console.error('Import failed:', e)
-    if (!licenseStore.handleError(e)) {
-      showToast(t('dataTable.importFailed', { error: String(e) }), 'error')
-    }
+    showToast(t('dataTable.importFailed', { error: String(e) }), 'error')
   } finally {
     importDialog.value.loading = false
   }

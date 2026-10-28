@@ -5,7 +5,7 @@ use crate::core::connection::{
 };
 use crate::core::license::{
     LicenseManager, FEATURE_BACKUP, FEATURE_ER_DIAGRAM, FEATURE_GLOBAL_SEARCH,
-    FEATURE_IMPORT_EXPORT, FEATURE_MONITOR, FEATURE_QUERY_PLAN, FEATURE_SCHEMA_DIFF,
+    FEATURE_MONITOR, FEATURE_QUERY_PLAN, FEATURE_SCHEMA_DIFF,
     FEATURE_SSH_TUNNEL,
 };
 use tauri::{command, State};
@@ -367,14 +367,12 @@ pub async fn cancel_query(
 pub async fn import_data(
     state: State<'_, ConnectionManagerState>,
     audit: State<'_, AuditLog>,
-    license: State<'_, LicenseManager>,
     connection_id: String,
     database: String,
     table: String,
     format: String, // csv, sql
     data: String,
 ) -> Result<u64, String> {
-    license.ensure(FEATURE_IMPORT_EXPORT, "导入数据").await?;
     // 不把整份导入内容写进审计日志，只记录来源与体量
     let summary = format!(
         "-- 导入 `{}`.`{}`（格式：{}，{} 字节）",
@@ -414,13 +412,10 @@ pub async fn import_data(
 pub async fn export_database_sql_to_file(
     window: tauri::Window,
     state: State<'_, ConnectionManagerState>,
-    license: State<'_, LicenseManager>,
     connection_id: String,
     database: String,
     default_filename: String,
 ) -> Result<String, String> {
-    license.ensure(FEATURE_IMPORT_EXPORT, "导出数据库").await?;
-
     let (tx, rx) = tokio::sync::oneshot::channel::<Option<FilePath>>();
     window
         .dialog()
@@ -453,12 +448,10 @@ pub async fn export_database_sql_to_file(
 pub async fn import_database_sql(
     state: State<'_, ConnectionManagerState>,
     audit: State<'_, AuditLog>,
-    license: State<'_, LicenseManager>,
     connection_id: String,
     database: String,
     sql: String,
 ) -> Result<(), String> {
-    license.ensure(FEATURE_IMPORT_EXPORT, "导入数据库").await?;
     // 不把整份 SQL 写进审计日志（可能包含敏感数据），只记录体量
     let summary = format!("-- 导入 SQL 脚本（目标库：{}，{} 字节）", database, sql.len());
     let (name, host) = connection_meta(&state, &connection_id).await;
@@ -494,12 +487,10 @@ pub async fn import_database_sql(
 pub async fn import_sql_file(
     state: State<'_, ConnectionManagerState>,
     audit: State<'_, AuditLog>,
-    license: State<'_, LicenseManager>,
     connection_id: String,
     database: String,
     file_path: String,
 ) -> Result<(), String> {
-    license.ensure(FEATURE_IMPORT_EXPORT, "导入数据库").await?;
     let (name, host) = connection_meta(&state, &connection_id).await;
     let started = Instant::now();
     let outcome = {
