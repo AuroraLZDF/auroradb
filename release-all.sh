@@ -114,6 +114,13 @@ if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" && ! -f "$SIGN_KEY" ]]; then
     die "未找到更新签名私钥: $SIGN_KEY"
 fi
 
+# 加密私钥会让 Tauri CLI 交互式索要密码，必须提前提供，否则构建阶段会卡住
+if [[ -f "$SIGN_KEY" && -z "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]] \
+    && base64 -d "$SIGN_KEY" 2>/dev/null | grep -q "encrypted secret key"; then
+    [[ -f "$HOME/.config/auroradb/updater.password" ]] \
+        || die "签名私钥已加密但未提供密码: 请设置 TAURI_SIGNING_PRIVATE_KEY_PASSWORD 或写入 ~/.config/auroradb/updater.password"
+fi
+
 NOTES="${NOTES:-AuroraDB $VERSION 版本发布}"
 
 # ---------- 2. 确认发布计划 ----------

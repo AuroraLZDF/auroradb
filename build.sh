@@ -178,6 +178,19 @@ if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
     fi
 fi
 
+# 私钥若带密码，Tauri CLI 会交互式索要，无法在一键脚本中使用
+# 支持从本地文件读取密码（不入库）：~/.config/auroradb/updater.password
+if [ -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ]; then
+    DEFAULT_SIGN_PASS="$HOME/.config/auroradb/updater.password"
+    if [ -f "$DEFAULT_SIGN_PASS" ]; then
+        export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(tr -d '\r\n' < "$DEFAULT_SIGN_PASS")"
+        echo "  更新签名密码: $DEFAULT_SIGN_PASS"
+    else
+        echo -e "${YELLOW}  提示: 私钥已加密，构建时会要求输入密码${NC}"
+        echo "  可写入 ~/.config/auroradb/updater.password 或设置 TAURI_SIGNING_PRIVATE_KEY_PASSWORD 免交互"
+    fi
+fi
+
 # 使用 timeout 防止卡死
 if command -v timeout &> /dev/null; then
     timeout 600 cargo tauri build --bundles "$BUNDLE_TYPE" || {
