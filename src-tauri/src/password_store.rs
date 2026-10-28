@@ -47,9 +47,17 @@ pub struct PasswordStore {
 }
 
 impl PasswordStore {
+    /// 取内部锁；锁被 panic 污染时仍可恢复，避免整个密码功能不可用
+    fn lock_inner(&self) -> std::sync::MutexGuard<'_, Inner> {
+        self.inner.lock().unwrap_or_else(|poisoned| {
+            tracing::warn!("Password store lock was poisoned, recovering inner state");
+            poisoned.into_inner()
+        })
+    }
+
     pub fn new() -> anyhow::Result<Self> {
         let data_dir = dirs::data_dir()
-            .ok_or_else(|| anyhow::anyhow!("Could not get data directory"))?
+            .ok_or_else(|| anyhow::anyhow!("无法获取数据目录"))?
             .join("mysql-client");
 
         fs::create_dir_all(&data_dir)?;
@@ -105,20 +113,20 @@ impl PasswordStore {
 
     fn entry(connection_id: &str) -> anyhow::Result<keyring::Entry> {
         keyring::Entry::new(KEYRING_SERVICE, connection_id)
-            .context("Failed to open system keyring entry")
+            .context("无法打开系统密钥环条目")
     }
 
     fn write_secret(connection_id: &str, password: &str) -> anyhow::Result<()> {
         Self::entry(connection_id)?
             .set_password(password)
-            .context("Failed to write password to system keyring")
+            .context("无法将密码写入系统密钥环")
     }
 
     fn read_secret(connection_id: &str) -> anyhow::Result<Option<String>> {
         match Self::entry(connection_id)?.get_password() {
             Ok(password) => Ok(Some(password)),
             Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(anyhow::Error::new(e).context("Failed to read password from system keyring")),
+            Err(e) => Err(anyhow::Error::new(e).context("无法从系统密钥环读取密码")),
         }
     }
 
@@ -126,16 +134,14 @@ impl PasswordStore {
         match Self::entry(connection_id)?.delete_credential() {
             Ok(()) => Ok(()),
             Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(anyhow::Error::new(e).context("Failed to delete password from system keyring")),
+            Err(e) => Err(anyhow::Error::new(e).context("无法从系统密钥环删除密码")),
         }
     }
 
     /// 组合元数据与凭据库中的密码
     fn resolve(&self, meta: PasswordMeta) -> Option<StoredPassword> {
         if let Some(password) = self
-            .inner
-            .lock()
-            .unwrap()
+            .lock_inner()
             .secrets
             .get(&meta.connection_id)
             .cloned()
@@ -145,9 +151,7 @@ impl PasswordStore {
 
         match Self::read_secret(&meta.connection_id) {
             Ok(Some(password)) => {
-                self.inner
-                    .lock()
-                    .unwrap()
+                self.lock_inner()
                     .secrets
                     .insert(meta.connection_id.clone(), password.clone());
                 Some(Self::assemble(meta, password))
@@ -177,10 +181,12 @@ impl PasswordStore {
     }
 
     pub fn save(&self, password: StoredPassword) -> anyhow::Result<()> {
+        let previous_keyring_secret =
+            Self::read_secret(&password.connection_id).unwrap_or(None);
         Self::write_secret(&password.connection_id, &password.password)?;
 
-        let mut inner = self.inner.lock().unwrap();
-        inner.meta.insert(
+        let mut inner = self.lock_inner();
+        let previous_meta = inner.meta.insert(
             password.connection_id.clone(),
             PasswordMeta {
                 connection_id: password.connection_id.clone(),
@@ -189,28 +195,62 @@ impl PasswordStore {
                 username: password.username.clone(),
             },
         );
-        inner
+        let previous_secret = inner
             .secrets
             .insert(password.connection_id.clone(), password.password.clone());
         if let Err(e) = self.write_index(&inner) {
+            // 索引写失败时回滚内存与凭据库，避免「索引与凭据库不一致」的半成功状态
             tracing::error!("Failed to write password index: {}", e);
+            match previous_meta {
+                Some(meta) => {
+                    inner.meta.insert(password.connection_id.clone(), meta);
+                }
+                None => {
+                    inner.meta.remove(&password.connection_id);
+                }
+            }
+            match previous_secret {
+                Some(secret) => {
+                    inner.secrets.insert(password.connection_id.clone(), secret);
+                }
+                None => {
+                    inner.secrets.remove(&password.connection_id);
+                }
+            }
+            let revert = match previous_keyring_secret {
+                Some(secret) => Self::write_secret(&password.connection_id, &secret),
+                None => Self::remove_secret(&password.connection_id),
+            };
+            if let Err(revert_err) = revert {
+                tracing::error!("Failed to roll back password in system keyring: {}", revert_err);
+            }
             return Err(e);
         }
         Ok(())
     }
 
     pub fn get(&self, connection_id: &str) -> Option<StoredPassword> {
-        let meta = self.inner.lock().unwrap().meta.get(connection_id).cloned()?;
+        let meta = self.lock_inner().meta.get(connection_id).cloned()?;
         self.resolve(meta)
     }
 
     pub fn delete(&self, connection_id: &str) -> anyhow::Result<()> {
-        Self::remove_secret(connection_id)?;
+        let mut inner = self.lock_inner();
+        let removed_meta = inner.meta.remove(connection_id);
+        let removed_secret = inner.secrets.remove(connection_id);
+        // 先落索引再删凭据：索引写失败可恢复内存状态，不会出现「密码已删但索引还在」
+        if let Err(e) = self.write_index(&inner) {
+            if let Some(meta) = removed_meta {
+                inner.meta.insert(connection_id.to_string(), meta);
+            }
+            if let Some(secret) = removed_secret {
+                inner.secrets.insert(connection_id.to_string(), secret);
+            }
+            return Err(e);
+        }
+        drop(inner);
 
-        let mut inner = self.inner.lock().unwrap();
-        inner.meta.remove(connection_id);
-        inner.secrets.remove(connection_id);
-        self.write_index(&inner)?;
+        Self::remove_secret(connection_id)?;
         Ok(())
     }
 
@@ -222,7 +262,7 @@ impl PasswordStore {
         username: &str,
     ) -> Option<StoredPassword> {
         let meta = {
-            let inner = self.inner.lock().unwrap();
+            let inner = self.lock_inner();
             inner
                 .meta
                 .values()
