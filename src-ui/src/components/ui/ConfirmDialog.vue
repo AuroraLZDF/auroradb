@@ -30,12 +30,13 @@
 
           <footer class="confirm-footer">
             <button
-              class="confirm-btn confirm-btn--danger"
+              class="confirm-btn"
+              :class="confirmState.danger ? 'confirm-btn--danger' : 'confirm-btn--primary'"
               type="button"
               :disabled="!canConfirm"
               @click="confirm"
             >
-              {{ confirmState.confirmText || t('common.delete') }}
+              {{ confirmLabel }}
             </button>
             <button
               ref="cancelRef"
@@ -74,6 +75,11 @@ watch(
 
 const canConfirm = computed(() => !confirmState.requireAcknowledge || acknowledged.value)
 const title = computed(() => confirmState.title || t('confirm.title'))
+const confirmLabel = computed(
+  () =>
+    confirmState.confirmText ||
+    (confirmState.danger ? t('common.delete') : t('common.confirm')),
+)
 
 function confirm() {
   if (!canConfirm.value) return
@@ -224,6 +230,17 @@ function cancel() {
 .confirm-btn--danger:hover:not(:disabled) {
   border-color: var(--error-600);
   background: var(--error-600);
+}
+
+.confirm-btn--primary {
+  border-color: var(--brand-500);
+  background: var(--brand-500);
+  color: #fff;
+}
+
+.confirm-btn--primary:hover:not(:disabled) {
+  border-color: var(--brand-600, var(--brand-500));
+  background: var(--brand-600, var(--brand-500));
 }
 
 .confirm-btn:disabled {

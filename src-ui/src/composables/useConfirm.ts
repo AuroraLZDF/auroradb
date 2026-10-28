@@ -11,6 +11,8 @@ export interface ConfirmOptions {
   cancelText?: string
   /** 是否要求勾选「我已知晓此操作不可恢复」后才能确认 */
   requireAcknowledge?: boolean
+  /** 确认按钮是否使用危险（红色）样式，默认 true */
+  danger?: boolean
 }
 
 interface ConfirmState {
@@ -20,6 +22,7 @@ interface ConfirmState {
   confirmText: string
   cancelText: string
   requireAcknowledge: boolean
+  danger: boolean
 }
 
 const state = reactive<ConfirmState>({
@@ -29,6 +32,7 @@ const state = reactive<ConfirmState>({
   confirmText: '',
   cancelText: '',
   requireAcknowledge: false,
+  danger: true,
 })
 
 /** 供 ConfirmDialog 组件读取的只读状态 */
@@ -51,11 +55,19 @@ export function confirmDanger(options: ConfirmOptions): Promise<boolean> {
   state.confirmText = options.confirmText ?? ''
   state.cancelText = options.cancelText ?? ''
   state.requireAcknowledge = options.requireAcknowledge ?? false
+  state.danger = options.danger ?? true
   state.visible = true
 
   return new Promise<boolean>(resolve => {
     resolver = resolve
   })
+}
+
+/**
+ * 普通二次确认（非破坏性操作，如刷新、放弃搜索），返回用户是否确认。
+ */
+export function confirmAction(options: ConfirmOptions): Promise<boolean> {
+  return confirmDanger({ ...options, danger: false })
 }
 
 /** 由 ConfirmDialog 组件调用，结束当前确认流程 */
