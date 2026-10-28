@@ -301,6 +301,7 @@ dependencies = [
  "chrono",
  "dirs 5.0.1",
  "ed25519-dalek",
+ "futures-util",
  "keyring",
  "russh",
  "rust_decimal",

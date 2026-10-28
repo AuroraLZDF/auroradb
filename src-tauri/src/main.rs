@@ -75,8 +75,15 @@ fn main() {
     let _log_guard = init_tracing();
     tracing::info!("AuroraDB v{} starting", env!("CARGO_PKG_VERSION"));
 
-    // 初始化密码存储
-    let password_store = PasswordStore::new().expect("Failed to initialize password store");
+    // 初始化密码存储：失败时给出可诊断的提示，而不是直接 panic 掉整个进程
+    let password_store = match PasswordStore::new() {
+        Ok(store) => store,
+        Err(e) => {
+            tracing::error!("初始化密码存储失败：{}", e);
+            eprintln!("无法初始化密码存储（数据目录或系统凭据库不可用）：{e}");
+            std::process::exit(1);
+        }
+    };
 
     tauri::Builder::default()
         .manage(ConnectionManagerState::new())
@@ -103,7 +110,7 @@ fn main() {
             commands::connection::commit_transaction,
             commands::connection::rollback_transaction,
             commands::connection::cancel_query,
-            commands::connection::export_table_data,
+            commands::file::export_table_to_file,
             commands::connection::import_data,
             commands::connection::export_database_sql_to_file,
             commands::connection::import_database_sql,

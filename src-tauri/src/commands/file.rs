@@ -6,7 +6,7 @@ use rust_xlsxwriter::Workbook;
 use serde::{Deserialize, Serialize};
 
 use crate::commands::connection::ConnectionManagerState;
-use crate::core::connection::export::ExportColumn;
+use crate::core::connection::export::{ExportColumn, ExportFormat};
 use crate::core::connection::CellValue;
 use crate::core::license::{LicenseManager, FEATURE_IMPORT_EXPORT};
 
@@ -27,9 +27,15 @@ pub async fn export_to_excel(
     filename: String,
 ) -> Result<String, String> {
     license.ensure(FEATURE_IMPORT_EXPORT, "导出 Excel").await?;
+    // 前端传入的文件名只允许纯文件名：直接 join 绝对路径或 `../` 会写到临时目录之外，
+    // 后面的 remove_file 更可能删掉用户文件。
+    let filename = sanitize_file_name(&filename, "export.xlsx");
     // 创建临时文件路径
     let temp_dir = std::env::temp_dir();
-    let temp_path = temp_dir.join(&filename);
+    let temp_path = temp_dir.join(format!(
+        "auroradb-ipc-export-{}.xlsx",
+        chrono::Utc::now().timestamp_millis()
+    ));
     
     // 创建工作簿
     let mut workbook = Workbook::new();
@@ -188,13 +194,114 @@ pub async fn export_table_to_excel(
     }
 
     // 用户传入的文件名只允许纯文件名，避免路径穿越
-    let safe_name = if filename.is_empty() || filename.contains(|c| c == '/' || c == '\\') {
-        format!("{}.xlsx", table)
-    } else {
-        filename
-    };
+    let safe_name = sanitize_file_name(&filename, &format!("{}.xlsx", table));
 
     save_workbook_with_dialog(window, workbook, &safe_name).await
+}
+
+/// 导出表数据到文件（CSV / SQL / JSON）
+///
+/// 后端逐行读取并直接写入用户选定的文件，内存占用与表大小无关；
+/// 失败或被取消时删除半成品文件，避免留下截断的导出结果。
+#[command]
+pub async fn export_table_to_file(
+    window: tauri::Window,
+    state: State<'_, ConnectionManagerState>,
+    license: State<'_, LicenseManager>,
+    connection_id: String,
+    database: String,
+    table: String,
+    format: String,
+    filename: String,
+) -> Result<String, String> {
+    license.ensure(FEATURE_IMPORT_EXPORT, "导出数据").await?;
+    let export_format =
+        ExportFormat::parse(&format).map_err(|e| crate::core::error::user_message(&e))?;
+    // 用户传入的文件名只允许纯文件名，避免路径穿越
+    let safe_name = sanitize_file_name(
+        &filename,
+        &format!("{}.{}", table, export_format.extension()),
+    );
+
+    let path = pick_save_path(
+        window,
+        "导出表数据",
+        &safe_name,
+        export_format.filter_name(),
+        export_format.extension(),
+    )
+    .await?;
+
+    let outcome = {
+        let manager = state.manager.read().await;
+        manager
+            .export_table_to_file(
+                &connection_id,
+                &database,
+                &table,
+                &format,
+                std::path::Path::new(&path),
+            )
+            .await
+    };
+
+    match outcome {
+        Ok(_) => Ok(path),
+        Err(e) => {
+            // 半成品文件对用户没有价值，顺手清理
+            let _ = tokio::fs::remove_file(&path).await;
+            Err(crate::core::error::user_message(&e))
+        }
+    }
+}
+
+/// 弹出保存对话框，返回用户选择的完整路径；取消时返回可识别的错误文本
+async fn pick_save_path(
+    window: tauri::Window,
+    title: &str,
+    filename: &str,
+    filter_name: &str,
+    extension: &str,
+) -> Result<String, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<Option<FilePath>>();
+
+    window
+        .dialog()
+        .file()
+        .set_title(title)
+        .set_file_name(filename)
+        .add_filter(filter_name, &[extension])
+        .add_filter("所有文件", &["*"])
+        .save_file(move |path| {
+            let _ = tx.send(path);
+        });
+
+    match rx.await {
+        Ok(Some(path)) => Ok(path.to_string()),
+        Ok(None) => Err("用户取消了保存操作".to_string()),
+        Err(_) => Err("对话框操作被取消".to_string()),
+    }
+}
+
+/// 把前端提供的文件名收敛为安全的纯文件名
+///
+/// 去掉目录部分与路径分隔符、控制字符，并避免 `.`/`..` 之类的名字。
+fn sanitize_file_name(filename: &str, fallback: &str) -> String {
+    let base = filename
+        .rsplit(|c| c == '/' || c == '\\')
+        .next()
+        .unwrap_or("")
+        .trim();
+    let cleaned: String = base
+        .chars()
+        .filter(|c| !c.is_control() && !matches!(c, ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+        .collect();
+    let cleaned = cleaned.trim().trim_start_matches('.').to_string();
+    if cleaned.is_empty() {
+        fallback.to_string()
+    } else {
+        cleaned
+    }
 }
 
 /// 按类型写入 Excel 单元格：NULL 留空，数字/布尔保留原生类型，文本按字符串写入

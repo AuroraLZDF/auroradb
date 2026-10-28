@@ -1,14 +1,18 @@
 //! 表数据导出格式化模块
-//! 将类型化的行值序列化为 CSV / JSON，并提供与导出对称的 CSV 解析。
+//! 将类型化的行值序列化为 CSV / SQL / JSON，并提供与导出对称的 CSV 解析。
 //!
 //! 设计要点：
 //! - 值来自 `convert_value`，保留数字/日期/NULL 的真实类型，不再把所有非字符串列写成 "NULL"。
 //! - CSV 遵循 RFC 4180：逗号/双引号/换行触发加引号，引号内部 `"` 双写；行尾 CRLF。
 //! - CSV 以 UTF-8 BOM 开头，避免 Excel 打开中文乱码。
 //! - NULL 输出为空字段；空字符串输出为 `""`，使导入侧能区分两者。
+//! - `TableExportSink` 逐行写盘，整表导出不再把全部数据堆在内存里。
 
+use super::resultset::{classify_column, convert_value, format_sql_value, ColumnKind};
 use super::types::CellValue;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use sqlx::{Column, Row};
+use std::io::Write;
 
 /// 导出列定义（名称 + INFORMATION_SCHEMA 中的 DATA_TYPE）
 #[derive(Debug, Clone)]
@@ -27,74 +31,205 @@ pub struct TableExportData {
 const UTF8_BOM: char = '\u{feff}';
 const LINE_END: &str = "\r\n";
 
-/// 序列化为 CSV 文本
-pub fn to_csv(data: &TableExportData) -> String {
-    let mut out = String::new();
-    out.push(UTF8_BOM);
-
-    let header = data
-        .columns
-        .iter()
-        .map(|col| csv_quote(&col.name, false))
-        .collect::<Vec<_>>()
-        .join(",");
-    out.push_str(&header);
-    out.push_str(LINE_END);
-
-    for row in &data.rows {
-        let line = data
-            .columns
-            .iter()
-            .enumerate()
-            .map(|(index, _)| {
-                row.get(index)
-                    .map(csv_cell)
-                    .unwrap_or_default()
-            })
-            .collect::<Vec<_>>()
-            .join(",");
-        out.push_str(&line);
-        out.push_str(LINE_END);
-    }
-
-    out
+/// 支持的文本导出格式（Excel 由独立命令直接写工作簿）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportFormat {
+    Csv,
+    Sql,
+    Json,
 }
 
-/// 序列化为 JSON 数组文本（保持列顺序，数字/布尔/NULL 保留原始类型）
-pub fn to_json(data: &TableExportData) -> Result<String> {
-    let mut out = String::from("[");
-    if !data.rows.is_empty() {
-        out.push('\n');
+impl ExportFormat {
+    pub fn parse(format: &str) -> Result<Self> {
+        match format.trim().to_lowercase().as_str() {
+            "csv" => Ok(Self::Csv),
+            "sql" => Ok(Self::Sql),
+            "json" => Ok(Self::Json),
+            other => Err(anyhow!("不支持的导出格式: {}", other)),
+        }
     }
 
-    let row_count = data.rows.len();
-    for (row_index, row) in data.rows.iter().enumerate() {
-        out.push_str("  {");
-        if !data.columns.is_empty() {
-            out.push('\n');
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Csv => "csv",
+            Self::Sql => "sql",
+            Self::Json => "json",
+        }
+    }
+
+    pub fn filter_name(self) -> &'static str {
+        match self {
+            Self::Csv => "CSV 文件",
+            Self::Sql => "SQL 文件",
+            Self::Json => "JSON 文件",
+        }
+    }
+}
+
+/// 流式导出行写出器
+///
+/// 逐行从结果集读取并写入 `W`，内存占用与表大小无关：
+/// - CSV：首次写入时补 BOM 与表头，值经 `convert_value` 保留数字/日期/NULL 语义；
+/// - JSON：逐行追加对象（保持列顺序），结束时补 `]`；
+/// - SQL：每行一条 `INSERT INTO ... SET ...;`。
+pub struct TableExportSink<W: Write> {
+    writer: W,
+    format: ExportFormat,
+    table: String,
+    columns: Vec<ExportColumn>,
+    kinds: Vec<ColumnKind>,
+    rows: u64,
+    started: bool,
+}
+
+impl<W: Write> TableExportSink<W> {
+    /// `columns` 来自 INFORMATION_SCHEMA；为空时由首行结果集的列信息兜底
+    pub fn new(writer: W, format: ExportFormat, table: &str, columns: Vec<ExportColumn>) -> Self {
+        let kinds = columns
+            .iter()
+            .map(|col| classify_column(&col.data_type))
+            .collect();
+        Self {
+            writer,
+            format,
+            table: table.to_string(),
+            columns,
+            kinds,
+            rows: 0,
+            started: false,
+        }
+    }
+
+    /// 写出一行结果集
+    pub fn write_row(&mut self, row: &sqlx::mysql::MySqlRow) -> Result<()> {
+        if self.columns.is_empty() {
+            self.columns = row
+                .columns()
+                .iter()
+                .map(|col| ExportColumn {
+                    name: col.name().to_string(),
+                    data_type: col.type_info().to_string(),
+                })
+                .collect();
+            self.kinds = self
+                .columns
+                .iter()
+                .map(|col| classify_column(&col.data_type))
+                .collect();
         }
 
-        let col_count = data.columns.len();
-        for (col_index, col) in data.columns.iter().enumerate() {
-            out.push_str("    ");
-            out.push_str(&serde_json::to_string(&col.name)?);
-            out.push_str(": ");
-            let cell = row.get(col_index).unwrap_or(&CellValue::Null);
-            out.push_str(&json_cell(cell));
-            if col_index + 1 < col_count {
-                out.push(',');
+        // SQL 导出按原始行的类型生成字面量，不能走类型化单元格（会丢失数值/日期字面量形式）
+        if self.format == ExportFormat::Sql {
+            self.start()?;
+            let mut assignments = Vec::with_capacity(self.columns.len());
+            for col in &self.columns {
+                let value = format_sql_value(row, &col.name, &col.data_type)?;
+                assignments.push(format!("`{}` = {}", col.name, value));
             }
-            out.push('\n');
+            writeln!(
+                self.writer,
+                "INSERT INTO `{}` SET {};",
+                self.table,
+                assignments.join(", ")
+            )?;
+            self.rows += 1;
+            return Ok(());
         }
-        out.push_str("  }");
-        if row_index + 1 < row_count {
-            out.push(',');
+
+        let mut cells = Vec::with_capacity(self.kinds.len());
+        for (index, kind) in self.kinds.iter().enumerate() {
+            cells.push(convert_value(row, index, *kind)?);
         }
-        out.push('\n');
+        self.write_cells(&cells)
     }
 
-    out.push(']');
-    Ok(out)
+    /// 写出一行已类型化的单元格值
+    fn write_cells(&mut self, cells: &[CellValue]) -> Result<()> {
+        self.start()?;
+        match self.format {
+            ExportFormat::Csv => {
+                for index in 0..self.columns.len() {
+                    if index > 0 {
+                        self.writer.write_all(b",")?;
+                    }
+                    let text = cells.get(index).map(csv_cell).unwrap_or_default();
+                    self.writer.write_all(text.as_bytes())?;
+                }
+                self.writer.write_all(LINE_END.as_bytes())?;
+            }
+            ExportFormat::Json => {
+                if self.rows == 0 {
+                    self.writer.write_all(b"\n")?;
+                } else {
+                    self.writer.write_all(b",\n")?;
+                }
+                self.writer.write_all(b"  {")?;
+                if !self.columns.is_empty() {
+                    self.writer.write_all(b"\n")?;
+                }
+                let col_count = self.columns.len();
+                for (index, col) in self.columns.iter().enumerate() {
+                    self.writer.write_all(b"    ")?;
+                    self.writer
+                        .write_all(serde_json::to_string(&col.name)?.as_bytes())?;
+                    self.writer.write_all(b": ")?;
+                    let cell = cells.get(index).unwrap_or(&CellValue::Null);
+                    self.writer.write_all(json_cell(cell).as_bytes())?;
+                    if index + 1 < col_count {
+                        self.writer.write_all(b",")?;
+                    }
+                    self.writer.write_all(b"\n")?;
+                }
+                self.writer.write_all(b"  }")?;
+            }
+            ExportFormat::Sql => unreachable!("SQL 分行在 write_row 中处理"),
+        }
+        self.rows += 1;
+        Ok(())
+    }
+
+    /// 收尾：补写 CSV 表头 / JSON 结束符并 flush
+    pub fn finish(&mut self) -> Result<()> {
+        self.start()?;
+        if self.format == ExportFormat::Json {
+            if self.rows == 0 {
+                self.writer.write_all(b"]")?;
+            } else {
+                self.writer.write_all(b"\n]")?;
+            }
+        }
+        self.writer.flush()?;
+        Ok(())
+    }
+
+    /// 已写出的行数
+    pub fn rows(&self) -> u64 {
+        self.rows
+    }
+
+    /// 首次写入前的固定前缀（BOM/表头/JSON 起始符）
+    fn start(&mut self) -> Result<()> {
+        if self.started {
+            return Ok(());
+        }
+        match self.format {
+            ExportFormat::Csv => {
+                self.writer.write_all("\u{feff}".as_bytes())?;
+                let header = self
+                    .columns
+                    .iter()
+                    .map(|col| csv_quote(&col.name, false))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                self.writer.write_all(header.as_bytes())?;
+                self.writer.write_all(LINE_END.as_bytes())?;
+            }
+            ExportFormat::Json => self.writer.write_all(b"[")?,
+            ExportFormat::Sql => {}
+        }
+        self.started = true;
+        Ok(())
+    }
 }
 
 fn csv_cell(cell: &CellValue) -> String {
@@ -105,8 +240,22 @@ fn csv_cell(cell: &CellValue) -> String {
         CellValue::Boolean(value) => (if *value { "1" } else { "0" }).to_string(),
         // 二进制在导出中为 Base64 文本，与表格展示保持一致
         CellValue::String(value) | CellValue::DateTime(value) | CellValue::Binary(value) => {
-            csv_quote(value, true)
+            csv_quote(&neutralize_formula(value), true)
         }
+    }
+}
+
+/// 中和 CSV 公式注入：Excel/WPS 会把以 `= + - @` 开头的单元格当公式执行，
+/// 因此文本类单元格前置单引号强制按字符串处理（OWASP CSV Injection 缓解）。
+///
+/// 代价是导出文本会多一个 `'`（导出后再导入不会自动去掉），
+/// 属于安全优先于格式保真的取舍。
+fn neutralize_formula(value: &str) -> String {
+    match value.chars().next() {
+        Some('=') | Some('+') | Some('-') | Some('@') | Some('\t') | Some('\r') => {
+            format!("'{}", value)
+        }
+        _ => value.to_string(),
     }
 }
 
@@ -229,6 +378,24 @@ pub fn parse_csv(text: &str) -> Vec<Vec<CsvField>> {
 mod tests {
     use super::*;
 
+    /// 用内存 writer 跑一遍流式写出，得到完整文本
+    fn render(data: &TableExportData, format: ExportFormat) -> String {
+        let mut sink = TableExportSink::new(Vec::new(), format, "t", data.columns.clone());
+        for row in &data.rows {
+            sink.write_cells(row).unwrap();
+        }
+        sink.finish().unwrap();
+        String::from_utf8(sink.writer).unwrap()
+    }
+
+    fn render_csv(data: &TableExportData) -> String {
+        render(data, ExportFormat::Csv)
+    }
+
+    fn render_json(data: &TableExportData) -> String {
+        render(data, ExportFormat::Json)
+    }
+
     fn sample() -> TableExportData {
         TableExportData {
             columns: vec![
@@ -258,8 +425,28 @@ mod tests {
     }
 
     #[test]
+    fn csv_neutralizes_formula_injection() {
+        let data = TableExportData {
+            columns: vec![ExportColumn { name: "v".into(), data_type: "varchar".into() }],
+            rows: vec![
+                vec![CellValue::String("=HYPERLINK(\"http://evil\")".into())],
+                vec![CellValue::String("+1+1".into())],
+                vec![CellValue::String("-2+3".into())],
+                vec![CellValue::String("@SUM(A1:A2)".into())],
+                vec![CellValue::String("normal".into())],
+            ],
+        };
+        let csv = render_csv(&data);
+        assert!(csv.contains("'=HYPERLINK"), "公式必须以单引号中和: {csv}");
+        assert!(csv.contains("'+1+1"), "公式必须以单引号中和: {csv}");
+        assert!(csv.contains("'-2+3"), "公式必须以单引号中和: {csv}");
+        assert!(csv.contains("'@SUM"), "公式必须以单引号中和: {csv}");
+        assert!(csv.contains("\r\nnormal\r\n"), "普通文本不应被改写: {csv}");
+    }
+
+    #[test]
     fn csv_has_bom_and_escapes() {
-        let csv = to_csv(&sample());
+        let csv = render_csv(&sample());
         assert!(csv.starts_with('\u{feff}'), "CSV 必须以 BOM 开头");
         assert!(csv.contains("id,name,note,created_at,score\r\n"));
         // 逗号/引号/换行触发加引号，内部引号双写
@@ -270,7 +457,7 @@ mod tests {
 
     #[test]
     fn csv_round_trip_preserves_quoted_values() {
-        let csv = to_csv(&sample());
+        let csv = render_csv(&sample());
         let records = parse_csv(&csv);
         assert_eq!(records.len(), 3);
         assert_eq!(records[0][0].value, "id");
@@ -292,7 +479,7 @@ mod tests {
                 vec![CellValue::Null],
             ],
         };
-        let csv = to_csv(&data);
+        let csv = render_csv(&data);
         assert!(csv.ends_with("v\r\n\"NULL\"\r\n\r\n"));
         let records = parse_csv(&csv);
         assert_eq!(records[1][0].value, "NULL");
@@ -303,7 +490,7 @@ mod tests {
 
     #[test]
     fn json_keeps_column_order_and_types() {
-        let json = to_json(&sample()).unwrap();
+        let json = render_json(&sample());
         let id_pos = json.find("\"id\"").unwrap();
         let name_pos = json.find("\"name\"").unwrap();
         let note_pos = json.find("\"note\"").unwrap();

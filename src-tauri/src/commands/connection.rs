@@ -348,35 +348,16 @@ pub async fn rollback_transaction(
     }
 }
 
-/// 取消当前连接上正在执行的查询
+/// 取消当前连接上正在执行的查询，返回是否因此回滚了进行中的事务
 #[command]
 pub async fn cancel_query(
     state: State<'_, ConnectionManagerState>,
     connection_id: String,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let manager = state.manager.read().await;
 
     match manager.cancel_query(&connection_id).await {
-        Ok(_) => Ok(()),
-        Err(e) => Err(fail(&e)),
-    }
-}
-
-/// 导出表数据
-#[command]
-pub async fn export_table_data(
-    state: State<'_, ConnectionManagerState>,
-    license: State<'_, LicenseManager>,
-    connection_id: String,
-    database: String,
-    table: String,
-    format: String, // csv, sql, json
-) -> Result<String, String> {
-    license.ensure(FEATURE_IMPORT_EXPORT, "导出数据").await?;
-    let manager = state.manager.read().await;
-
-    match manager.export_table_data(&connection_id, &database, &table, &format).await {
-        Ok(data) => Ok(data),
+        Ok(rolled_back) => Ok(rolled_back),
         Err(e) => Err(fail(&e)),
     }
 }
@@ -478,6 +459,8 @@ pub async fn import_database_sql(
     sql: String,
 ) -> Result<(), String> {
     license.ensure(FEATURE_IMPORT_EXPORT, "导入数据库").await?;
+    // 不把整份 SQL 写进审计日志（可能包含敏感数据），只记录体量
+    let summary = format!("-- 导入 SQL 脚本（目标库：{}，{} 字节）", database, sql.len());
     let (name, host) = connection_meta(&state, &connection_id).await;
     let started = Instant::now();
     let outcome = {
@@ -487,7 +470,7 @@ pub async fn import_database_sql(
             .await
     };
 
-    let mut entry = AuditEntry::new("import", &connection_id, &name, &host, &database, &sql);
+    let mut entry = AuditEntry::new("import", &connection_id, &name, &host, &database, &summary);
     entry.duration_ms = started.elapsed().as_millis() as u64;
     match outcome {
         Ok(_) => {
