@@ -1,30 +1,89 @@
 //! SQL 执行模块
 //! SQL 执行、表数据查询、取消、导入导出等。
 
-use super::driver::{AnyPool, DriverKind};
-use super::export::{self, ExportColumn, TableExportData};
-use super::manager::{ConnectionManager, ManagedConnection};
+use super::driver::{AnyPool, AnyTransaction, DriverKind};
+use super::export::{
+    self, ExportColumn, ExportFormat, TableExportData, TableExportSink,
+};
+use super::manager::{ConnectionManager, MetadataCacheValue};
 use super::resultset::{
-    classify_column, classify_pg_column, convert_pg_value, convert_value, format_sql_value,
-    quote_value, ColumnKind, PgColumnKind,
+    classify_column, classify_pg_column, convert_pg_value, convert_value, quote_value,
+    ColumnKind, PgColumnKind,
 };
 use super::types::*;
 use super::validation::*;
 use anyhow::{anyhow, Context, Result};
 use crate::core::sql::{rewrite_table_names, split_sql_statements};
+use futures_util::TryStreamExt;
 use sqlx::mysql::MySqlPool;
 use sqlx::postgres::{PgConnection, PgPool};
-use sqlx::{Column, Executor, MySql, MySqlConnection, Postgres, Row, Statement};
+use sqlx::{Acquire, Column, Executor, MySql, MySqlConnection, Postgres, Row, Statement};
+use sqlparser::ast as sql_ast;
+use sqlparser::dialect::MySqlDialect;
+use sqlparser::parser::Parser;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::Notify;
+use tokio::sync::{Mutex, Notify};
+
+/// 一次执行所需的连接级共享状态快照。
+///
+/// 之前 `execute` 在查询全程持有连接表的读锁，慢查询会阻塞 `connect`/`disconnect` 等写操作；
+/// 改为在锁内取出 Arc 克隆后立即释放锁，执行期间只持有这些共享句柄。
+#[derive(Clone)]
+struct ExecState {
+    transaction: Arc<Mutex<Option<AnyTransaction>>>,
+    /// MySQL 持久会话连接（USE/SET 的落点），懒创建
+    session: Arc<Mutex<Option<sqlx::pool::PoolConnection<MySql>>>>,
+    query_cancel: Arc<AtomicBool>,
+    query_notify: Arc<Notify>,
+    /// 是否有查询正在执行（取消时判断是否需要丢弃事务）
+    query_running: Arc<AtomicBool>,
+    metadata_cache: Arc<Mutex<HashMap<String, (Instant, MetadataCacheValue)>>>,
+    /// 建立连接时配置的默认库（PG 用来判断是否需要 SET search_path）
+    config: ExecConfigSnapshot,
+}
+
+#[derive(Clone)]
+struct ExecConfigSnapshot {
+    database: Option<String>,
+}
+
+/// 流式读取结果集的产物：只保留第一个结果集的前 `MAX_RESULT_ROWS` 行。
+struct StreamedRows<R> {
+    columns: Vec<ColumnDefinition>,
+    rows: Vec<R>,
+    total_rows: usize,
+    multiple_result_sets: bool,
+}
+
+/// 独立查询（表浏览/导出）的运行标志守卫：与 `execute` 共用同一套取消标志，
+/// 使前端「取消查询」能中断它；drop 时复位，避免取消请求后续误杀新查询。
+struct QueryRunGuard(Arc<AtomicBool>);
+
+impl QueryRunGuard {
+    fn start(cancel: &Arc<AtomicBool>, running: &Arc<AtomicBool>) -> Self {
+        cancel.store(false, Ordering::SeqCst);
+        running.store(true, Ordering::SeqCst);
+        Self(running.clone())
+    }
+}
+
+impl Drop for QueryRunGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
 
 /// 单条 SQL 执行超时：交互式查询的宽松上限，超时即丢弃查询 future（连接关闭，服务端随之终止查询）
 const MAX_QUERY_DURATION: Duration = Duration::from_secs(300);
 
 /// SELECT 结果集行数上限：超出截断，防止全量进内存与全量 JSON 过 IPC 撑爆前端
 const MAX_RESULT_ROWS: usize = 10_000;
+
+/// 整表导出的超时上限：比交互式查询宽松得多，但仍避免无限期挂住
+const MAX_EXPORT_DURATION: Duration = Duration::from_secs(1800);
 
 /// 执行带超时与取消语义的查询。
 ///
@@ -34,12 +93,25 @@ async fn run_query<R, F>(fut: F, cancel: &AtomicBool, notify: &Notify) -> Result
 where
     F: std::future::Future<Output = std::result::Result<R, sqlx::Error>>,
 {
+    run_query_within(fut, cancel, notify, MAX_QUERY_DURATION).await
+}
+
+/// 同 `run_query`，但可指定超时时长（整表导出等长任务用）。
+async fn run_query_within<R, F>(
+    fut: F,
+    cancel: &AtomicBool,
+    notify: &Notify,
+    limit: Duration,
+) -> Result<R>
+where
+    F: std::future::Future<Output = std::result::Result<R, sqlx::Error>>,
+{
     // 本次执行开始前已有取消请求（先于执行到达）时立即拒绝
     if cancel.load(Ordering::SeqCst) {
         return Err(anyhow!("查询已被用户取消"));
     }
     tokio::pin!(fut);
-    let outcome = tokio::time::timeout(MAX_QUERY_DURATION, async {
+    let outcome = tokio::time::timeout(limit, async {
         loop {
             if cancel.load(Ordering::SeqCst) {
                 return None;
@@ -57,12 +129,146 @@ where
     match outcome {
         Err(_) => Err(anyhow!(
             "查询执行超过 {} 秒，已终止；请优化 SQL 或缩小查询范围",
-            MAX_QUERY_DURATION.as_secs()
+            limit.as_secs()
         )),
         Ok(None) => Err(anyhow!("查询已被用户取消")),
         Ok(Some(Ok(r))) => Ok(r),
         Ok(Some(Err(e))) => Err(e.into()),
     }
+}
+
+/// 由结果集首行构造列定义（列名 + 类型）。
+fn columns_from_mysql_row(row: &sqlx::mysql::MySqlRow) -> Vec<ColumnDefinition> {
+    row.columns()
+        .iter()
+        .map(|col| ColumnDefinition {
+            name: col.name().to_string(),
+            data_type: col.type_info().to_string(),
+            is_nullable: true,
+            is_primary: false,
+            is_auto_increment: false,
+        })
+        .collect()
+}
+
+/// 判断一行是否属于第一个结果集（列数与列名都一致）。
+fn mysql_row_matches_columns(row: &sqlx::mysql::MySqlRow, columns: &[ColumnDefinition]) -> bool {
+    let cols = row.columns();
+    cols.len() == columns.len()
+        && cols
+            .iter()
+            .zip(columns.iter())
+            .all(|(c, def)| c.name() == def.name)
+}
+
+/// 流式收集 MySQL 结果集。
+///
+/// 只保留第一个结果集的前 `MAX_RESULT_ROWS` 行，其余行继续消费但不再入内存：
+/// 提前 drop 流会让 sqlx 关闭该物理连接（可能连带终止用户事务），因此必须读完。
+async fn collect_mysql_rows<S>(
+    mut stream: S,
+) -> std::result::Result<StreamedRows<sqlx::mysql::MySqlRow>, sqlx::Error>
+where
+    S: futures_util::Stream<
+            Item = std::result::Result<
+                sqlx::Either<sqlx::mysql::MySqlQueryResult, sqlx::mysql::MySqlRow>,
+                sqlx::Error,
+            >,
+        > + Unpin,
+{
+    let mut out = StreamedRows {
+        columns: Vec::new(),
+        rows: Vec::new(),
+        total_rows: 0,
+        multiple_result_sets: false,
+    };
+
+    while let Some(item) = stream.try_next().await? {
+        let row = match item {
+            sqlx::Either::Right(row) => row,
+            // 非结果集语句（DML 的 QueryResult）与 SELECT 混发时忽略其影响行数
+            sqlx::Either::Left(_) => continue,
+        };
+
+        if out.columns.is_empty() {
+            out.columns = columns_from_mysql_row(&row);
+        }
+        if !mysql_row_matches_columns(&row, &out.columns) {
+            out.multiple_result_sets = true;
+            continue;
+        }
+        out.total_rows += 1;
+        if out.rows.len() < MAX_RESULT_ROWS {
+            out.rows.push(row);
+        }
+    }
+
+    Ok(out)
+}
+
+/// 由结果集首行构造 PG 列定义（列名 + 类型）。
+fn columns_from_pg_row(row: &sqlx::postgres::PgRow) -> Vec<ColumnDefinition> {
+    row.columns()
+        .iter()
+        .map(|col| ColumnDefinition {
+            name: col.name().to_string(),
+            data_type: col.type_info().to_string(),
+            is_nullable: true,
+            is_primary: false,
+            is_auto_increment: false,
+        })
+        .collect()
+}
+
+/// 判断一行是否属于第一个结果集（列数与列名都一致）。
+fn pg_row_matches_columns(row: &sqlx::postgres::PgRow, columns: &[ColumnDefinition]) -> bool {
+    let cols = row.columns();
+    cols.len() == columns.len()
+        && cols
+            .iter()
+            .zip(columns.iter())
+            .all(|(c, def)| c.name() == def.name)
+}
+
+/// 流式收集 PostgreSQL 结果集，语义同 `collect_mysql_rows`。
+async fn collect_pg_rows<S>(
+    mut stream: S,
+) -> std::result::Result<StreamedRows<sqlx::postgres::PgRow>, sqlx::Error>
+where
+    S: futures_util::Stream<
+            Item = std::result::Result<
+                sqlx::Either<sqlx::postgres::PgQueryResult, sqlx::postgres::PgRow>,
+                sqlx::Error,
+            >,
+        > + Unpin,
+{
+    let mut out = StreamedRows {
+        columns: Vec::new(),
+        rows: Vec::new(),
+        total_rows: 0,
+        multiple_result_sets: false,
+    };
+
+    while let Some(item) = stream.try_next().await? {
+        let row = match item {
+            sqlx::Either::Right(row) => row,
+            sqlx::Either::Left(_) => continue,
+        };
+
+        if out.columns.is_empty() {
+            out.columns = columns_from_pg_row(&row);
+        }
+        if !pg_row_matches_columns(&row, &out.columns) {
+            out.multiple_result_sets = true;
+            continue;
+        }
+        out.total_rows += 1;
+        if out.rows.len() < MAX_RESULT_ROWS {
+            out.rows.push(row);
+        }
+    }
+
+    Ok(out)
 }
 
 /// 校验目标表存在主键。
@@ -112,6 +318,7 @@ async fn apply_changes_in_txn(
     txn: &mut MySqlConnection,
     database: &str,
     changes: &[TableChange],
+    safety_mode: SafetyMode,
 ) -> Result<usize> {
     // 前端生成的语句使用不带库名的表名，统一在事务连接上切换库
     let use_sql = format!("USE `{}`", database);
@@ -126,6 +333,9 @@ async fn apply_changes_in_txn(
         let position = index + 1;
         validate_identifier(&change.table)
             .map_err(|e| anyhow!("第 {} 条变更的表名不合法：{}", position, e))?;
+
+        // 变更 SQL 来自前端，必须逐条校验后才能执行
+        validate_table_change(change, position, safety_mode)?;
 
         // 在任何变更执行前完成主键校验，无主键则整体失败并回滚
         if checked_tables.insert(change.table.clone()) {
@@ -194,47 +404,185 @@ async fn apply_changes_in_txn(
     Ok(unchanged)
 }
 
+/// 校验前端提交的单条表数据变更。
+///
+/// 变更 SQL 由前端拼接后直接执行，属于信任边界，必须保证：
+/// 1. 只有一条语句（多语句会借助 `CLIENT_MULTI_STATEMENTS` 执行未声明的 SQL）；
+/// 2. 语句类型与声明的操作一致；
+/// 3. 通过连接访问模式的安全校验（安全模式拦截无 WHERE 的 UPDATE/DELETE）；
+/// 4. 语句只引用声明的表；
+/// 5. `where_clause` 是合法的条件表达式，不能借 `;` / `UNION` 改变语句结构。
+fn validate_table_change(
+    change: &TableChange,
+    position: usize,
+    safety_mode: SafetyMode,
+) -> Result<()> {
+    let statements = split_sql_statements(&change.sql);
+    if statements.len() != 1 {
+        return Err(anyhow!(
+            "第 {} 条变更必须且只能包含一条 SQL 语句",
+            position
+        ));
+    }
+    let statement = statements[0].trim();
+    if statement.is_empty() {
+        return Err(anyhow!("第 {} 条变更的 SQL 为空", position));
+    }
+
+    let expected = match change.kind {
+        TableChangeKind::Insert => "INSERT",
+        TableChangeKind::Update => "UPDATE",
+        TableChangeKind::Delete => "DELETE",
+    };
+
+    crate::core::sql::safety::enforce(safety_mode, statement)
+        .map_err(|e| anyhow!("第 {} 条变更未通过安全校验：{}", position, e))?;
+
+    // 目标表必须从 AST 取：文本匹配会被注释、字符串字面量、JOIN 的其它表绕过
+    let target = change_target_table(statement, change.kind)
+        .map_err(|e| anyhow!("第 {} 条变更不合法（期望 {}）：{}", position, expected, e))?;
+    if !target.eq_ignore_ascii_case(&change.table) {
+        return Err(anyhow!(
+            "第 {} 条变更的 SQL 与目标表 {} 不一致（实际写入 {}）",
+            position,
+            change.table,
+            target
+        ));
+    }
+
+    if let Some(where_clause) = &change.where_clause {
+        let quoted = quote_identifier(&change.table)?;
+        crate::core::sql::safety::validate_where_clause(&quoted, where_clause)
+            .map_err(|e| anyhow!("第 {} 条变更的定位条件不合法：{}", position, e))?;
+    }
+
+    Ok(())
+}
+
+/// 解析变更语句并取出实际写入的表名（末段），同时校验语句形态与操作类型一致。
+///
+/// 只接受单表、无 JOIN 的简单 DML：多表 UPDATE/DELETE 无法确认影响范围，
+/// 与「一次变更只改一行」的模型不符，直接拒绝。
+fn change_target_table(statement: &str, kind: TableChangeKind) -> Result<String> {
+    let mut statements = Parser::parse_sql(&MySqlDialect {}, statement)
+        .map_err(|e| anyhow!("SQL 无法解析：{}", e))?;
+    if statements.len() != 1 {
+        return Err(anyhow!("必须且只能包含一条 SQL 语句"));
+    }
+    let parsed = statements.remove(0);
+
+    match (kind, parsed) {
+        (TableChangeKind::Insert, sql_ast::Statement::Insert(insert)) => match insert.table {
+            sql_ast::TableObject::TableName(name) => object_name_tail(&name),
+            _ => Err(anyhow!("INSERT 的目标不是普通表")),
+        },
+        (TableChangeKind::Update, sql_ast::Statement::Update(update)) => {
+            if update.from.is_some() || !update.table.joins.is_empty() {
+                return Err(anyhow!("UPDATE 不能包含 JOIN 或 FROM 子句"));
+            }
+            table_factor_name(&update.table.relation)
+        }
+        (TableChangeKind::Delete, sql_ast::Statement::Delete(delete)) => {
+            if !delete.tables.is_empty() || delete.using.is_some() {
+                return Err(anyhow!("DELETE 不能作用于多表或使用 USING"));
+            }
+            let tables = match &delete.from {
+                sql_ast::FromTable::WithFromKeyword(tables)
+                | sql_ast::FromTable::WithoutKeyword(tables) => tables,
+            };
+            if tables.len() != 1 || !tables[0].joins.is_empty() {
+                return Err(anyhow!("DELETE 只能作用于单表且不能包含 JOIN"));
+            }
+            table_factor_name(&tables[0].relation)
+        }
+        (TableChangeKind::Insert, _) => Err(anyhow!("SQL 与操作类型不匹配")),
+        (TableChangeKind::Update, _) => Err(anyhow!("SQL 与操作类型不匹配")),
+        (TableChangeKind::Delete, _) => Err(anyhow!("SQL 与操作类型不匹配")),
+    }
+}
+
+/// 取 `schema.table` 形式的对象名末段（表名本身）
+fn object_name_tail(name: &sql_ast::ObjectName) -> Result<String> {
+    match name.0.last() {
+        Some(sql_ast::ObjectNamePart::Identifier(ident)) => Ok(ident.value.clone()),
+        _ => Err(anyhow!("无法识别表名")),
+    }
+}
+
+/// 从表因子中取出表名；表函数（`users()`）等非常规目标一律拒绝
+fn table_factor_name(factor: &sql_ast::TableFactor) -> Result<String> {
+    match factor {
+        sql_ast::TableFactor::Table { name, args, .. } if args.is_none() => object_name_tail(name),
+        _ => Err(anyhow!("变更的目标不是普通表")),
+    }
+}
+
 impl ConnectionManager {
     /// 执行SQL
     pub async fn execute(&self, connection_id: &str, database: &str, sql: &str) -> Result<QueryResult> {
-        // 输入验证
-        validate_identifier(database)
-            .map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
-
         // 验证 SQL 长度限制（防止内存攻击）
         const MAX_SQL_LENGTH: usize = 10_000_000; // 10MB
         if sql.len() > MAX_SQL_LENGTH {
             return Err(anyhow!("SQL 长度不能超过 10MB"));
         }
 
-        let connections = self.connections.read().await;
+        // 只在取连接信息期间持有读锁：慢查询不能阻塞 connect/disconnect 等写操作
+        let (pool, state) = {
+            let connections = self.connections.read().await;
 
-        let conn = connections
-            .get(connection_id)
-            .ok_or_else(|| anyhow!("Connection {} not found", connection_id))?;
+            let conn = connections
+                .get(connection_id)
+                .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
 
-        // 访问模式守卫：只读模式拒绝非查询语句，安全模式拒绝不带 WHERE 的 UPDATE/DELETE
-        crate::core::sql::safety::enforce(conn.config.safety_mode, sql)?;
+            // 输入验证：PostgreSQL 下空库名表示「沿用服务端 search_path」，需按驱动放行；
+            // MySQL 的库名必填（空串会让后续限定名重写失去上下文）
+            let allow_empty_database =
+                conn.config.driver == DriverKind::Postgres && database.is_empty();
+            if !allow_empty_database {
+                validate_identifier(database)
+                    .map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
+            }
 
-        // 池的克隆只是 Arc 计数增加，用于把具体驱动类型交给对应执行路径
-        let pool = conn
-            .pool
-            .as_ref()
-            .ok_or_else(|| anyhow!("Connection {} not available", connection_id))?
-            .clone();
+            // 访问模式守卫：只读模式拒绝非查询语句，安全模式拒绝不带 WHERE 的 UPDATE/DELETE
+            crate::core::sql::safety::enforce(conn.config.safety_mode, sql)?;
 
-        // 复位上一次的取消标志，确保新查询不被旧取消信号误杀
-        conn.query_cancel.store(false, Ordering::SeqCst);
+            // 池的克隆只是 Arc 计数增加，用于把具体驱动类型交给对应执行路径
+            let pool = conn
+                .pool
+                .as_ref()
+                .ok_or_else(|| anyhow!("连接不可用: {}", connection_id))?
+                .clone();
 
-        let result = match pool {
-            AnyPool::MySql(pool) => self.execute_mysql(conn, &pool, connection_id, database, sql).await,
-            AnyPool::Postgres(pool) => self.execute_postgres(conn, &pool, connection_id, database, sql).await,
-        }?;
+            // 复位上一次的取消标志，确保新查询不被旧取消信号误杀
+            conn.query_cancel.store(false, Ordering::SeqCst);
+            conn.query_running.store(true, Ordering::SeqCst);
+
+            let state = ExecState {
+                transaction: conn.transaction.clone(),
+                session: conn.session.clone(),
+                query_cancel: conn.query_cancel.clone(),
+                query_notify: conn.query_notify.clone(),
+                query_running: conn.query_running.clone(),
+                metadata_cache: conn.metadata_cache.clone(),
+                config: ExecConfigSnapshot {
+                    database: conn.config.database.clone(),
+                },
+            };
+            (pool, state)
+        };
+
+        let outcome = match pool {
+            AnyPool::MySql(pool) => self.execute_mysql(&state, &pool, connection_id, database, sql).await,
+            AnyPool::Postgres(pool) => self.execute_postgres(&state, &pool, connection_id, database, sql).await,
+        };
+        // 无论成功/失败/取消都要复位，否则取消请求会一直认为有在途查询
+        state.query_running.store(false, Ordering::SeqCst);
+        let result = outcome?;
 
         // 结构变更成功后立刻失效元数据缓存，否则对象树/表结构会在 TTL（30s）内返回旧快照，
         // 表现为建表后刷新列表看不到新表
         if crate::core::sql::is_schema_changing(sql) {
-            conn.metadata_cache.lock().await.clear();
+            state.metadata_cache.lock().await.clear();
         }
 
         Ok(result)
@@ -243,7 +591,7 @@ impl ConnectionManager {
     /// MySQL 执行路径（原有逻辑）
     async fn execute_mysql(
         &self,
-        conn: &ManagedConnection,
+        conn: &ExecState,
         pool: &MySqlPool,
         connection_id: &str,
         database: &str,
@@ -251,14 +599,28 @@ impl ConnectionManager {
     ) -> Result<QueryResult> {
         let t_start = Instant::now();
 
+        // 同一次提交内可能先切库再查询（`USE db2; SELECT * FROM t`）。
+        // 后续未限定表名必须以「最后切换到的库」为准补前缀，否则会被补上侧栏选中的库，静默查错库。
+        let effective_db = match crate::core::sql::leading_use_database(sql) {
+            Some(db) => {
+                validate_identifier(&db).map_err(|e| anyhow!("USE 语句中的数据库名不合法: {}", e))?;
+                db
+            }
+            None => database.to_string(),
+        };
+
         // 在 SQL 中为表名添加数据库前缀（替换表名引用为 db.table 格式）。
         // 返回的 bool 表示 sqlparser 是否成功解析：标准 DML/DDL 语句会成功解析，
         // 表名已带数据库前缀，无需再执行 USE；SHOW/DESC/CALL 等 MySQL 特有语法解析失败，需先 USE。
-        let (modified_sql, parsed) = rewrite_table_names(database, sql, DriverKind::MySql);
+        let (modified_sql, parsed) = rewrite_table_names(&effective_db, sql, DriverKind::MySql);
         let t_rewrite = Instant::now();
 
         // 判断是否为不支持预处理协议的语句（DDL 类）
         let upper_sql = modified_sql.trim().to_uppercase();
+        // 会话级语句：必须固定在一条物理连接上执行并保持到连接关闭，否则会话语义丢失
+        let is_session_stmt = upper_sql.starts_with("USE ")
+            || upper_sql.starts_with("SET ")
+            || upper_sql.starts_with("RESET ");
         let is_ddl = upper_sql.starts_with("ALTER DATABASE")
             || upper_sql.starts_with("CREATE DATABASE")
             || upper_sql.starts_with("DROP DATABASE")
@@ -267,8 +629,7 @@ impl ConnectionManager {
             || upper_sql.starts_with("DROP USER")
             || upper_sql.starts_with("GRANT")
             || upper_sql.starts_with("REVOKE")
-            || upper_sql.starts_with("SET ")
-            || upper_sql.starts_with("USE ");
+            || is_session_stmt;
 
         // 判断是否为 SHOW/DESC 语句（需要数据库上下文）
         let needs_db_context = upper_sql.starts_with("SHOW ") || upper_sql.starts_with("DESCRIBE ") || upper_sql.starts_with("DESC ");
@@ -281,21 +642,22 @@ impl ConnectionManager {
 
         // 选择执行目标，保证「USE 与查询在同一物理连接」：
         // - 事务进行中：钉扎在事务连接上执行；
-        // - 需要会话上下文（解析失败或 SHOW/DESC）：从池中取一条固定连接承载 USE + 查询，并发执行时各取各的连接、互不干扰；
-        // - 其余无状态语句：直接在池上执行。
-        let need_session = !parsed || needs_db_context;
+        // - 需要会话上下文（会话语句、解析失败或 SHOW/DESC）：使用持久会话连接，会话状态跨执行保留；
+        // - 其余无状态语句：直接在池上执行（但会话连接一旦建立，也优先复用，保证 SET/USE 生效）。
+        let need_session = !parsed || needs_db_context || is_session_stmt;
         let mut txn_guard = conn.transaction.lock().await;
-        let mut acquired: Option<sqlx::pool::PoolConnection<MySql>> = None;
-        if txn_guard.is_none() && need_session {
-            acquired = Some(pool.acquire().await.context("获取数据库连接失败")?);
+        let mut session_guard = conn.session.lock().await;
+        if txn_guard.is_none() && need_session && session_guard.is_none() {
+            *session_guard = Some(pool.acquire().await.context("获取数据库连接失败")?);
         }
-        // 统一「固定单条物理连接」：事务进行中优先钉扎事务连接，否则为会话上下文取出的连接
+        // 统一「固定单条物理连接」：事务进行中优先钉扎事务连接，否则为会话连接
         let mut session_conn: Option<&mut MySqlConnection> = match txn_guard.as_mut() {
             Some(txn) => Some(txn.as_mysql_connection()?),
-            None => acquired.as_mut().map(|c| &mut **c),
+            None => session_guard.as_mut().map(|c| &mut **c),
         };
-        if need_session {
-            let use_sql = format!("USE `{}`", database);
+        // 会话语句自身会切换库，无需预置 USE
+        if need_session && !is_session_stmt {
+            let use_sql = format!("USE `{}`", effective_db);
             match session_conn.as_mut() {
                 Some(c) => { Executor::execute(&mut **c, use_sql.as_str()).await?; }
                 None => { sqlx::raw_sql(&use_sql).execute(pool).await?; }
@@ -368,22 +730,23 @@ impl ConnectionManager {
             });
         }
 
-        // SELECT 等需要结果集的语句：使用 raw_sql（文本协议）执行，避免预处理语句额外的 COM_STMT_PREPARE 往返
-        let result = match session_conn.as_mut() {
+        // SELECT 等需要结果集的语句：用 fetch_many 流式读取（文本协议，避免额外的 COM_STMT_PREPARE 往返），
+        // 只保留前 MAX_RESULT_ROWS 行，避免大结果集先全量入内存再截断。
+        let streamed = match session_conn.as_mut() {
             Some(c) => {
-                let fut = Executor::fetch_all(&mut **c, modified_sql.as_str());
-                run_query(fut, &conn.query_cancel, &conn.query_notify).await?
+                let stream = Executor::fetch_many(&mut **c, modified_sql.as_str());
+                run_query(collect_mysql_rows(stream), &conn.query_cancel, &conn.query_notify).await?
             }
             None => {
-                let fut = sqlx::raw_sql(&modified_sql).fetch_all(pool);
-                run_query(fut, &conn.query_cancel, &conn.query_notify).await?
+                let stream = Executor::fetch_many(pool, modified_sql.as_str());
+                run_query(collect_mysql_rows(stream), &conn.query_cancel, &conn.query_notify).await?
             }
         };
         let t_fetch = Instant::now();
 
         let execution_time_ms = t_start.elapsed().as_millis() as u64;
 
-        if result.is_empty() {
+        if streamed.total_rows == 0 {
             // 0 行时文本协议无列元数据；解析成功的 SELECT 类语句通过 describe（仅 prepare、不执行）补列头。
             // SHOW/DESC 无法 prepare，保持空列头（登记为遗留）
             let columns: Vec<ColumnDefinition> = if parsed {
@@ -434,27 +797,21 @@ impl ConnectionManager {
         }
 
         // 获取列信息
-        let columns: Vec<ColumnDefinition> = result[0]
-            .columns()
-            .iter()
-            .map(|col| ColumnDefinition {
-                name: col.name().to_string(),
-                data_type: col.type_info().to_string(),
-                is_nullable: true,
-                is_primary: false,
-                is_auto_increment: false,
-            })
-            .collect();
+        let columns: Vec<ColumnDefinition> = streamed.columns;
         let t_columns = Instant::now();
 
         // 列级预分类：每列只做一次类型匹配，避免在逐单元格转换时重复小写化与字符串比较
         let kinds: Vec<ColumnKind> = columns.iter().map(|c| classify_column(&c.data_type)).collect();
 
-        // 转换数据（超出上限即截断，避免全量进内存/全量 JSON 过 IPC）
-        let total_rows = result.len();
+        // 多语句（`SELECT 1; SELECT 2;`）会返回多个结果集，
+        // `collect_mysql_rows` 已只保留与第一个结果集列结构一致的行，其余仅标记。
+        let multiple_result_sets = streamed.multiple_result_sets;
+
+        // 转换数据（流式收集时已按上限截断，避免全量进内存/全量 JSON 过 IPC）
+        let total_rows = streamed.total_rows;
         let truncated = total_rows > MAX_RESULT_ROWS;
         let mut rows = vec![];
-        for row in result.iter().take(MAX_RESULT_ROWS) {
+        for row in streamed.rows.iter() {
             let mut row_data = vec![];
             for (i, _col) in columns.iter().enumerate() {
                 let value = convert_value(row, i, kinds[i])?;
@@ -467,6 +824,7 @@ impl ConnectionManager {
         tracing::info!(
             connection_id, database, sql_len = sql.len(),
             rows = rows.len(), total_rows, cols = columns.len(),
+            multiple_result_sets,
             rewrite_ms = ms(t_rewrite, t_start),
             use_ms = ms(t_use, t_rewrite),
             fetch_ms = ms(t_fetch, t_use),
@@ -476,6 +834,17 @@ impl ConnectionManager {
             "query timing"
         );
 
+        let warning = if multiple_result_sets {
+            Some("检测到多个结果集，仅显示第一个；请分批执行各条语句".to_string())
+        } else {
+            truncated.then(|| {
+                format!(
+                    "结果集共 {} 行，仅显示前 {} 行；请用 LIMIT 或过滤条件缩小范围",
+                    total_rows, MAX_RESULT_ROWS
+                )
+            })
+        };
+
         Ok(QueryResult {
             columns,
             rows_returned: rows.len(),
@@ -483,12 +852,7 @@ impl ConnectionManager {
             execution_time_ms,
             rows_affected: None,
             truncated,
-            warning: truncated.then(|| {
-                format!(
-                    "结果集共 {} 行，仅显示前 {} 行；请用 LIMIT 或过滤条件缩小范围",
-                    total_rows, MAX_RESULT_ROWS
-                )
-            }),
+            warning,
         })
     }
 
@@ -501,7 +865,7 @@ impl ConnectionManager {
     ///   （只解析、不执行）取列头。
     async fn execute_postgres(
         &self,
-        conn: &ManagedConnection,
+        conn: &ExecState,
         pool: &PgPool,
         connection_id: &str,
         database: &str,
@@ -538,7 +902,12 @@ impl ConnectionManager {
         }
         let pg_conn: &mut PgConnection = match txn_guard.as_mut() {
             Some(txn) => txn.as_pg_connection()?,
-            None => &mut **acquired.as_mut().expect("连接刚刚获取"),
+            None => {
+                // 上面在 txn_guard 为空时一定 acquire 成功，这里不用 expect 触发 panic
+                &mut **acquired
+                    .as_mut()
+                    .ok_or_else(|| anyhow!("获取数据库连接失败"))?
+            }
         };
 
         // PG 的 database 在连接时已固定、无法切换；`database` 参数取自侧栏选择，
@@ -580,15 +949,16 @@ impl ConnectionManager {
             });
         }
 
-        let result = {
-            let fut = Executor::fetch_all(&mut *pg_conn, modified_sql.as_str());
-            run_query(fut, &conn.query_cancel, &conn.query_notify).await?
+        // 流式读取结果集，只保留前 MAX_RESULT_ROWS 行（语义同 MySQL 路径）
+        let streamed = {
+            let stream = Executor::fetch_many(&mut *pg_conn, modified_sql.as_str());
+            run_query(collect_pg_rows(stream), &conn.query_cancel, &conn.query_notify).await?
         };
         let t_fetch = Instant::now();
 
         let execution_time_ms = t_start.elapsed().as_millis() as u64;
 
-        if result.is_empty() {
+        if streamed.total_rows == 0 {
             // 0 行时文本协议无列元数据，用 prepare 补列头；无法解析/无法 prepare 的语句保持空列头
             let columns: Vec<ColumnDefinition> = if parsed {
                 let prepared = {
@@ -631,25 +1001,15 @@ impl ConnectionManager {
             });
         }
 
-        let columns: Vec<ColumnDefinition> = result[0]
-            .columns()
-            .iter()
-            .map(|col| ColumnDefinition {
-                name: col.name().to_string(),
-                data_type: col.type_info().to_string(),
-                is_nullable: true,
-                is_primary: false,
-                is_auto_increment: false,
-            })
-            .collect();
+        let columns: Vec<ColumnDefinition> = streamed.columns;
         let t_columns = Instant::now();
 
         let kinds: Vec<PgColumnKind> = columns.iter().map(|c| classify_pg_column(&c.data_type)).collect();
 
-        let total_rows = result.len();
+        let total_rows = streamed.total_rows;
         let truncated = total_rows > MAX_RESULT_ROWS;
         let mut rows = vec![];
-        for row in result.iter().take(MAX_RESULT_ROWS) {
+        for row in streamed.rows.iter() {
             let mut row_data = vec![];
             for (i, _col) in columns.iter().enumerate() {
                 row_data.push(convert_pg_value(row, i, kinds[i])?);
@@ -710,20 +1070,30 @@ impl ConnectionManager {
             return Err(anyhow!("单次保存的变更不能超过 {} 条", MAX_CHANGES));
         }
 
-        let connections = self.connections.read().await;
-        let conn = connections
-            .get(connection_id)
-            .ok_or_else(|| anyhow!("Connection {} not found", connection_id))?;
-        let pool = conn
-            .pool
-            .as_ref()
-            .ok_or_else(|| anyhow!("Connection {} not available", connection_id))?
-            .as_mysql("保存表数据变更")?;
+        // 只在读取连接信息时持锁，事务执行期间不再阻塞连接表的写操作
+        let (pool, transaction, safety_mode) = {
+            let connections = self.connections.read().await;
+            let conn = connections
+                .get(connection_id)
+                .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
 
-        // 只读连接不允许通过表数据编辑面板写入
-        if conn.config.safety_mode == SafetyMode::ReadOnly {
-            return Err(anyhow!("当前连接为只读模式，无法保存表数据变更"));
-        }
+            // 只读连接不允许通过表数据编辑面板写入
+            if conn.config.safety_mode == SafetyMode::ReadOnly {
+                return Err(anyhow!("当前连接为只读模式，无法保存表数据变更"));
+            }
+
+            let pool = conn
+                .pool
+                .as_ref()
+                .ok_or_else(|| anyhow!("连接不可用: {}", connection_id))?
+                .as_mysql("保存表数据变更")?
+                .clone();
+            (
+                pool,
+                conn.transaction.clone(),
+                conn.config.safety_mode,
+            )
+        };
 
         if changes.is_empty() {
             return Ok(ApplyChangesResult { applied: 0, unchanged: 0 });
@@ -731,14 +1101,14 @@ impl ConnectionManager {
 
         // 先取事务连接再拿事务锁：避免持锁等待池连接，与并发查询互相阻塞
         let mut txn = pool.begin().await.context("开始保存事务失败")?;
-        let txn_guard = conn.transaction.lock().await;
+        let txn_guard = transaction.lock().await;
         if txn_guard.is_some() {
             // 用户已手动开启事务：两套事务并发修改同一批行会互相锁住，直接拒绝
             let _ = txn.rollback().await;
             return Err(anyhow!("当前连接有未提交的事务，请先 COMMIT 或 ROLLBACK 再保存"));
         }
 
-        let unchanged = match apply_changes_in_txn(&mut txn, database, &changes).await {
+        let unchanged = match apply_changes_in_txn(&mut txn, database, &changes, safety_mode).await {
             Ok(count) => count,
             Err(e) => {
                 let _ = txn.rollback().await;
@@ -755,6 +1125,23 @@ impl ConnectionManager {
             applied: changes.len(),
             unchanged,
         })
+    }
+
+    /// 取出连接级的取消/超时句柄，供 `execute` 之外的独立查询（表浏览、导出）共用，
+    /// 让前端「取消查询」与统一的超时兜底对这些查询同样生效。
+    async fn exec_handles(
+        &self,
+        connection_id: &str,
+    ) -> Result<(Arc<AtomicBool>, Arc<Notify>, Arc<AtomicBool>)> {
+        let connections = self.connections.read().await;
+        let conn = connections
+            .get(connection_id)
+            .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
+        Ok((
+            conn.query_cancel.clone(),
+            conn.query_notify.clone(),
+            conn.query_running.clone(),
+        ))
     }
 
     /// 查询表数据
@@ -787,6 +1174,41 @@ impl ConnectionManager {
                 .map_err(|e| anyhow!("过滤值验证失败: {}", e))?;
         }
 
+        // 表浏览的分页查询与 COUNT 同样受超时/取消约束（大表 COUNT 可能很慢）
+        let (query_cancel, query_notify, query_running) = self.exec_handles(connection_id).await?;
+        let _run_guard = QueryRunGuard::start(&query_cancel, &query_running);
+
+        // PG 的数据库在连接时固定，浏览非默认库需切到该库的连接池；
+        // 树中非 public schema 的对象以 schema.table 展示，这里拆分出真实 schema 与表名
+        if self.driver_of(connection_id).await? == DriverKind::Postgres {
+            let pool = self.pg_pool_for(connection_id, database).await?;
+            let (schema, table_name) = Self::split_pg_table_ref(table);
+            return Self::query_table_postgres(
+                &pool,
+                &schema,
+                &table_name,
+                &request,
+                &query_cancel,
+                &query_notify,
+            )
+            .await;
+        }
+
+        // 只取池的克隆后立刻释放连接表读锁，避免分页查询期间阻塞连接管理
+        let pool = {
+            let connections = self.connections.read().await;
+
+            let conn = connections
+                .get(connection_id)
+                .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
+
+            conn.pool
+                .as_ref()
+                .ok_or_else(|| anyhow!("连接不可用: {}", connection_id))?
+                .as_mysql("浏览表数据")?
+                .clone()
+        };
+
         // 验证并安全包裹请求的列名（此前直接 join 拼接，未逐个校验，是注入面）
         let selected_columns: Option<Vec<String>> = match &request.columns {
             Some(cols) => {
@@ -800,42 +1222,38 @@ impl ConnectionManager {
             None => None,
         };
 
-        let connections = self.connections.read().await;
-
-        let conn = connections
-            .get(connection_id)
-            .ok_or_else(|| anyhow!("Connection {} not found", connection_id))?;
-
-        let pool = conn
-            .pool
-            .as_ref()
-            .ok_or_else(|| anyhow!("Connection {} not available", connection_id))?
-            .as_mysql("浏览表数据")?;
-
         let start = Instant::now();
 
         // 获取主键列名
-        let pk_columns: Vec<String> = sqlx::query_as::<_, (String,)>(
-            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.STATISTICS
-             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND INDEX_NAME = 'PRIMARY'
-             ORDER BY SEQ_IN_INDEX"
+        let pk_columns: Vec<String> = run_query(
+            sqlx::query_as::<_, (String,)>(
+                "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.STATISTICS
+                 WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND INDEX_NAME = 'PRIMARY'
+                 ORDER BY SEQ_IN_INDEX",
+            )
+            .bind(database)
+            .bind(table)
+            .fetch_all(&pool),
+            &query_cancel,
+            &query_notify,
         )
-        .bind(database)
-        .bind(table)
-        .fetch_all(pool)
         .await
         .map(|v| v.into_iter().map(|(name,)| name).collect())
         .unwrap_or_default();
 
         // 获取列类型（含精度信息，如 varchar(255)、decimal(10,2)、int(11)）与表内列顺序
-        let column_meta: Vec<(String, String)> = sqlx::query_as::<_, (String, String)>(
-            "SELECT COLUMN_NAME, COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS
-             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
-             ORDER BY ORDINAL_POSITION"
+        let column_meta: Vec<(String, String)> = run_query(
+            sqlx::query_as::<_, (String, String)>(
+                "SELECT COLUMN_NAME, COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+                 WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+                 ORDER BY ORDINAL_POSITION",
+            )
+            .bind(database)
+            .bind(table)
+            .fetch_all(&pool),
+            &query_cancel,
+            &query_notify,
         )
-        .bind(database)
-        .bind(table)
-        .fetch_all(pool)
         .await
         .unwrap_or_default();
         let column_types: HashMap<String, String> = column_meta.iter().cloned().collect();
@@ -856,31 +1274,31 @@ impl ConnectionManager {
             let mut cond = format!("`{}` ", filter.column);
             match filter.operator {
                 FilterOperator::Eq => {
-                    let val = quote_value(&filter.value)?;
+                    let val = quote_value(&filter.value, DriverKind::MySql)?;
                     cond.push_str(&format!("= {}", val));
                 }
                 FilterOperator::Ne => {
-                    let val = quote_value(&filter.value)?;
+                    let val = quote_value(&filter.value, DriverKind::MySql)?;
                     cond.push_str(&format!("!= {}", val));
                 }
                 FilterOperator::Gt => {
-                    let val = quote_value(&filter.value)?;
+                    let val = quote_value(&filter.value, DriverKind::MySql)?;
                     cond.push_str(&format!("> {}", val));
                 }
                 FilterOperator::Gte => {
-                    let val = quote_value(&filter.value)?;
+                    let val = quote_value(&filter.value, DriverKind::MySql)?;
                     cond.push_str(&format!(">= {}", val));
                 }
                 FilterOperator::Lt => {
-                    let val = quote_value(&filter.value)?;
+                    let val = quote_value(&filter.value, DriverKind::MySql)?;
                     cond.push_str(&format!("< {}", val));
                 }
                 FilterOperator::Lte => {
-                    let val = quote_value(&filter.value)?;
+                    let val = quote_value(&filter.value, DriverKind::MySql)?;
                     cond.push_str(&format!("<= {}", val));
                 }
                 FilterOperator::Like => {
-                    let val = quote_value(&filter.value)?;
+                    let val = quote_value(&filter.value, DriverKind::MySql)?;
                     cond.push_str(&format!("LIKE {}", val));
                 }
                 FilterOperator::IsNull => {
@@ -937,15 +1355,28 @@ impl ConnectionManager {
         let offset = (request.page - 1) * request.page_size;
         sql.push_str(&format!(" LIMIT {} OFFSET {}", request.page_size, offset));
 
-        // 执行查询
-        let result = sqlx::query(&sql).fetch_all(pool).await?;
+        // 数据与总数放在同一只读事务里：MySQL 默认可重复读，快照在首个读语句建立，
+        // 避免两次查询之间数据变化导致「总数」与当前页不一致
+        let mut tx = pool.begin().await?;
+        let result = run_query(
+            sqlx::query(&sql).fetch_all(&mut *tx),
+            &query_cancel,
+            &query_notify,
+        )
+        .await?;
 
         // 获取总行数（复用 WHERE 子句，带过滤时分页总数正确）
         let count_sql = format!(
             "SELECT COUNT(*) FROM `{}`.`{}`{}",
             database, table, where_clause
         );
-        let total_count: i64 = sqlx::query_scalar(&count_sql).fetch_one(pool).await?;
+        let total_count: i64 = run_query(
+            sqlx::query_scalar(&count_sql).fetch_one(&mut *tx),
+            &query_cancel,
+            &query_notify,
+        )
+        .await?;
+        tx.commit().await?;
 
         let execution_time_ms = start.elapsed().as_millis() as u64;
 
@@ -1010,15 +1441,294 @@ impl ConnectionManager {
         })
     }
 
-    /// 取消当前连接上正在执行的查询。
+    /// 拆分 PG 表引用：树中非 public schema 的对象以 `schema.table` 展示，其余落到 public
+    fn split_pg_table_ref(table: &str) -> (String, String) {
+        match table.split_once('.') {
+            Some((schema, name)) => (schema.to_string(), name.to_string()),
+            None => ("public".to_string(), table.to_string()),
+        }
+    }
+
+    /// PostgreSQL 表数据浏览
+    ///
+    /// 与 MySQL 的差异：schema/table 分开传入；限定名用双引号；
+    /// 主键与列类型取自 information_schema 的标准视图（$n 绑定，不拼字符串）。
+    async fn query_table_postgres(
+        pool: &PgPool,
+        schema: &str,
+        table: &str,
+        request: &DataQueryRequest,
+        query_cancel: &AtomicBool,
+        query_notify: &Notify,
+    ) -> Result<DataQueryResponse> {
+        let start = Instant::now();
+
+        // 获取主键列（按约束内列顺序）
+        let pk_columns: Vec<String> = run_query(
+            sqlx::query_as::<_, (String,)>(
+                "SELECT kcu.column_name
+                 FROM information_schema.table_constraints tc
+                 JOIN information_schema.key_column_usage kcu
+                   ON kcu.constraint_name = tc.constraint_name
+                  AND kcu.constraint_schema = tc.constraint_schema
+                 WHERE tc.table_schema = $1 AND tc.table_name = $2
+                   AND tc.constraint_type = 'PRIMARY KEY'
+                 ORDER BY kcu.ordinal_position",
+            )
+            .bind(schema)
+            .bind(table)
+            .fetch_all(pool),
+            query_cancel,
+            query_notify,
+        )
+        .await
+        .map(|v| v.into_iter().map(|(name,)| name).collect())
+        .unwrap_or_default();
+
+        // 展示类型带精度；udt_name 作为读取时的类型分类依据（int4/timestamptz/bytea 等）
+        let column_meta: Vec<(String, String, String)> = run_query(
+            sqlx::query_as::<_, (String, String, String)>(
+                "SELECT column_name,
+                        CASE
+                            WHEN data_type IN ('character varying', 'character')
+                                 AND character_maximum_length IS NOT NULL
+                                THEN data_type || '(' || character_maximum_length || ')'
+                            WHEN data_type = 'numeric' AND numeric_precision IS NOT NULL
+                                THEN data_type || '(' || numeric_precision || ',' || COALESCE(numeric_scale, 0) || ')'
+                            ELSE data_type
+                        END,
+                        udt_name
+                 FROM information_schema.columns
+                 WHERE table_schema = $1 AND table_name = $2
+                 ORDER BY ordinal_position",
+            )
+            .bind(schema)
+            .bind(table)
+            .fetch_all(pool),
+            query_cancel,
+            query_notify,
+        )
+        .await
+        .unwrap_or_default();
+
+        let qualified = format!(
+            "{}.{}",
+            quote_pg_identifier(schema)?,
+            quote_pg_identifier(table)?
+        );
+
+        // 显式列出列：无法由 sqlx 二进制解码的类型（vector、枚举、inet、数组等）先转 text，
+        // 否则整页数据会因单列类型不兼容而读取失败
+        let selected: Vec<String> = match &request.columns {
+            Some(cols) => cols.clone(),
+            None => column_meta.iter().map(|(name, _, _)| name.clone()).collect(),
+        };
+
+        let mut sql = String::from("SELECT ");
+        if selected.is_empty() {
+            // 元数据不可用时退回 *，由结果集的列类型兜底
+            sql.push('*');
+        } else {
+            let mut expressions = Vec::with_capacity(selected.len());
+            for name in &selected {
+                let udt_name = column_meta
+                    .iter()
+                    .find(|(column, _, _)| column == name)
+                    .map(|(_, _, udt)| udt.as_str())
+                    .unwrap_or("");
+                expressions.push(pg_select_expression(name, udt_name)?);
+            }
+            sql.push_str(&expressions.join(", "));
+        }
+        sql.push_str(" FROM ");
+        sql.push_str(&qualified);
+
+        // WHERE 子句单独构建，SELECT 与 COUNT 复用，保证带过滤/搜索时分页总数正确
+        let mut conditions: Vec<String> = Vec::new();
+        if let Some(filter) = &request.filter {
+            let mut cond = format!("{} ", quote_pg_identifier(&filter.column)?);
+            match filter.operator {
+                FilterOperator::Eq => cond.push_str(&format!("= {}", quote_value(&filter.value, DriverKind::Postgres)?)),
+                FilterOperator::Ne => cond.push_str(&format!("!= {}", quote_value(&filter.value, DriverKind::Postgres)?)),
+                FilterOperator::Gt => cond.push_str(&format!("> {}", quote_value(&filter.value, DriverKind::Postgres)?)),
+                FilterOperator::Gte => cond.push_str(&format!(">= {}", quote_value(&filter.value, DriverKind::Postgres)?)),
+                FilterOperator::Lt => cond.push_str(&format!("< {}", quote_value(&filter.value, DriverKind::Postgres)?)),
+                FilterOperator::Lte => cond.push_str(&format!("<= {}", quote_value(&filter.value, DriverKind::Postgres)?)),
+                FilterOperator::Like => {
+                    cond.push_str(&format!("LIKE {}", quote_value(&filter.value, DriverKind::Postgres)?))
+                }
+                FilterOperator::IsNull => cond.push_str("IS NULL"),
+                FilterOperator::IsNotNull => cond.push_str("IS NOT NULL"),
+            }
+            conditions.push(cond);
+        }
+
+        // 关键字搜索：参与搜索的列统一转 text 后做包含匹配，避免非文本类型无 LIKE 操作符
+        if let Some(keyword) = request
+            .search
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+        {
+            let searchable: Vec<String> = column_meta
+                .iter()
+                .filter(|(_, _, udt)| is_searchable_pg_type(udt))
+                .filter_map(|(name, _, _)| quote_pg_identifier(name).ok())
+                .collect();
+            if !searchable.is_empty() {
+                let pattern = escape_like_keyword(keyword);
+                let likes: Vec<String> = searchable
+                    .iter()
+                    .map(|col| format!("{}::text LIKE '%{}%'", col, pattern))
+                    .collect();
+                conditions.push(format!("({})", likes.join(" OR ")));
+            }
+        }
+
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", conditions.join(" AND "))
+        };
+        sql.push_str(&where_clause);
+
+        if let Some(col) = &request.sort_column {
+            if !col.trim().is_empty() {
+                let direction = request.sort_direction.unwrap_or(SortDirection::Asc);
+                sql.push_str(&format!(
+                    " ORDER BY {} {}",
+                    quote_pg_identifier(col)?,
+                    match direction {
+                        SortDirection::Asc => "ASC",
+                        SortDirection::Desc => "DESC",
+                    }
+                ));
+            }
+        }
+
+        let offset = (request.page - 1) * request.page_size;
+        sql.push_str(&format!(" LIMIT {} OFFSET {}", request.page_size, offset));
+
+        // 数据与总数放在同一只读事务里：PG 默认读已提交，需显式提升到可重复读，
+        // 否则两条语句各取一次快照，会出现「总数」与当前页不一致
+        let mut tx = pool.begin().await?;
+        run_query(
+            sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ").execute(&mut *tx),
+            query_cancel,
+            query_notify,
+        )
+        .await?;
+        let result = run_query(
+            sqlx::query(&sql).fetch_all(&mut *tx),
+            query_cancel,
+            query_notify,
+        )
+        .await?;
+
+        let count_sql = format!("SELECT COUNT(*) FROM {}{}", qualified, where_clause);
+        let total_count: i64 = run_query(
+            sqlx::query_scalar(&count_sql).fetch_one(&mut *tx),
+            query_cancel,
+            query_notify,
+        )
+        .await?;
+        tx.commit().await?;
+
+        let execution_time_ms = start.elapsed().as_millis() as u64;
+
+        // 列顺序与 SELECT 一致，空结果集也能保留表头
+        let ordered: Vec<(String, String, String)> = match &request.columns {
+            Some(cols) => cols
+                .iter()
+                .map(|name| {
+                    column_meta
+                        .iter()
+                        .find(|(n, _, _)| n == name)
+                        .cloned()
+                        .unwrap_or_else(|| (name.clone(), String::new(), String::new()))
+                })
+                .collect(),
+            None => column_meta.clone(),
+        };
+
+        let (columns, kinds): (Vec<ColumnDefinition>, Vec<PgColumnKind>) = if ordered.is_empty() {
+            // 元数据不可用时退回结果集自身的列信息
+            match result.first() {
+                Some(first) => {
+                    let columns = first
+                        .columns()
+                        .iter()
+                        .map(|c| {
+                            let name = c.name().to_string();
+                            ColumnDefinition {
+                                is_primary: pk_columns.contains(&name),
+                                name,
+                                data_type: c.type_info().to_string(),
+                                is_nullable: true,
+                                is_auto_increment: false,
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    let kinds = first
+                        .columns()
+                        .iter()
+                        .map(|c| classify_pg_column(&c.type_info().to_string()))
+                        .collect::<Vec<_>>();
+                    (columns, kinds)
+                }
+                None => (Vec::new(), Vec::new()),
+            }
+        } else {
+            let columns = ordered
+                .iter()
+                .map(|(name, data_type, _)| ColumnDefinition {
+                    is_primary: pk_columns.contains(name),
+                    name: name.clone(),
+                    data_type: data_type.clone(),
+                    is_nullable: true,
+                    is_auto_increment: false,
+                })
+                .collect::<Vec<_>>();
+            let kinds = ordered
+                .iter()
+                .map(|(_, _, udt)| classify_pg_column(udt))
+                .collect::<Vec<_>>();
+            (columns, kinds)
+        };
+
+        let mut rows = Vec::with_capacity(result.len());
+        for row in &result {
+            let mut row_data = Vec::with_capacity(kinds.len());
+            for (i, kind) in kinds.iter().enumerate() {
+                row_data.push(convert_pg_value(row, i, *kind)?);
+            }
+            rows.push(row_data);
+        }
+
+        Ok(DataQueryResponse {
+            columns,
+            rows,
+            total_count: total_count as u64,
+            page: request.page,
+            page_size: request.page_size,
+            execution_time_ms,
+        })
+    }
+
+    /// 取消当前连接上正在执行的查询，返回是否因此丢弃了进行中的事务（已回滚）。
     ///
     /// 置位取消标志并唤醒等待中的执行：执行中的查询丢弃其 future，物理连接关闭、
-    /// 服务端查询随客户端断开而终止。若此时有进行中的事务，一并丢弃（Drop 自动回滚），
-    /// 避免留下一条已不可用的事务连接。
-    pub async fn cancel_query(&self, connection_id: &str) -> Result<()> {
+    /// 服务端查询随客户端断开而终止。仅在确有在途查询时才会丢弃进行中的事务
+    /// （Drop 自动回滚），避免留下一条已不可用的事务连接；无在途查询时不碰事务。
+    pub async fn cancel_query(&self, connection_id: &str) -> Result<bool> {
         let connections = self.connections.read().await;
         let conn = connections.get(connection_id)
-            .ok_or_else(|| anyhow!("Connection not found: {}", connection_id))?;
+            .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
+
+        // 没有在途查询时不置位、也不碰事务：否则会误杀下一次查询或静默回滚用户事务
+        if !conn.query_running.load(Ordering::SeqCst) {
+            return Ok(false);
+        }
 
         // 必须先置位并唤醒，再去抢事务锁：查询执行期间持有同一把锁，
         // 先抢锁会让取消请求一直阻塞到查询自然结束，取消形同失效。
@@ -1026,12 +1736,16 @@ impl ConnectionManager {
         conn.query_notify.notify_waiters();
 
         // 置位后执行方会立即丢弃查询 future 并释放锁，此处的等待是毫秒级的。
-        // 若有进行中的事务，取消查询会破坏其连接协议流，直接丢弃事务（自动回滚）
+        // 事务连接协议流已被破坏，只能丢弃事务（自动回滚）；通过返回值告知前端，
+        // 避免界面仍显示「事务活跃」却已无事务可提交。
         let mut txn_guard = conn.transaction.lock().await;
-        if txn_guard.is_some() {
+        let rolled_back = if txn_guard.is_some() {
             *txn_guard = None;
-        }
-        Ok(())
+            true
+        } else {
+            false
+        };
+        Ok(rolled_back)
     }
 
     /// 读取表数据并转换为类型化的导出行。
@@ -1052,15 +1766,19 @@ impl ConnectionManager {
         let pool = {
             let connections = self.connections.read().await;
             let conn = connections.get(connection_id)
-                .ok_or_else(|| anyhow!("Connection not found: {}", connection_id))?;
+                .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
             conn.pool.as_ref()
-                .ok_or_else(|| anyhow!("Connection not established"))?
+                .ok_or_else(|| anyhow!("连接尚未建立"))?
                 .as_mysql("导出表数据")?
                 .clone()
         };
 
         let mut conn = pool.acquire().await
-            .map_err(|e| anyhow!("Failed to acquire connection: {}", e))?;
+            .map_err(|e| anyhow!("获取数据库连接失败: {}", e))?;
+
+        // 整表导出可能很久：给更宽松的超时上限，同时允许前端取消
+        let (query_cancel, query_notify, query_running) = self.exec_handles(connection_id).await?;
+        let _run_guard = QueryRunGuard::start(&query_cancel, &query_running);
 
         // 列名与类型以 INFORMATION_SCHEMA 为准，顺序与 SELECT * 一致
         let column_meta: Vec<(String, String)> = sqlx::query_as(
@@ -1074,11 +1792,17 @@ impl ConnectionManager {
 
         let use_db = format!("USE `{}`", database);
         conn.execute(use_db.as_str()).await
-            .map_err(|e| anyhow!("Failed to use database: {}", e))?;
+            .map_err(|e| anyhow!("切换数据库失败: {}", e))?;
 
         let query = format!("SELECT * FROM `{}`", table);
-        let rows = sqlx::query(&query).fetch_all(&mut *conn).await
-            .map_err(|e| anyhow!("Query failed: {}", e))?;
+        let rows = run_query_within(
+            sqlx::query(&query).fetch_all(&mut *conn),
+            &query_cancel,
+            &query_notify,
+            MAX_EXPORT_DURATION,
+        )
+        .await
+        .map_err(|e| anyhow!("查询失败: {}", e))?;
 
         // 元数据缺失时退回结果集自身的列信息
         let columns: Vec<ExportColumn> = if !column_meta.is_empty() {
@@ -1110,89 +1834,114 @@ impl ConnectionManager {
         Ok(TableExportData { columns, rows: typed_rows })
     }
 
-    /// 导出表数据
-    pub async fn export_table_data(
+    /// 流式导出表数据到文件（CSV / SQL / JSON）
+    ///
+    /// 逐行读取结果集并追加写入 `BufWriter`，内存占用与表大小无关；
+    /// 全程受取消标志与 `MAX_EXPORT_DURATION` 约束，失败时由调用方清理半成品文件。
+    pub async fn export_table_to_file(
         &self,
         connection_id: &str,
         database: &str,
         table: &str,
         format: &str,
-    ) -> Result<String> {
-        // 验证导出格式（Excel 走独立命令，此处仅返回文本）
-        let allowed_formats = ["csv", "sql", "json"];
-        if !allowed_formats.contains(&format.to_lowercase().as_str()) {
-            return Err(anyhow!("不支持的导出格式: {}", format));
+        path: &std::path::Path,
+    ) -> Result<u64> {
+        let format = ExportFormat::parse(format)?;
+        // 输入验证
+        validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
+        validate_identifier(table).map_err(|e| anyhow!("表名验证失败: {}", e))?;
+
+        // 只取池的克隆后释放连接表读锁，导出期间不阻塞其他连接操作
+        let pool = {
+            let connections = self.connections.read().await;
+            let conn = connections
+                .get(connection_id)
+                .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
+
+            conn.pool
+                .as_ref()
+                .ok_or_else(|| anyhow!("连接尚未建立"))?
+                .as_mysql("导出表数据")?
+                .clone()
+        };
+
+        // 从连接池获取单个连接，确保 USE 语句和查询在同一个连接上执行
+        let mut conn = pool
+            .acquire()
+            .await
+            .map_err(|e| anyhow!("获取数据库连接失败: {}", e))?;
+
+        // 整表导出可能很久：给更宽松的超时上限，同时允许前端取消
+        let (query_cancel, query_notify, query_running) =
+            self.exec_handles(connection_id).await?;
+        let _run_guard = QueryRunGuard::start(&query_cancel, &query_running);
+
+        // 使用当前数据库 - USE 语句不支持预处理协议
+        let use_db = format!("USE `{}`", database);
+        conn.execute(use_db.as_str())
+            .await
+            .map_err(|e| anyhow!("切换数据库失败: {}", e))?;
+
+        // 创建目标文件：数据逐行写入，不在内存里保留整表
+        let file =
+            std::fs::File::create(path).map_err(|e| anyhow!("创建导出文件失败: {}", e))?;
+        // 获取列类型信息，失败时回退到结果集自带的列信息
+        let column_types: Vec<(String, String)> = match sqlx::query_as(
+            "SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS \
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
+        )
+        .bind(table)
+        .fetch_all(&mut *conn)
+        .await
+        {
+            Ok(types) => types,
+            Err(e) => {
+                tracing::warn!("读取列元数据失败，改用结果集列信息: {}", e);
+                Vec::new()
+            }
+        };
+
+        let columns: Vec<ExportColumn> = column_types
+            .into_iter()
+            .map(|(name, data_type)| ExportColumn { name, data_type })
+            .collect();
+        let mut sink = TableExportSink::new(
+            std::io::BufWriter::with_capacity(256 * 1024, file),
+            format,
+            table,
+            columns,
+        );
+
+        let query = format!("SELECT * FROM `{}`", table);
+        let mut rows = sqlx::query(&query).fetch(&mut *conn);
+        let deadline = Instant::now() + MAX_EXPORT_DURATION;
+
+        loop {
+            if query_cancel.load(Ordering::SeqCst) {
+                return Err(anyhow!("查询已被用户取消"));
+            }
+            if Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "导出超过 {} 分钟，已终止；请缩小数据范围后重试",
+                    MAX_EXPORT_DURATION.as_secs() / 60
+                ));
+            }
+
+            let next = tokio::select! {
+                item = rows.try_next() => item.map_err(|e| anyhow!("查询失败: {}", e))?,
+                // 通知可能早于本轮检查到达，下一轮由 cancel 标志兜住
+                _ = query_notify.notified() => continue,
+                _ = tokio::time::sleep(Duration::from_millis(300)) => continue,
+            };
+
+            match next {
+                Some(row) => sink.write_row(&row)?,
+                None => break,
+            }
         }
 
-        match format.to_lowercase().as_str() {
-            "csv" => {
-                let data = self.fetch_table_export(connection_id, database, table).await?;
-                Ok(export::to_csv(&data))
-            }
-            "json" => {
-                let data = self.fetch_table_export(connection_id, database, table).await?;
-                export::to_json(&data)
-            }
-            "sql" => {
-                // 输入验证
-                validate_identifier(database)
-                    .map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
-                validate_identifier(table)
-                    .map_err(|e| anyhow!("表名验证失败: {}", e))?;
-
-                let connections = self.connections.read().await;
-                let conn = connections.get(connection_id)
-                    .ok_or_else(|| anyhow!("Connection not found: {}", connection_id))?;
-
-                let pool = conn.pool.as_ref()
-                    .ok_or_else(|| anyhow!("Connection not established"))?
-                    .as_mysql("导出表数据")?;
-
-                // 从连接池获取单个连接，确保 USE 语句和查询在同一个连接上执行
-                let mut conn = pool.acquire().await
-                    .map_err(|e| anyhow!("Failed to acquire connection: {}", e))?;
-
-                // 使用当前数据库 - USE 语句不支持预处理协议
-                let use_db = format!("USE `{}`", database);
-                conn.execute(use_db.as_str()).await
-                    .map_err(|e| anyhow!("Failed to use database: {}", e))?;
-
-                // 查询数据
-                let query = format!("SELECT * FROM `{}`", table);
-                let rows = sqlx::query(&query).fetch_all(&mut *conn).await
-                    .map_err(|e| anyhow!("Query failed: {}", e))?;
-
-                let columns: Vec<String> = rows.first()
-                    .map(|row| row.columns().iter().map(|c| c.name().to_string()).collect())
-                    .unwrap_or_default();
-
-                let mut sql = String::new();
-                // 获取列类型信息
-                let column_types: Vec<(String, String)> = match sqlx::query_as(
-                    "SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS 
-                     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION"
-                )
-                .bind(table)
-                .fetch_all(&mut *conn).await {
-                    Ok(types) => types,
-                    Err(_) => columns.iter().map(|c| (c.clone(), "varchar".to_string())).collect(),
-                };
-
-                for row in &rows {
-                    let values: Vec<String> = column_types.iter().map(|(col_name, data_type)| {
-                        let val = format_sql_value(row, col_name, data_type);
-                        if val == "NULL" {
-                            format!("`{}` = NULL", col_name)
-                        } else {
-                            format!("`{}` = {}", col_name, val)
-                        }
-                    }).collect();
-                    sql.push_str(&format!("INSERT INTO `{}` SET {};\n", table, values.join(", ")));
-                }
-                Ok(sql)
-            }
-            _ => Err(anyhow!("Unsupported export format: {}", format)),
-        }
+        sink.finish()?;
+        Ok(sink.rows())
     }
 
     /// 导入数据
@@ -1222,27 +1971,32 @@ impl ConnectionManager {
             return Err(anyhow!("导入数据大小不能超过 100MB"));
         }
 
-        let connections = self.connections.read().await;
-        let conn = connections.get(connection_id)
-            .ok_or_else(|| anyhow!("Connection not found: {}", connection_id))?;
+        // 只取池的克隆后释放连接表读锁：导入可能持续很久，不能在此期间阻塞其他连接操作
+        let (pool, safety_mode) = {
+            let connections = self.connections.read().await;
+            let conn = connections.get(connection_id)
+                .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
 
-        let pool = conn.pool.as_ref()
-            .ok_or_else(|| anyhow!("Connection not established"))?
-            .as_mysql("导入数据")?;
+            // 只读连接不允许导入数据
+            if conn.config.safety_mode == SafetyMode::ReadOnly {
+                return Err(anyhow!("当前连接为只读模式，无法导入数据"));
+            }
 
-        // 只读连接不允许导入数据
-        if conn.config.safety_mode == SafetyMode::ReadOnly {
-            return Err(anyhow!("当前连接为只读模式，无法导入数据"));
-        }
+            let pool = conn.pool.as_ref()
+                .ok_or_else(|| anyhow!("连接尚未建立"))?
+                .as_mysql("导入数据")?
+                .clone();
+            (pool, conn.config.safety_mode)
+        };
 
         // 从连接池获取单个连接，确保 USE 语句和所有导入操作在同一个连接上执行
         let mut conn = pool.acquire().await
-            .map_err(|e| anyhow!("Failed to acquire connection: {}", e))?;
+            .map_err(|e| anyhow!("获取数据库连接失败: {}", e))?;
 
         // 使用当前数据库 - USE 语句不支持预处理协议
         let use_db = format!("USE `{}`", database);
         conn.execute(use_db.as_str()).await
-            .map_err(|e| anyhow!("Failed to use database: {}", e))?;
+            .map_err(|e| anyhow!("切换数据库失败: {}", e))?;
 
         let mut count = 0u64;
 
@@ -1276,6 +2030,9 @@ impl ConnectionManager {
                     .collect::<Vec<_>>()
                     .join(", ");
 
+                // CSV 导入整体放在一个事务里：中途失败时回滚，避免只导入一半数据
+                let mut tx = conn.begin().await
+                    .map_err(|e| anyhow!("开始导入事务失败：{}", e))?;
                 for (index, record) in records.iter().enumerate().skip(1) {
                     // 跳过空行
                     if record.len() == 1 && record[0].value.trim().is_empty() && !record[0].quoted {
@@ -1300,25 +2057,39 @@ impl ConnectionManager {
                     }).collect::<Vec<_>>().join(", ");
 
                     let query = format!("INSERT INTO `{}` ({}) VALUES ({})", table, columns_str, values_str);
-                    sqlx::query(&query).execute(&mut *conn).await
-                        .map_err(|e| anyhow!("Insert failed: {}", e))?;
+                    sqlx::query(&query).execute(&mut *tx).await
+                        .map_err(|e| anyhow!("CSV 第 {} 行插入失败（表 {}）：{}", index + 1, table, e))?;
                     count += 1;
                 }
+                tx.commit().await
+                    .map_err(|e| anyhow!("提交导入事务失败：{}", e))?;
             }
             "sql" => {
+                // 与 CSV 分支一致：整批脚本放在一个事务里，中途失败即整体回滚。
+                // 注意：MySQL 的 DDL（CREATE/ALTER/DROP/TRUNCATE 等）会隐式提交，
+                // 事务只能保证 DML 批次的原子性，DDL 无法回滚。
+                let mut tx = conn.begin().await
+                    .map_err(|e| anyhow!("开始导入事务失败：{}", e))?;
                 // 执行 SQL 语句 - 按分号分割完整的 SQL 语句
                 let statements = split_sql_statements(data);
-                for stmt in statements {
+                for (index, stmt) in statements.iter().enumerate() {
                     let stmt = stmt.trim();
                     if stmt.is_empty() || stmt.starts_with("--") {
                         continue;
                     }
-                    sqlx::query(stmt).execute(&mut *conn).await
-                        .map_err(|e| anyhow!("SQL execution failed: {}\nStatement: {}", e, stmt))?;
+                    // 导入脚本此前只拦只读模式，Safe 模式下仍会执行 DROP/TRUNCATE 等危险语句
+                    crate::core::sql::safety::enforce(safety_mode, stmt).map_err(|e| {
+                        anyhow!("第 {} 条 SQL 被安全模式拦截：{}\nStatement: {}", index + 1, e, stmt)
+                    })?;
+                    // 文本协议执行：DDL、存储过程等语句无法走预处理协议
+                    Executor::execute(&mut *tx, stmt).await
+                        .map_err(|e| anyhow!("第 {} 条 SQL 执行失败：{}\nStatement: {}", index + 1, e, stmt))?;
                     count += 1;
                 }
+                tx.commit().await
+                    .map_err(|e| anyhow!("提交导入事务失败：{}", e))?;
             }
-            _ => return Err(anyhow!("Unsupported import format: {}", format)),
+            _ => return Err(anyhow!("不支持的导入格式: {}", format)),
         }
 
         Ok(count)
@@ -1341,41 +2112,60 @@ impl ConnectionManager {
             return Err(anyhow!("SQL 文件大小不能超过 100MB"));
         }
 
-        let connections = self.connections.read().await;
-        let conn = connections.get(connection_id)
-            .ok_or_else(|| anyhow!("Connection not found: {}", connection_id))?;
+        // 只取池的克隆后释放连接表读锁：大批量导入期间不应阻塞其他连接操作
+        let (pool, safety_mode) = {
+            let connections = self.connections.read().await;
+            let conn = connections.get(connection_id)
+                .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
 
-        let pool = conn.pool.as_ref()
-            .ok_or_else(|| anyhow!("Connection not established"))?
-            .as_mysql("导入 SQL")?;
+            // 只读连接不允许导入 SQL
+            if conn.config.safety_mode == SafetyMode::ReadOnly {
+                return Err(anyhow!("当前连接为只读模式，无法导入 SQL"));
+            }
 
-        // 只读连接不允许导入 SQL
-        if conn.config.safety_mode == SafetyMode::ReadOnly {
-            return Err(anyhow!("当前连接为只读模式，无法导入 SQL"));
-        }
+            let pool = conn.pool.as_ref()
+                .ok_or_else(|| anyhow!("连接尚未建立"))?
+                .as_mysql("导入 SQL")?
+                .clone();
+            (pool, conn.config.safety_mode)
+        };
 
         // 从连接池获取单个连接，确保 USE 语句在整个导入过程中生效
         let mut conn = pool.acquire().await
-            .map_err(|e| anyhow!("Failed to acquire connection: {}", e))?;
+            .map_err(|e| anyhow!("获取数据库连接失败: {}", e))?;
 
         // 切换到目标数据库（在同一连接上执行）- USE 语句不支持预处理协议
         // 使用 execute() 方法直接执行，避免生命周期问题
         let use_db = format!("USE `{}`", database);
         conn.execute(use_db.as_str()).await
-            .map_err(|e| anyhow!("Failed to use database: {}", e))?;
+            .map_err(|e| anyhow!("切换数据库失败: {}", e))?;
 
         // 安全分割 SQL 语句（忽略字符串字面量和注释中的分号）
         let statements = split_sql_statements(sql);
 
-        for stmt in statements {
+        // 整批脚本放进一个事务，中途失败即整体回滚，避免只导入一半。
+        // 注意：MySQL 的 DDL 会隐式提交，事务只保护 DML 批次。
+        let mut tx = conn.begin().await
+            .map_err(|e| anyhow!("开始导入事务失败：{}", e))?;
+
+        for (index, stmt) in statements.iter().enumerate() {
             let stmt = stmt.trim();
             if stmt.is_empty() {
                 continue;
             }
 
-            sqlx::query(stmt).execute(&mut *conn).await
-                .map_err(|e| anyhow!("SQL execution failed: {}\nStatement: {}", e, stmt))?;
+            // 之前仅拦截只读模式，Safe 模式下脚本里的 DROP/TRUNCATE 依然会执行
+            crate::core::sql::safety::enforce(safety_mode, stmt).map_err(|e| {
+                anyhow!("第 {} 条 SQL 被安全模式拦截：{}\nStatement: {}", index + 1, e, stmt)
+            })?;
+
+            // 文本协议执行：DDL、存储过程等语句无法走预处理协议
+            Executor::execute(&mut *tx, stmt).await
+                .map_err(|e| anyhow!("第 {} 条 SQL 执行失败：{}\nStatement: {}", index + 1, e, stmt))?;
         }
+
+        tx.commit().await
+            .map_err(|e| anyhow!("提交导入事务失败：{}", e))?;
 
         Ok(())
     }
@@ -1398,6 +2188,35 @@ pub(super) fn is_searchable_type(column_type: &str) -> bool {
         || t.contains("point")
         || t.contains("linestring")
         || t.contains("polygon"))
+}
+
+/// sqlx 能按字符串直接解码的 PG 类型（其余文本类类型都先转 `::text`）
+fn is_pg_text_native(udt_name: &str) -> bool {
+    matches!(
+        udt_name.to_lowercase().as_str(),
+        "text" | "varchar" | "bpchar" | "name" | "citext"
+    )
+}
+
+/// 构造 PG 查询的列表达式。
+///
+/// 已知类型交给 sqlx 按二进制解码；自定义类型（vector、枚举、域名）、数组、inet/interval 等
+/// 没有对应的 Rust 解码器，统一 `::text` 以拿到可读文本（如 vector 显示为 `[1,2,3]`）。
+fn pg_select_expression(column: &str, udt_name: &str) -> Result<String> {
+    let quoted = quote_pg_identifier(column)?;
+    if matches!(classify_pg_column(udt_name), PgColumnKind::Text) && !is_pg_text_native(udt_name) {
+        // 保留原列名，列顺序与展示头保持一致
+        Ok(format!("{}::text AS {}", quoted, quoted))
+    } else {
+        Ok(quoted)
+    }
+}
+
+/// 判断 PostgreSQL 列是否参与关键字搜索。
+///
+/// 搜索时统一转 `::text`，因此只有没有有意义文本表示的 bytea 需要排除。
+fn is_searchable_pg_type(udt_name: &str) -> bool {
+    !udt_name.eq_ignore_ascii_case("bytea")
 }
 
 /// 转义 LIKE 模式中的通配符，避免用户输入的 `%`/`_` 被当成模式。
@@ -1433,5 +2252,194 @@ mod tests {
         assert_eq!(escape_like_keyword("a_b"), "a\\_b");
         assert_eq!(escape_like_keyword("it's"), "it''s");
         assert_eq!(escape_like_keyword("c:\\x"), "c:\\\\x");
+    }
+
+    #[test]
+    fn change_target_table_uses_ast_not_text_match() {
+        // 字符串字面量里出现目标表名不能算「引用了该表」
+        assert_eq!(
+            change_target_table(
+                "DELETE FROM other WHERE note = 'users'",
+                TableChangeKind::Delete
+            )
+            .unwrap(),
+            "other"
+        );
+        // 库限定名取末段；别名不影响目标表
+        assert_eq!(
+            change_target_table(
+                "UPDATE `db`.`users` AS u SET u.name = 'x' WHERE u.id = 1",
+                TableChangeKind::Update
+            )
+            .unwrap(),
+            "users"
+        );
+        assert_eq!(
+            change_target_table("INSERT INTO `users` (id) VALUES (1)", TableChangeKind::Insert)
+                .unwrap(),
+            "users"
+        );
+        assert_eq!(
+            change_target_table("DELETE FROM users WHERE id = 1", TableChangeKind::Delete).unwrap(),
+            "users"
+        );
+    }
+
+    #[test]
+    fn change_target_table_rejects_multi_table_and_wrong_kind() {
+        assert!(change_target_table(
+            "UPDATE a JOIN users ON a.id = users.id SET a.x = 1",
+            TableChangeKind::Update
+        )
+        .is_err());
+        assert!(change_target_table(
+            "DELETE a, users FROM a JOIN users ON a.id = users.id",
+            TableChangeKind::Delete
+        )
+        .is_err());
+        assert!(change_target_table("SELECT 1 FROM users", TableChangeKind::Delete).is_err());
+        assert!(change_target_table("DELETE FROM", TableChangeKind::Delete).is_err());
+    }
+
+    #[test]
+    fn validate_table_change_rejects_table_hidden_in_comment() {
+        // 旧实现按文本包含判断，注释里的 users 会被误认为目标表
+        let change = TableChange {
+            kind: TableChangeKind::Update,
+            sql: "UPDATE other /* users */ SET x = 1 WHERE id = 1".to_string(),
+            table: "users".to_string(),
+            where_clause: None,
+        };
+        let err = validate_table_change(&change, 1, SafetyMode::Off).unwrap_err();
+        assert!(err.to_string().contains("不一致"), "{err}");
+    }
+
+    /// 真实 MySQL 回归用例的连接夹具。
+    ///
+    /// 必须指向**测试库**，通过以下环境变量提供：
+    /// `AURORADB_TEST_MYSQL_HOST` / `PORT` / `USER` / `PASSWORD` / `DATABASE`。
+    /// 未配置时用例静默跳过，保证默认 `cargo test` 不会误连数据库。
+    async fn mysql_test_connection() -> Option<(ConnectionManager, String, String)> {
+        let host = std::env::var("AURORADB_TEST_MYSQL_HOST").ok()?;
+        let port = std::env::var("AURORADB_TEST_MYSQL_PORT")
+            .ok()?
+            .parse::<u16>()
+            .ok()?;
+        let username = std::env::var("AURORADB_TEST_MYSQL_USER").ok()?;
+        let password = std::env::var("AURORADB_TEST_MYSQL_PASSWORD").unwrap_or_default();
+        let database = std::env::var("AURORADB_TEST_MYSQL_DATABASE").ok()?;
+
+        let manager = ConnectionManager::new();
+        let id = manager
+            .connect(ConnectionRequest {
+                config: ConnectionConfig {
+                    id: "qa-test".to_string(),
+                    name: "qa-test".to_string(),
+                    driver: DriverKind::MySql,
+                    host,
+                    port,
+                    database: Some(database.clone()),
+                    username,
+                    password,
+                    pool_config: PoolConfig::default(),
+                    ssl_config: SslConfig::default(),
+                    safety_mode: SafetyMode::Off,
+                },
+                ssh_config: None,
+            })
+            .await
+            .ok()?;
+
+        Some((manager, id, database))
+    }
+
+    fn paging_request(id: &str, database: &str, table: &str) -> DataQueryRequest {
+        DataQueryRequest {
+            connection_id: id.to_string(),
+            database: database.to_string(),
+            table: table.to_string(),
+            columns: None,
+            filter: Some(FilterCondition {
+                column: "grp".to_string(),
+                operator: FilterOperator::Eq,
+                value: serde_json::json!(1),
+            }),
+            search: None,
+            sort_column: None,
+            sort_direction: None,
+            page: 2,
+            page_size: 3,
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "需要真实 MySQL 测试库：设置 AURORADB_TEST_MYSQL_* 后执行 cargo test -- --ignored"]
+    async fn mysql_pagination_total_count_respects_filter() {
+        let Some((manager, id, db)) = mysql_test_connection().await else {
+            return;
+        };
+        let table = format!("qa_paging_{}", std::process::id());
+        let ddl = format!("CREATE TABLE `{table}` (id INT PRIMARY KEY, grp INT NOT NULL)");
+        manager.execute(&id, &db, &ddl).await.unwrap();
+
+        // 30 行，其中 id 能被 3 整除的 10 行 grp=1
+        let values: Vec<String> = (1..=30)
+            .map(|i| format!("({i}, {})", if i % 3 == 0 { 1 } else { 0 }))
+            .collect();
+        let insert = format!("INSERT INTO `{table}` (id, grp) VALUES {}", values.join(", "));
+        manager.execute(&id, &db, &insert).await.unwrap();
+
+        let resp = manager
+            .query_table(&id, &db, &table, paging_request(&id, &db, &table))
+            .await
+            .unwrap();
+
+        // 总数必须是过滤后的 10 行，而不是全表 30 行；第二页仍返回 3 行
+        assert_eq!(resp.total_count, 10, "分页总数未按 WHERE 过滤");
+        assert_eq!(resp.rows.len(), 3, "第二页不足 3 行");
+
+        let _ = manager
+            .execute(&id, &db, &format!("DROP TABLE IF EXISTS `{table}`"))
+            .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "需要真实 MySQL 测试库：设置 AURORADB_TEST_MYSQL_* 后执行 cargo test -- --ignored"]
+    async fn mysql_apply_changes_rolls_back_whole_batch() {
+        let Some((manager, id, db)) = mysql_test_connection().await else {
+            return;
+        };
+        let table = format!("qa_atomic_{}", std::process::id());
+        let ddl = format!("CREATE TABLE `{table}` (id INT PRIMARY KEY, note VARCHAR(32) NOT NULL)");
+        manager.execute(&id, &db, &ddl).await.unwrap();
+
+        // 第二条主键冲突：整批必须回滚，第一条也不能落库
+        let changes = vec![
+            TableChange {
+                kind: TableChangeKind::Insert,
+                sql: format!("INSERT INTO `{table}` (id, note) VALUES (1, 'a')"),
+                table: table.clone(),
+                where_clause: None,
+            },
+            TableChange {
+                kind: TableChangeKind::Insert,
+                sql: format!("INSERT INTO `{table}` (id, note) VALUES (1, 'b')"),
+                table: table.clone(),
+                where_clause: None,
+            },
+        ];
+        let result = manager.apply_changes(&id, &db, changes).await;
+        assert!(result.is_err(), "重复主键应导致整批失败");
+
+        let mut req = paging_request(&id, &db, &table);
+        req.filter = None;
+        req.page = 1;
+        req.page_size = 10;
+        let resp = manager.query_table(&id, &db, &table, req).await.unwrap();
+        assert_eq!(resp.total_count, 0, "事务回滚后不应留下半写数据");
+
+        let _ = manager
+            .execute(&id, &db, &format!("DROP TABLE IF EXISTS `{table}`"))
+            .await;
     }
 }

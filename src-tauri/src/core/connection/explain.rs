@@ -201,7 +201,12 @@ fn flatten_pg_top_level(root: &Value) -> Vec<ExplainNode> {
 // ===================== 执行层 =====================
 
 fn validate_explain_sql(sql: &str, driver: DriverKind) -> Result<()> {
-    let trimmed = sql.trim();
+    // 只允许单条语句：EXPLAIN 只作用于紧随其后的第一条语句，多语句会静默忽略其余部分
+    let statements = crate::core::sql::split_sql_statements(sql);
+    if statements.len() > 1 {
+        return Err(anyhow!("一次只能解释一条语句，请去掉多余的分号内容"));
+    }
+    let trimmed = statements.first().map(|s| s.trim()).unwrap_or("");
     if trimmed.is_empty() {
         return Err(anyhow!("SQL 为空，无法执行解释计划"));
     }
@@ -234,12 +239,18 @@ impl ConnectionManager {
         database: &str,
         sql: &str,
     ) -> Result<ExplainPlan> {
+        // 库名会被拼进 USE / search_path，必须先按标识符规则校验
+        if !database.is_empty() {
+            crate::core::connection::validation::validate_identifier(database)
+                .map_err(|e| anyhow!("数据库名验证失败：{}", e))?;
+        }
+
         let (pool, driver, conn_database) = {
             let mgr = self.connections.read().await;
             let conn = mgr.get(connection_id)
-                .ok_or_else(|| anyhow!("Connection {connection_id} not found"))?;
+                .ok_or_else(|| anyhow!("连接不存在: {connection_id}"))?;
             let pool = conn.pool.as_ref()
-                .ok_or_else(|| anyhow!("Connection not established"))?
+                .ok_or_else(|| anyhow!("连接尚未建立"))?
                 .clone();
             validate_explain_sql(sql, pool.driver())?;
             (pool.clone(), pool.driver(), conn.config.database.clone())
@@ -250,7 +261,7 @@ impl ConnectionManager {
             AnyPool::MySql(mysql_pool) => {
                 let mut phys = mysql_pool.acquire().await.context("获取 MySQL 连接失败")?;
                 if !database.is_empty() {
-                    let use_sql = format!("USE `{database}`");
+                    let use_sql = DriverKind::MySql.switch_database_sql(database);
                     Executor::execute(&mut *phys, use_sql.as_str()).await
                         .map_err(|e| anyhow!("切换数据库失败：{}", e))?;
                 }

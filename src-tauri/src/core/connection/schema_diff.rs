@@ -65,11 +65,11 @@ impl ConnectionManager {
         let connections = self.connections.read().await;
         let conn = connections
             .get(connection_id)
-            .ok_or_else(|| anyhow!("Connection {} not found", connection_id))?;
+            .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
         let pool = conn
             .pool
             .as_ref()
-            .ok_or_else(|| anyhow!("Connection {} not available", connection_id))?
+            .ok_or_else(|| anyhow!("连接不可用: {}", connection_id))?
             .as_mysql("Schema 对比")?;
 
         let table_rows: Vec<(String,)> = with_metadata_timeout(
@@ -136,11 +136,11 @@ impl ConnectionManager {
         let connections = self.connections.read().await;
         let conn = connections
             .get(connection_id)
-            .ok_or_else(|| anyhow!("Connection {} not found", connection_id))?;
+            .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
         let pool = conn
             .pool
             .as_ref()
-            .ok_or_else(|| anyhow!("Connection {} not available", connection_id))?
+            .ok_or_else(|| anyhow!("连接不可用: {}", connection_id))?
             .as_mysql("Schema 对比")?;
 
         let (_, create_sql): (String, String) = with_metadata_timeout(

@@ -187,6 +187,26 @@ mod tests {
     }
 
     #[test]
+    fn test_translate_known_codes_keep_raw_message() {
+        // 中文化只替换「提示语」，MySQL 原始报文与错误码必须原样保留，
+        // 否则用户无法按官方文档/搜索引擎排障
+        let cases = [
+            ("1062", "Duplicate entry '1' for key 'PRIMARY'"),
+            ("1146", "Table 'test.users' doesn't exist"),
+            ("1045", "Access denied for user 'root'@'localhost'"),
+            ("2013", "Lost connection to MySQL server during query"),
+            ("1205", "Lock wait timeout exceeded; try restarting transaction"),
+            ("2002", "Can't connect to local MySQL server through socket"),
+        ];
+
+        for (code, raw) in cases {
+            let msg = translate(&db_error(code, raw));
+            assert!(msg.contains(code), "错误码 {code} 未保留：{msg}");
+            assert!(msg.contains(raw), "错误码 {code} 的原始报文丢失：{msg}");
+        }
+    }
+
+    #[test]
     fn test_translate_unknown_code_keeps_code_and_message() {
         let msg = translate(&db_error("99999", "some weird error"));
         assert!(msg.contains("99999"), "got: {msg}");
