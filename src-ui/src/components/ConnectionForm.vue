@@ -362,31 +362,22 @@ onMounted(async () => {
     // 有已保存的凭据时默认勾选「记住密码」
     let hasSavedSecret = false
 
-    // 尝试获取保存的密码
+    // 不回填明文密码：只探测是否已有保存的密码，输入框留空表示沿用旧密码
     try {
       const savedPassword = await savedStore.getPassword(props.editConnection.id)
-      if (savedPassword) {
-        form.password = savedPassword
-        hasSavedSecret = true
-      } else {
-        form.password = ''
-      }
+      hasSavedSecret = !!savedPassword
     } catch {
-      form.password = ''
+      // 读取失败按「没有已保存密码」处理
     }
+    form.password = ''
 
-    // 回填 SSH 密码或私钥口令
+    // SSH 密码/口令同样不落明文，只用占位符提示「已保存，留空保持不变」
     if (form.sshEnabled && props.editConnection.hasSshSecret) {
       try {
         const secret = await savedStore.getSshSecret(props.editConnection.id)
         if (secret) {
           editHasSshSecret.value = true
           hasSavedSecret = true
-          if (form.sshAuthType === 'password') {
-            form.sshPassword = secret
-          } else {
-            form.sshPassphrase = secret
-          }
         }
       } catch {
         // 读取失败时按未保存处理，用户可重新输入
@@ -497,8 +488,9 @@ async function handleSubmit() {
 
     if (isEditMode.value && props.editConnection) {
       // 编辑模式：更新现有连接配置
+      const savedId = props.editConnection.id
       await savedStore.saveConnection({
-        id: props.editConnection.id,
+        id: savedId,
         name: form.name,
         driver: form.driver,
         host: form.host,
@@ -513,10 +505,22 @@ async function handleSubmit() {
         safetyMode: form.safetyMode,
         ...sshSaved,
       })
+
+      // 取消「记住密码」时必须主动清除 keyring 里已保存的凭据，
+      // 否则界面显示未勾选、旧密码却仍留在本地加密存储中
+      if (!savePassword.value) {
+        try {
+          await savedStore.deletePassword(savedId)
+          await savedStore.deleteSshSecret(savedId)
+        } catch (e) {
+          error.value = t('connectionForm.clearSavedSecretFailed', { error: String(e) })
+          return
+        }
+      }
     } else {
-      // 新建模式：创建新连接
-      // 生成新的连接ID
-      const connectionId = `conn_${Date.now()}`
+      // 新建模式：活跃连接与已保存记录共用同一个 id，
+      // 否则之后「编辑/删除保存的连接」找不到正在运行的这条连接
+      const connectionId = existing?.id ?? `conn_${Date.now()}`
 
       // 创建连接
       await store.createConnection({
@@ -542,7 +546,7 @@ async function handleSubmit() {
 
       // 保存连接配置（含密码）- 关键修复：await + 密码传递
       await savedStore.saveConnection({
-        id: existing?.id, // 如果是重复连接，使用原ID
+        id: connectionId,
         name: form.name,
         driver: form.driver,
         host: form.host,

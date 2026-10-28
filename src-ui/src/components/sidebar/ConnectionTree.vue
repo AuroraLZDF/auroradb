@@ -37,6 +37,9 @@
               >{{ t('tree.postgresBadge') }}</span>
             </span>
             <span class="host">{{ item.host }}:{{ item.port }}</span>
+            <span v-if="driverOf(item) === 'postgres' && item.saved!.database" class="database-hint">
+              {{ t('tree.currentDatabase', { name: item.saved!.database }) }}
+            </span>
           </div>
         </div>
 
@@ -76,18 +79,15 @@
                 >{{ t('tree.safeMode') }}</span>
               </span>
               <span class="host">{{ item.host }}:{{ item.port }}</span>
+              <span v-if="driverOf(item) === 'postgres' && item.active!.database" class="database-hint">
+                {{ t('tree.currentDatabase', { name: item.active!.database }) }}
+              </span>
             </div>
           </div>
 
-          <!-- PostgreSQL 暂不支持对象树，给出使用提示 -->
-          <p
-            v-if="expandedConnections.has(item.active!.id) && driverOf(item) === 'postgres'"
-            class="driver-hint"
-          >{{ t('tree.postgresTreeHint') }}</p>
-
-          <!-- 数据库列表 -->
+          <!-- 数据库列表（PostgreSQL 下这一层展示的是 schema） -->
           <DatabaseTree
-            v-else-if="expandedConnections.has(item.active!.id)"
+            v-if="expandedConnections.has(item.active!.id)"
             :connection-id="item.active!.id"
             :databases="connectionDatabases[item.active!.id] || []"
             :expanded-categories="expandedCategories"
@@ -349,14 +349,16 @@ function getConnectionStatus(state: string): 'online' | 'offline' | 'reconnectin
   background: rgba(59, 130, 246, 0.12);
 }
 
-.driver-hint {
-  margin: var(--space-1) 0 0 var(--space-4);
+.host {
   font-size: var(--text-xs);
-  line-height: 1.5;
   color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.host {
+/* 当前连接的数据库名：PG 下树第一层是 schema，需在此标注真正连的是哪个库 */
+.database-hint {
   font-size: var(--text-xs);
   color: var(--text-tertiary);
   overflow: hidden;

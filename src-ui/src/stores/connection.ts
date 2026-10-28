@@ -56,6 +56,8 @@ export interface ConnectionStatus {
   name: string
   /** 数据库驱动，后端状态未回带时由前端按配置补齐 */
   driver?: DriverKind
+  /** 实际连接的数据库名（PG 配置未填库时为服务端默认库） */
+  database?: string | null
   host: string
   port: number
   username: string
@@ -76,6 +78,8 @@ export const useConnectionStore = defineStore('connection', () => {
   const currentConnection = ref<ConnectionStatus | null>(null)
   const loading = ref(false)
   const error = ref<string | null>(null)
+  /** 因取消查询导致事务被回滚的次数：各组件据此把本地「事务活跃」状态复位 */
+  const transactionResetSeq = ref(0)
 
   // 连接列表
   const connectionList = computed(() => activeConnections.value)
@@ -161,9 +165,11 @@ export const useConnectionStore = defineStore('connection', () => {
     return await tauriInvoke('execute_sql', { connectionId, database, sql })
   }
 
-  // 取消正在执行的SQL
-  async function cancelQuery(connectionId: string): Promise<void> {
-    return await tauriInvoke('cancel_query', { connectionId })
+  // 取消正在执行的SQL；返回是否因此回滚了进行中的事务
+  async function cancelQuery(connectionId: string): Promise<boolean> {
+    const rolledBack = await tauriInvoke<boolean>('cancel_query', { connectionId })
+    if (rolledBack) transactionResetSeq.value++
+    return rolledBack
   }
 
   // 设置当前连接
@@ -183,12 +189,52 @@ export const useConnectionStore = defineStore('connection', () => {
     }
   }
 
+  /** 连接状态轮询定时器（全局唯一） */
+  let statusTimer: ReturnType<typeof setInterval> | null = null
+
+  /**
+   * 拉取一次所有活跃连接的后端状态并同步到列表。
+   * 心跳检测到的 reconnecting/failed 状态只有主动拉取才能反映到 UI。
+   */
+  async function refreshStatuses(): Promise<void> {
+    const ids = activeConnections.value.map(c => c.id)
+    await Promise.all(ids.map(async (id) => {
+      try {
+        const status = await getStatus(id)
+        updateConnectionStatus(id, {
+          state: status.state,
+          message: status.message,
+          stability_score: status.stability_score,
+          health_status: status.health_status,
+          last_error: status.last_error,
+        })
+      } catch {
+        // 后端已无该连接（例如已断开）时忽略，避免轮询不断产生错误
+      }
+    }))
+  }
+
+  // 启动连接状态轮询（重复调用无副作用）
+  function startStatusPolling(intervalMs = 5000) {
+    if (statusTimer) return
+    statusTimer = setInterval(() => { void refreshStatuses() }, intervalMs)
+  }
+
+  // 停止连接状态轮询
+  function stopStatusPolling() {
+    if (statusTimer) {
+      clearInterval(statusTimer)
+      statusTimer = null
+    }
+  }
+
   return {
     activeConnections,
     connections: activeConnections, // 兼容旧代码
     currentConnection,
     loading,
     error,
+    transactionResetSeq,
     connectionList,
     hasConnection,
     createConnection,
@@ -199,5 +245,8 @@ export const useConnectionStore = defineStore('connection', () => {
     cancelQuery,
     setCurrentConnection,
     updateConnectionStatus,
+    refreshStatuses,
+    startStatusPolling,
+    stopStatusPolling,
   }
 })

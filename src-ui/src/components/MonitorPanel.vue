@@ -143,7 +143,12 @@
               <td class="state">{{ process.state ?? '—' }}</td>
               <td class="sql-cell mono" :title="process.info ?? ''">{{ process.info ?? '—' }}</td>
               <td class="col-action">
-                <Button size="xs" variant="danger" @click="terminate(process)">{{ t('monitor.actionKill') }}</Button>
+                <Button
+                  size="xs"
+                  variant="danger"
+                  :loading="killingIds.has(process.id)"
+                  @click="terminate(process)"
+                >{{ t('monitor.actionKill') }}</Button>
               </td>
             </tr>
             <tr v-if="processes.length === 0">
@@ -194,7 +199,13 @@
         <Button size="sm" :icon="Download" :disabled="auditEntries.length === 0" @click="exportAudit('json')">
           JSON
         </Button>
-        <Button size="sm" variant="danger" :icon="Trash2" @click="clearAudit">
+        <Button
+          size="sm"
+          variant="danger"
+          :icon="Trash2"
+          :loading="clearingAudit"
+          @click="clearAudit"
+        >
           {{ t('common.clear') }}
         </Button>
       </div>
@@ -286,6 +297,7 @@ import {
 } from '@/stores/dataBrowser'
 import type { ConnectionStatus } from '@/stores/connection'
 import { useLicenseStore } from '@/stores/license'
+import { confirmDanger } from '@/composables/useConfirm'
 import { t } from '@/i18n'
 
 const props = withDefaults(defineProps<{
@@ -317,14 +329,20 @@ const metrics = ref<ServerMetrics | null>(null)
 const processLoading = ref(false)
 const processError = ref('')
 const autoRefresh = ref(true)
+/** 正在执行 kill 的会话 id，避免同一行被重复点击 */
+const killingIds = ref<Set<number>>(new Set())
 
 let refreshTimer: ReturnType<typeof setInterval> | undefined
+/** 请求序号：切换连接或发起新请求后，旧请求的结果必须丢弃 */
+let processSeq = 0
 
 async function refreshProcesses(silent = false) {
+  const seq = ++processSeq
   if (!processConnectionId.value) {
     processes.value = []
     metrics.value = null
     processError.value = ''
+    processLoading.value = false
     return
   }
   if (!silent) processLoading.value = true
@@ -333,28 +351,36 @@ async function refreshProcesses(silent = false) {
       dataBrowser.getProcessList(processConnectionId.value),
       dataBrowser.getServerMetrics(processConnectionId.value)
     ])
+    // 已有更新的请求（切换连接 / 手动刷新）时丢弃这次的旧结果
+    if (seq !== processSeq) return
     processes.value = list
     metrics.value = status
     processError.value = ''
   } catch (err) {
-    if (!silent) {
-      processes.value = []
-      processError.value = t('monitor.loadFailed', { message: String(err) })
-    }
+    if (seq !== processSeq) return
+    // 自动刷新失败也必须提示：否则界面会一直展示过期数据，用户无从察觉
+    if (!silent) processes.value = []
+    processError.value = t('monitor.loadFailed', { message: String(err) })
   } finally {
-    processLoading.value = false
+    if (seq === processSeq && !silent) processLoading.value = false
   }
 }
 
 async function terminate(process: ProcessInfo) {
-  if (!confirm(t('monitor.confirmKill', { id: process.id, user: process.user, host: process.host }))) {
-    return
-  }
+  if (killingIds.value.has(process.id)) return
+  const confirmed = await confirmDanger({
+    message: t('monitor.confirmKill', { id: process.id, user: process.user, host: process.host }),
+    confirmText: t('monitor.actionKill'),
+  })
+  if (!confirmed) return
+  killingIds.value.add(process.id)
   try {
     await dataBrowser.killProcess(processConnectionId.value, process.id)
     await refreshProcesses(true)
   } catch (err) {
     processError.value = t('monitor.killFailed', { message: String(err) })
+  } finally {
+    killingIds.value.delete(process.id)
   }
 }
 
@@ -402,6 +428,7 @@ function formatUptime(seconds: number): string {
 // ---------- 审计 ----------
 const auditEntries = ref<AuditEntry[]>([])
 const auditLoading = ref(false)
+const clearingAudit = ref(false)
 const auditError = ref('')
 const auditMessage = ref('')
 const auditConnectionId = ref('')
@@ -420,18 +447,25 @@ const statusOptions = computed(() => [
   { label: t('common.failed'), value: 'failed' }
 ])
 
+/** 审计查询序号：连续点击查询时只接受最后一次的结果 */
+let auditSeq = 0
+
 async function loadAuditEntries() {
+  const seq = ++auditSeq
   auditLoading.value = true
   auditError.value = ''
   auditMessage.value = ''
   try {
-    auditEntries.value = await dataBrowser.listAuditEntries({
+    const entries = await dataBrowser.listAuditEntries({
       limit: 200,
       connectionId: auditConnectionId.value || undefined,
       success: auditStatus.value === '' ? undefined : auditStatus.value === 'success',
       keyword: auditKeyword.value || undefined
     })
+    if (seq !== auditSeq) return
+    auditEntries.value = entries
   } catch (err) {
+    if (seq !== auditSeq) return
     auditEntries.value = []
     if (licenseStore.handleError(err)) {
       auditError.value = ''
@@ -439,12 +473,18 @@ async function loadAuditEntries() {
     }
     auditError.value = t('monitor.auditLoadFailed', { message: String(err) })
   } finally {
-    auditLoading.value = false
+    if (seq === auditSeq) auditLoading.value = false
   }
 }
 
 async function clearAudit() {
-  if (!confirm(t('monitor.confirmClearAudit'))) return
+  if (clearingAudit.value) return
+  const confirmed = await confirmDanger({
+    message: t('monitor.confirmClearAudit'),
+    confirmText: t('common.clear'),
+  })
+  if (!confirmed) return
+  clearingAudit.value = true
   try {
     const files = await dataBrowser.clearAuditLogs()
     auditEntries.value = []
@@ -452,6 +492,8 @@ async function clearAudit() {
   } catch (err) {
     if (licenseStore.handleError(err)) return
     auditError.value = t('monitor.clearAuditFailed', { message: String(err) })
+  } finally {
+    clearingAudit.value = false
   }
 }
 

@@ -217,20 +217,29 @@ function getSqlCompletions(
 // schema 快照按「连接 + 库」缓存，SqlEditor 与 Console 共享
 const snapshotCache = new Map<string, SchemaSnapshot>()
 const pendingRequests = new Map<string, Promise<SchemaSnapshot>>()
+/** 缓存代次：执行 DDL 后自增，用于丢弃失效前发出的旧请求结果 */
+let cacheEpoch = 0
 
 /** 清空快照缓存：执行 DDL 后调用，避免补全一直用旧结构 */
 export function invalidateSchemaCache() {
+  cacheEpoch++
   snapshotCache.clear()
+  // 同时清掉在途请求记录，配合 cacheEpoch 判断，避免旧请求返回后把旧结构写回缓存
+  pendingRequests.clear()
 }
 
 export function useSqlCompletion() {
   const browserStore = useDataBrowserStore()
   const snapshot = ref<SchemaSnapshot | null>(null)
   const loading = ref(false)
+  /** 请求序号：切换连接/库后只接受最后一次请求的结果 */
+  let loadSeq = 0
 
   async function loadSchema(connectionId: string, database: string) {
+    const seq = ++loadSeq
     if (!connectionId || !database) {
       snapshot.value = null
+      loading.value = false
       return
     }
 
@@ -238,9 +247,11 @@ export function useSqlCompletion() {
     const cached = snapshotCache.get(key)
     if (cached) {
       snapshot.value = cached
+      loading.value = false
       return
     }
 
+    const epoch = cacheEpoch
     loading.value = true
     try {
       let request = pendingRequests.get(key)
@@ -249,15 +260,18 @@ export function useSqlCompletion() {
         pendingRequests.set(key, request)
       }
       const data = await request
+      // 期间切换了连接/库，或执行过 DDL 使缓存失效：丢弃这次结果
+      if (seq !== loadSeq || epoch !== cacheEpoch) return
       snapshotCache.set(key, data)
       snapshot.value = data
     } catch (e) {
+      if (seq !== loadSeq) return
       // 补全失败不影响正常编辑，仅降级为关键字/表名补全
       console.warn('Failed to load schema snapshot:', e)
       snapshot.value = null
     } finally {
       pendingRequests.delete(key)
-      loading.value = false
+      if (seq === loadSeq) loading.value = false
     }
   }
 

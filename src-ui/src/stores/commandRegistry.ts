@@ -73,14 +73,17 @@ export const useCommandRegistryStore = defineStore('commandRegistry', () => {
     query.value = ''
   }
 
+  /** 执行指定命令；点击列表项时必须传被点击项，不能依赖 activeIndex */
+  function runCommand(cmd: Command) {
+    cmd.action()
+    closePalette()
+  }
+
   function runActive() {
     const list = filtered.value
     if (list.length === 0) return
     const cmd = list[activeIndex.value]
-    if (cmd) {
-      cmd.action()
-      closePalette()
-    }
+    if (cmd) runCommand(cmd)
   }
 
   function moveActive(dir: -1 | 1) {
@@ -101,6 +104,7 @@ export const useCommandRegistryStore = defineStore('commandRegistry', () => {
     updateCommandTitle,
     openPalette,
     closePalette,
+    runCommand,
     runActive,
     moveActive,
   }

@@ -393,20 +393,59 @@ export const useSavedConnectionsStore = defineStore('savedConnections', () => {
   // 删除连接
   async function deleteConnection(id: string) {
     const index = savedConnections.value.findIndex(c => c.id === id)
-    if (index >= 0) {
-      savedConnections.value.splice(index, 1)
-      delete passwordsCache.value[id]
-      delete passwordsCache.value[sshSecretKey(id)]
+    if (index < 0) return
 
-      // 删除后端存储的密码（含 SSH 密码/口令）
-      try {
-        await tauriInvoke('delete_connection_password', { connectionId: id })
-        await tauriInvoke('delete_connection_password', { connectionId: sshSecretKey(id) })
-      } catch (e) {
-        console.error('Failed to delete password:', e)
-      }
+    const removed = savedConnections.value[index]
+    savedConnections.value.splice(index, 1)
+    delete passwordsCache.value[id]
+    delete passwordsCache.value[sshSecretKey(id)]
+    saveToStorage()
 
+    // 删除后端存储的密码（含 SSH 密码/口令）。失败时把记录放回并抛错，
+    // 否则界面显示「已删除」但凭据仍留在 keyring 里
+    try {
+      await tauriInvoke('delete_connection_password', { connectionId: id })
+      await tauriInvoke('delete_connection_password', { connectionId: sshSecretKey(id) })
+    } catch (e) {
+      if (removed) savedConnections.value.splice(index, 0, removed)
       saveToStorage()
+      console.error('Failed to delete password:', e)
+      throw e
+    }
+  }
+
+  /** 删除后端保存的数据库密码，并清除本地「已保存密码」标记 */
+  async function deletePassword(connectionId: string): Promise<void> {
+    delete passwordsCache.value[connectionId]
+    const conn = savedConnections.value.find(c => c.id === connectionId)
+    if (conn && conn.hasPassword) {
+      conn.hasPassword = false
+      conn.updatedAt = new Date().toISOString()
+      saveToStorage()
+    }
+    try {
+      await tauriInvoke('delete_connection_password', { connectionId })
+    } catch (e) {
+      console.error('Failed to delete password:', e)
+      throw e
+    }
+  }
+
+  /** 删除后端保存的 SSH 密码/私钥口令，并清除本地标记 */
+  async function deleteSshSecret(connectionId: string): Promise<void> {
+    const key = sshSecretKey(connectionId)
+    delete passwordsCache.value[key]
+    const conn = savedConnections.value.find(c => c.id === connectionId)
+    if (conn && conn.hasSshSecret) {
+      conn.hasSshSecret = false
+      conn.updatedAt = new Date().toISOString()
+      saveToStorage()
+    }
+    try {
+      await tauriInvoke('delete_connection_password', { connectionId: key })
+    } catch (e) {
+      console.error('Failed to delete SSH secret:', e)
+      throw e
     }
   }
 
@@ -423,6 +462,8 @@ export const useSavedConnectionsStore = defineStore('savedConnections', () => {
     passwordsCache,
     saveConnection,
     deleteConnection,
+    deletePassword,
+    deleteSshSecret,
     getConnection,
     getPassword,
     getSshSecret,

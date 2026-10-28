@@ -29,7 +29,7 @@
             class="palette-item"
             :class="{ active: index === registry.activeIndex }"
             @mouseenter="registry.activeIndex = index"
-            @click="registry.runActive()"
+            @click="registry.runCommand(cmd)"
           >
             <div class="palette-title">
               <span class="palette-name">{{ cmd.title }}</span>

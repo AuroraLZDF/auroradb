@@ -1,6 +1,8 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { quoteIdentifier } from '@/utils/sql'
+import { useConnectionStore } from './connection'
+import type { DriverKind } from './savedConnections'
 import { invoke } from '@tauri-apps/api/core'
 
 /** 统一走模块化 invoke；非 Tauri 环境（如浏览器预览）返回明确错误 */
@@ -225,7 +227,10 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
   const currentDatabase = ref<string>('')
   const currentTable = ref<string>('')
   const tableData = ref<DataQueryResponse | null>(null)
+  /** 表数据加载中（DataTable 工具栏据此切换「取消查询」按钮） */
   const loading = ref(false)
+  /** 对象树/表列表加载中，与表数据加载严格区分，避免侧栏刷新误触发表格工具栏状态 */
+  const objectTreeLoading = ref(false)
   const page = ref(1)
   const pageSize = ref(100)
 
@@ -281,7 +286,7 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
   }
 
   async function loadObjectTree(connectionId: string, database?: string): Promise<DatabaseObject[]> {
-    loading.value = true
+    objectTreeLoading.value = true
     try {
       const result = await tauriInvoke<DatabaseObject[]>('get_object_tree', {
         connectionId,
@@ -299,9 +304,15 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
       console.error('Failed to load object tree:', e)
       throw e
     } finally {
-      loading.value = false
+      objectTreeLoading.value = false
     }
   }
+
+  /**
+   * 表数据请求序号：快速切换表/翻页时，先发出的慢请求可能后返回，
+   * 用序号丢弃过期响应，避免旧表数据覆盖当前表。
+   */
+  let tableLoadSeq = 0
 
   async function loadTableData(
     connectionId: string,
@@ -316,6 +327,7 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
       search?: string
     } = {}
   ) {
+    const seq = ++tableLoadSeq
     loading.value = true
     currentDatabase.value = database
     currentTable.value = table
@@ -338,13 +350,17 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
           search: options.search || undefined,
         },
       })
+      // 已有更新的请求发出，本次响应作废
+      if (seq !== tableLoadSeq) return null
       tableData.value = result
       return result
     } catch (e) {
+      // 过期请求的失败同样不打扰用户，交给最新请求的结果决定界面
+      if (seq !== tableLoadSeq) return null
       console.error('Failed to load table data:', e)
       throw e
     } finally {
-      loading.value = false
+      if (seq === tableLoadSeq) loading.value = false
     }
   }
 
@@ -371,17 +387,20 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
   }
 
   // 导入导出
-  async function exportTableData(
+  // 导出由后端逐行写盘，前端只负责给出默认文件名并接收保存路径
+  async function exportTableToFile(
     connectionId: string,
     database: string,
     table: string,
-    format: 'csv' | 'sql' | 'json'
+    format: 'csv' | 'sql' | 'json',
+    filename: string
   ): Promise<string> {
-    return await tauriInvoke<string>('export_table_data', {
+    return await tauriInvoke<string>('export_table_to_file', {
       connectionId,
       database,
       table,
       format,
+      filename,
     })
   }
 
@@ -429,6 +448,12 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
     })
   }
 
+  /** 按连接 ID 取驱动：标识符引用与转义规则随方言变化，缺省按 MySQL 处理 */
+  function driverOf(connectionId: string): DriverKind {
+    const connections = useConnectionStore()
+    return connections.activeConnections.find(c => c.id === connectionId)?.driver ?? 'mysql'
+  }
+
   // 执行 SQL 语句
   async function executeSql(
     connectionId: string,
@@ -448,7 +473,8 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
     database: string,
     table: string
   ): Promise<void> {
-    await executeSql(connectionId, database, `DROP TABLE IF EXISTS ${quoteIdentifier(table)}`)
+    const driver = driverOf(connectionId)
+    await executeSql(connectionId, database, `DROP TABLE IF EXISTS ${quoteIdentifier(table, driver)}`)
   }
 
   // 清空表数据 (DELETE - 不清除ID自增值)
@@ -457,7 +483,8 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
     database: string,
     table: string
   ): Promise<void> {
-    await executeSql(connectionId, database, `DELETE FROM ${quoteIdentifier(table)}`)
+    const driver = driverOf(connectionId)
+    await executeSql(connectionId, database, `DELETE FROM ${quoteIdentifier(table, driver)}`)
   }
 
   // 清空表数据 (TRUNCATE - 清除ID自增值)
@@ -466,7 +493,8 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
     database: string,
     table: string
   ): Promise<void> {
-    await executeSql(connectionId, database, `TRUNCATE TABLE ${quoteIdentifier(table)}`)
+    const driver = driverOf(connectionId)
+    await executeSql(connectionId, database, `TRUNCATE TABLE ${quoteIdentifier(table, driver)}`)
   }
 
   // 复制表结构和数据
@@ -477,11 +505,12 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
     newTable: string,
     copyData: boolean = true
   ): Promise<void> {
+    const driver = driverOf(connectionId)
     // 先复制表结构
-    await executeSql(connectionId, database, `CREATE TABLE ${quoteIdentifier(newTable)} LIKE ${quoteIdentifier(sourceTable)}`)
+    await executeSql(connectionId, database, `CREATE TABLE ${quoteIdentifier(newTable, driver)} LIKE ${quoteIdentifier(sourceTable, driver)}`)
     // 如果需要，复制数据
     if (copyData) {
-      await executeSql(connectionId, database, `INSERT INTO ${quoteIdentifier(newTable)} SELECT * FROM ${quoteIdentifier(sourceTable)}`)
+      await executeSql(connectionId, database, `INSERT INTO ${quoteIdentifier(newTable, driver)} SELECT * FROM ${quoteIdentifier(sourceTable, driver)}`)
     }
   }
 
@@ -589,6 +618,7 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
     currentTable,
     tableData,
     loading,
+    objectTreeLoading,
     page,
     pageSize,
     queryResults,
@@ -605,7 +635,7 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
     beginTransaction,
     commitTransaction,
     rollbackTransaction,
-    exportTableData,
+    exportTableToFile,
     exportTableToExcel,
     importData,
     getSchemaSnapshot,

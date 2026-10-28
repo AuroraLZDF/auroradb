@@ -126,6 +126,7 @@ import { ref, computed, watch, onMounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { t } from '@/i18n'
 import { useToast } from '@/composables/useToast'
+import { confirmDanger } from '@/composables/useConfirm'
 import Select from '@/components/ui/Select.vue'
 import Button from '@/components/ui/Button.vue'
 import {
@@ -195,6 +196,10 @@ const canRestore = computed(() => !!restoreConnId.value && !!restoreDatabase.val
 
 async function runBackup() {
   backupError.value = ''
+  if (!backupConnId.value) {
+    backupError.value = t('backup.noConnection')
+    return
+  }
   if (!canBackup.value) {
     backupError.value = t('backup.noDatabase')
     return
@@ -224,18 +229,34 @@ async function pickFile() {
   try {
     // 只取路径，文件内容由后端流式送入 mysql，不受 10MB 限制
     restoreFilePath.value = await invoke<string>('pick_file_path', { format: 'sql' })
-  } catch {
-    // 用户取消或出错时保持原状
+    restoreError.value = ''
+  } catch (e) {
+    const msg = String(e)
+    // 用户主动取消不算错误；其余失败必须提示，否则用户会误以为文件选择正常
+    if (msg.includes('取消')) return
+    restoreError.value = t('backup.error', { error: msg })
   }
 }
 
 async function runRestore() {
   restoreError.value = ''
-  if (!confirm(t('backup.restoreHint'))) return
-  if (!canRestore.value) {
-    restoreError.value = t('backup.noDatabase')
+  // 先做参数校验，再弹不可撤销的确认框，避免用户确认后才发现没选库
+  if (!restoreConnId.value) {
+    restoreError.value = t('backup.noConnection')
     return
   }
+  if (!canRestore.value) {
+    restoreError.value = restoreDatabase.value ? t('backup.noFile') : t('backup.noDatabase')
+    return
+  }
+
+  const confirmed = await confirmDanger({
+    message: t('backup.restoreHint'),
+    confirmText: t('backup.startRestore'),
+    requireAcknowledge: true,
+  })
+  if (!confirmed) return
+
   restoring.value = true
   try {
     await invoke('restore_database', {
@@ -272,13 +293,24 @@ function dbOptionsFor(connId: string): { value: string; label: string }[] {
 
 const connectionDatabases = ref<Record<string, string[]>>({})
 
-watch([() => backupConnId.value, () => restoreConnId.value], () => {
-  void refreshDbList(backupConnId.value)
-  void refreshDbList(restoreConnId.value)
+// 切换连接后旧库名可能不属于新连接，必须清空已选库，否则会备份/还原到错误的库
+watch(backupConnId, () => {
+  backupDatabase.value = ''
+  void refreshDbList(backupConnId.value, 'backup')
 })
 
-async function refreshDbList(connId: string) {
-  if (!connId) return
+watch(restoreConnId, () => {
+  restoreDatabase.value = ''
+  void refreshDbList(restoreConnId.value, 'restore')
+})
+
+async function refreshDbList(connId: string, kind: 'backup' | 'restore') {
+  const loading = kind === 'backup' ? backupDbLoading : restoreDbLoading
+  if (!connId) {
+    loading.value = false
+    return
+  }
+  loading.value = true
   try {
     const objects = await invoke<DbObject[]>('get_object_tree', { connectionId: connId })
     // 递归收集所有 Database 对象的 name
@@ -291,8 +323,14 @@ async function refreshDbList(connId: string) {
     }
     walk(objects)
     connectionDatabases.value[connId] = names.sort()
-  } catch {
+  } catch (e) {
+    // 加载失败不能静默：空下拉框会让用户误以为该连接下没有数据库
     connectionDatabases.value[connId] = []
+    const msg = t('backup.error', { error: String(e) })
+    if (kind === 'backup') backupError.value = msg
+    else restoreError.value = msg
+  } finally {
+    loading.value = false
   }
 }
 
