@@ -114,7 +114,8 @@
 
           <!-- SQL 编辑器视图 -->
           <div v-else-if="activeTab?.type === 'sql'" class="sql-view">
-            <SqlEditor :tabId="activeTab.id" />
+            <!-- 用 tab id 作为 key：切换 SQL Tab 时重新初始化编辑器，避免上一个 Tab 的 SQL/结果串到新 Tab -->
+            <SqlEditor :key="activeTab.id" :tabId="activeTab.id" />
           </div>
 
           <!-- 控制台视图 -->
@@ -155,6 +156,8 @@ import Console from '@/components/Console.vue'
 import ErDiagram from '@/components/ErDiagram.vue'
 import { useDataBrowserStore } from '@/stores/dataBrowser'
 import { useEditorTabsStore } from '@/stores/editorTabs'
+import { confirmDanger } from '@/composables/useConfirm'
+import { globalToast } from '@/composables/useToast'
 import { t } from '@/i18n'
 import type { ConnectionStatus } from '@/stores/connection'
 import type { DatabaseObject } from '@/stores/dataBrowser'
@@ -295,6 +298,17 @@ function closeTab(tabId: string) {
     if (dataTableRef.value?.closeTableById(internalTabId) === false) return
   }
 
+  // SQL Tab 有未保存内容时先确认，避免误关丢失草稿
+  if (tab.type === 'sql' && editorTabs.tabs[tabId]?.dirty) {
+    void confirmDanger({
+      message: t('layout.closeDirtyQueryConfirm'),
+      confirmText: t('layout.closeDirtyQuery'),
+    }).then(confirmed => {
+      if (confirmed) removeTab(tabId)
+    })
+    return
+  }
+
   removeTab(tabId)
 }
 
@@ -386,8 +400,7 @@ function openErDiagramTab(database: string) {
     if (fallback) database = fallback
   }
   if (!database) {
-     
-    alert(t('erDiagram.needsDatabase'))
+    globalToast.warning(t('erDiagram.needsDatabase'))
     return
   }
   const tabId = `er-${database}`
@@ -476,11 +489,11 @@ function closeConnectionTabs(connectionId: string) {
   tabsToClose.forEach(tab => {
     const index = tabs.value.findIndex(t => t.id === tab.id)
     if (index !== -1) {
-      // 通知 DataTable 关闭
+      // 通知 DataTable 关闭；有未保存修改时会延后到确认结果，外层 Tab 由 table-closed 收尾
       const tableTab = tab as TableTab
       const internalTabId = `${tableTab.connectionId}.${tableTab.database}.${tableTab.tableName}`
-      dataTableRef.value?.closeTableById(internalTabId)
-      
+      if (dataTableRef.value?.closeTableById(internalTabId) === false) return
+
       tabs.value.splice(index, 1)
     }
   })

@@ -95,6 +95,8 @@ import { useDataBrowserStore } from '@/stores/dataBrowser'
 import { useQueryLibraryStore } from '@/stores/queryLibrary'
 import { useSqlCompletion, invalidateSchemaCache } from '@/composables/useSqlCompletion'
 import { findDangerousStatements } from '@/utils/sql'
+import { globalToast } from '@/composables/useToast'
+import { confirmDanger } from '@/composables/useConfirm'
 import { t } from '@/i18n'
 
 interface ColumnInfo {
@@ -202,8 +204,27 @@ const isInMultiLine = ref(false)
 
 const currentConnection = computed(() => connectionStore.currentConnection)
 
-// 当前选中的数据库（用于 USE 命令切换）
-const currentDb = ref<string>('mysql')
+// 用户通过 USE 手动切换的库（优先于侧栏正在浏览的库）
+const manualDb = ref('')
+
+// 控制台当前库：USE 手动切换 > 侧栏浏览的库 > 连接自身的默认库。
+// 三者都为空说明用户还没选库，此时不能回落到系统库 mysql，
+// 否则破坏性语句可能直接落在系统库上。
+const currentDb = computed(
+  () =>
+    manualDb.value ||
+    browserStore.currentDatabase ||
+    currentConnection.value?.database ||
+    ''
+)
+
+// 切换连接时清空手动切换的库，避免沿用上一条连接的库名
+watch(
+  () => connectionStore.currentConnection?.id,
+  () => {
+    manualDb.value = ''
+  }
+)
 
 // 补全所需的库名列表与 schema 快照
 const databaseNames = computed(() => browserStore.objectTree.map(db => db.name))
@@ -434,7 +455,13 @@ async function executeCommand() {
   // 安全模式下对高风险语句二次确认（无 WHERE 的 UPDATE/DELETE 由后端直接拦截）
   if (currentConnection.value?.safety_mode === 'safe') {
     const dangerous = findDangerousStatements(fullCommand)
-    if (dangerous.length > 0 && !confirm(t('console.safetyConfirm', { statements: dangerous.join(', ') }))) {
+    if (
+      dangerous.length > 0 &&
+      !(await confirmDanger({
+        message: t('console.safetyConfirm', { statements: dangerous.join(', ') }),
+        confirmText: t('common.confirm'),
+      }))
+    ) {
       await scrollToBottom()
       return
     }
@@ -460,7 +487,7 @@ async function executeCommand() {
     try {
       await connectionStore.executeSql(currentConnection.value.id, newDb, fullCommand)
       // 后端执行成功后，更新前端当前数据库
-      currentDb.value = newDb
+      manualDb.value = newDb
       recordHistory(fullCommand, newDb, true)
       entries.value.push({
         type: 'message',
@@ -489,6 +516,18 @@ async function executeCommand() {
       database: db,
       command: fullCommand,
       message: t('console.notConnected')
+    })
+    await scrollToBottom()
+    return
+  }
+
+  // 没有可用的库时不要擅自回落到系统库（MySQL 必须显式指定库）
+  if (!db && currentConnection.value.driver !== 'postgres') {
+    entries.value.push({
+      type: 'error',
+      database: db,
+      command: fullCommand,
+      message: t('console.noDatabase')
     })
     await scrollToBottom()
     return
@@ -579,7 +618,11 @@ async function executeCommand() {
 async function cancelQuery() {
   if (!currentConnection.value) return
   try {
-    await connectionStore.cancelQuery(currentConnection.value.id)
+    const rolledBack = await connectionStore.cancelQuery(currentConnection.value.id)
+    // 取消会把事务连接一并丢弃（后端自动回滚），必须提示用户
+    if (rolledBack) {
+      globalToast.warning(t('console.transactionRolledBack'))
+    }
   } catch (e) {
     console.error('取消查询失败:', e)
   }

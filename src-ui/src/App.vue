@@ -341,6 +341,7 @@ import GlobalSearchDialog from '@/components/GlobalSearchDialog.vue'
 import { useCommandRegistryStore } from '@/stores/commandRegistry'
 import { useToast } from '@/composables/useToast'
 import { confirmDanger } from '@/composables/useConfirm'
+import { hasUnsavedSources } from '@/composables/useUnsavedGuard'
 import { useBreakpoints } from '@/composables/useBreakpoints'
 import {
   Database,
@@ -443,7 +444,7 @@ const activeConnectionContextMenu = ref({
 })
 
 // 监听点击关闭菜单（排除右键菜单自身）
-document.addEventListener('click', (e: MouseEvent) => {
+function handleDocumentClick(e: MouseEvent) {
   const target = e.target as HTMLElement
   // 如果点击的不是右键菜单内部，则关闭菜单
   if (!target.closest('.context-menu')) {
@@ -452,7 +453,7 @@ document.addEventListener('click', (e: MouseEvent) => {
     savedConnectionContextMenu.value.show = false
     activeConnectionContextMenu.value.show = false
   }
-})
+}
 
 const showConnectionForm = ref(false)
 const editingConnection = ref<SavedConnection | undefined>(undefined)
@@ -622,10 +623,14 @@ type ConnectionTreeItem =
 
 const connectionTree = computed<ConnectionTreeItem[]>(() => {
   const items: ConnectionTreeItem[] = []
-  const activeNames = new Set(activeConnections.value.map(c => c.name))
+  // 以「名称 + 主机 + 端口 + 驱动」作为同一连接的身份，
+  // 只用名称去重会把不同服务器上的同名连接误判成同一条而隐藏掉
+  const identity = (c: { name: string; host: string; port: number; driver?: string }) =>
+    `${c.name}|${c.host}|${c.port}|${c.driver ?? 'mysql'}`
+  const activeKeys = new Set(activeConnections.value.map(identity))
   // 已保存但尚未活跃的连接（离线）
   for (const s of savedStore.savedConnections) {
-    if (!activeNames.has(s.name)) {
+    if (!activeKeys.has(identity(s))) {
       items.push({ type: 'saved', key: s.id, name: s.name, host: s.host, port: s.port, saved: s })
     }
   }
@@ -661,7 +666,11 @@ function toggleConnection(connectionId: string) {
 
 // 切换到指定连接
 async function switchToConnection(conn: { id: string; name: string; host: string; port: number }) {
+  const changed = store.currentConnection?.id !== conn.id
   store.switchConnection(conn.id)
+  // 侧栏的库选择属于上一条连接，切连接后必须清掉，
+  // 否则编辑器/控制台会沿用旧库名，把语句发到错误的库
+  if (changed) browserStore.currentDatabase = ''
 }
 
 // 打开已保存的连接
@@ -690,7 +699,8 @@ async function openSavedConnection(savedConn: SavedConnection) {
   const password = await savedStore.getPassword(savedConn.id)
 
   if (!password) {
-    // 没有保存密码，需要重新输入
+    // 没有保存密码，需要重新输入；带上已保存的连接信息回填表单
+    editingConnection.value = savedConn
     showConnectionForm.value = true
     return
   }
@@ -705,6 +715,7 @@ async function openSavedConnection(savedConn: SavedConnection) {
       sshSecret = await savedStore.getSshSecret(savedConn.id)
     }
     if (authType === 'password' && !sshSecret) {
+      editingConnection.value = savedConn
       showConnectionForm.value = true
       return
     }
@@ -754,12 +765,20 @@ async function openSavedConnection(savedConn: SavedConnection) {
   } catch (e) {
     console.error('Connection failed:', e)
     if (licenseStore.handleError(e)) return
-    alert(t('app.connectFailed', { error: String(e) }))
+    showError(t('app.connectFailed', { error: String(e) }))
   }
 }
 
 // 断开指定连接
 async function disconnectConnection(connectionId: string) {
+  const target = activeConnections.value.find(c => c.id === connectionId)
+  // 断开连接会关闭该连接下所有已打开的表/查询 Tab，未保存的编辑内容会丢失，必须先确认
+  const confirmed = await confirmDanger({
+    message: t('app.disconnectConfirm', { name: target?.name ?? '' }),
+    confirmText: t('app.disconnect'),
+  })
+  if (!confirmed) return
+
   try {
     // 关闭该连接的所有表格
     if (mainContentRef.value?.closeConnectionTabs) {
@@ -787,14 +806,13 @@ async function disconnectConnection(connectionId: string) {
     currentView.value = 'data'
   } catch (e) {
     console.error('Failed to disconnect:', e)
+    showError(t('app.disconnectFailed', { error: String(e) }))
   }
 }
 
 // 加载连接的数据库列表，force=true 时忽略缓存强制重新拉取
 async function loadConnectionDatabases(connectionId: string, force = false): Promise<boolean> {
   if (!force && connectionDatabases[connectionId]) return true // 已加载
-  // PostgreSQL 的对象树尚未迁移，跳过请求避免无谓的后端报错
-  if (activeConnections.value.find(c => c.id === connectionId)?.driver === 'postgres') return false
 
   try {
     const result = await browserStore.loadObjectTree(connectionId)
@@ -886,7 +904,9 @@ async function loadDatabaseTables(connectionId: string, dbName: string, force = 
     const result = await browserStore.loadObjectTree(connectionId, dbName)
     connectionDatabaseTables[connectionId][dbName] = result
   } catch (e) {
+    // 库打不开时（无权限、库已被删除等）必须可见，否则树里只会显示空分类
     console.error('Failed to load tables:', e)
+    showError(`加载数据库 ${dbName} 失败：${e}`)
   }
 }
 
@@ -1150,12 +1170,20 @@ async function handleSavedConnectionMenu(action: string) {
         showConnectionForm.value = true
       }
       break
-    case 'delete':
-      if (confirm(t('app.deleteConnectionConfirm', { name: connectionName }))) {
+    case 'delete': {
+      const confirmed = await confirmDanger({
+        message: t('app.deleteConnectionConfirm', { name: connectionName }),
+        confirmText: t('common.delete'),
+      })
+      if (!confirmed) break
+      try {
         await savedStore.deleteConnection(connectionId)
         showToast(t('app.connectionDeleted'))
+      } catch (e) {
+        showError(t('app.deleteConnectionFailed', { error: String(e) }))
       }
       break
+    }
   }
 }
 
@@ -1213,7 +1241,8 @@ async function handleDatabaseMenu(action: string) {
       })
       if (!confirmed) break
       try {
-        await browserStore.executeSql(connectionId, database, `DROP DATABASE ${quoteIdentifier(database)}`)
+        const driver = store.activeConnections.find(c => c.id === connectionId)?.driver ?? 'mysql'
+        await browserStore.executeSql(connectionId, database, `DROP DATABASE ${quoteIdentifier(database, driver)}`)
         const key = `${connectionId}.${database}`
         // 关闭该数据库下已打开的表 Tab，再清理所有相关缓存与选中状态
         mainContentRef.value?.closeDatabaseTabs(connectionId, database)
@@ -1234,7 +1263,7 @@ async function handleDatabaseMenu(action: string) {
         await loadConnectionDatabases(connectionId, true)
         showToast(t('app.deleteDatabaseSuccess', { name: database }))
       } catch (e: unknown) {
-        alert(t('app.deleteDatabaseFailed', { error: String(e) }))
+        showError(t('app.deleteDatabaseFailed', { error: String(e) }))
       }
       break
     }
@@ -1254,7 +1283,7 @@ async function handleDatabaseMenu(action: string) {
         if (licenseStore.handleError(e)) break
         const errorMessage = String(e)
         if (!errorMessage.includes('用户取消')) {
-          alert(t('app.exportSqlFailed', { error: errorMessage }))
+          showError(t('app.exportSqlFailed', { error: errorMessage }))
         }
       }
       break
@@ -1279,7 +1308,7 @@ async function handleDatabaseMenu(action: string) {
         if (licenseStore.handleError(e)) break
         const errorMessage = String(e)
         if (!errorMessage.includes('用户取消')) {
-          alert(t('app.importSqlFailed', { error: errorMessage }))
+          showError(t('app.importSqlFailed', { error: errorMessage }))
         }
       }
       break
@@ -1346,6 +1375,7 @@ async function handleTableMenu(action: string) {
         showToast(t('app.refreshSuccess'))
       } catch (e) {
         console.error('Failed to refresh tables:', e)
+        showError(t('app.refreshFailed'))
       }
       break
     case 'copy-table': {
@@ -1361,7 +1391,7 @@ async function handleTableMenu(action: string) {
         connectionDatabaseTables[connectionId][database] = result
         showToast(t('app.copyTableSuccess', { name: newTableName }))
       } catch (e: unknown) {
-        alert(t('app.copyTableFailed', { error: String(e) }))
+        showError(t('app.copyTableFailed', { error: String(e) }))
       }
       break
     }
@@ -1380,7 +1410,7 @@ async function handleTableMenu(action: string) {
         }
         showToast(t('app.clearTableSuccess', { name: tableName }))
       } catch (e: unknown) {
-        alert(t('app.clearTableFailed', { error: String(e) }))
+        showError(t('app.clearTableFailed', { error: String(e) }))
       }
       break
     }
@@ -1399,7 +1429,7 @@ async function handleTableMenu(action: string) {
         }
         showToast(t('app.truncateTableSuccess', { name: tableName }))
       } catch (e: unknown) {
-        alert(t('app.truncateTableFailed', { error: String(e) }))
+        showError(t('app.truncateTableFailed', { error: String(e) }))
       }
       break
     }
@@ -1426,7 +1456,7 @@ async function handleTableMenu(action: string) {
         connectionDatabaseTables[connectionId][database] = result
         showToast(t('app.deleteTableSuccess', { name: tableName }))
       } catch (e: unknown) {
-        alert(t('app.deleteTableFailed', { error: String(e) }))
+        showError(t('app.deleteTableFailed', { error: String(e) }))
       }
       break
     }
@@ -1554,6 +1584,13 @@ function onGlobalKeydown(e: KeyboardEvent) {
   }
 }
 
+// 关闭窗口/刷新前兜底：存在未保存的数据表编辑或表结构修改时提示用户确认
+function handleBeforeUnload(e: BeforeUnloadEvent) {
+  if (!hasUnsavedSources()) return
+  e.preventDefault()
+  e.returnValue = ''
+}
+
 onMounted(() => {
   // 初始化主题
   themeStore.init()
@@ -1564,15 +1601,19 @@ onMounted(() => {
   // 表列表加载/刷新后同步「跳转到表」命令
   watch(connectionDatabaseTables, syncTableCommands, { deep: true })
   window.addEventListener('keydown', onGlobalKeydown)
-  window.addEventListener('resize', () => {
-    // 触发重新计算
-  })
+  window.addEventListener('beforeunload', handleBeforeUnload)
+  document.addEventListener('click', handleDocumentClick)
+  // 定时拉取后端连接状态：心跳检测出的断线/重连需要主动同步到 UI
+  store.startStatusPolling()
 })
 
 onUnmounted(() => {
+  store.stopStatusPolling()
   document.removeEventListener('mousemove', onResize)
   document.removeEventListener('mouseup', stopResize)
   window.removeEventListener('keydown', onGlobalKeydown)
+  window.removeEventListener('beforeunload', handleBeforeUnload)
+  document.removeEventListener('click', handleDocumentClick)
   registry.reset()
 })
 </script>

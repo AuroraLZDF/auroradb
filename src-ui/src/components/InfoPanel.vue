@@ -22,7 +22,7 @@
             </div>
             <div class="info-item">
               <span class="info-label">{{ t('common.type') }}:</span>
-              <span class="info-value">MySQL</span>
+              <span class="info-value">{{ connectionInfo?.driver === 'postgres' ? 'PostgreSQL' : 'MySQL' }}</span>
             </div>
             <div class="info-item">
               <span class="info-label">{{ t('infoPanel.host') }}:</span>
@@ -166,6 +166,12 @@
         </div>
       </template>
 
+      <!-- PostgreSQL 元数据（表结构 / 模式详情）暂未提供 -->
+      <div v-if="isPostgres && type !== 'connection'" class="info-section">
+        <h4>{{ type === 'table' ? t('infoPanel.tableInfo') : t('infoPanel.databaseInfo') }}</h4>
+        <p class="info-hint">{{ t('infoPanel.postgresNotSupported') }}</p>
+      </div>
+
       <!-- 加载状态 -->
       <div v-if="loading" class="loading-overlay">
         <div class="loading-spinner"></div>
@@ -203,6 +209,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { useConnectionStore } from '@/stores/connection'
 import { useDataBrowserStore, type TableStructure, type DatabaseInfo } from '@/stores/dataBrowser'
 import { t } from '@/i18n'
+import { connectionStateI18nKey } from '@/utils/connectionState'
 import { Table, Copy, Plug, Database, Info, X, CheckCircle, XCircle } from 'lucide-vue-next'
 
 const props = defineProps<{
@@ -241,6 +248,13 @@ const dragStartLeft = ref(0)
 // 复制状态
 const copySuccess = ref(false)
 let copyTimeout: ReturnType<typeof setTimeout> | null = null
+let scrollbarTimer: ReturnType<typeof setTimeout> | null = null
+
+/** 延迟刷新滚动条，等待内容渲染完成；重复调用时重置上一个定时器 */
+function scheduleScrollbarUpdate() {
+  if (scrollbarTimer) clearTimeout(scrollbarTimer)
+  scrollbarTimer = setTimeout(updateScrollbar, 100)
+}
 
 // Tauri invoke（模块化导入，不依赖 withGlobalTauri）
 function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -278,16 +292,9 @@ const connectionInfo = computed(() => {
   return null
 })
 
-const connectionStateText = computed(() => {
-  const state = connectionInfo.value?.state
-  switch (state) {
-    case 'connected': return t('infoPanel.state.connected')
-    case 'disconnected': return t('infoPanel.state.disconnected')
-    case 'reconnecting': return t('infoPanel.state.reconnecting')
-    case 'failed': return t('infoPanel.state.failed')
-    default: return t('infoPanel.state.unknown')
-  }
-})
+const connectionStateText = computed(() =>
+  t(connectionStateI18nKey(connectionInfo.value?.state)),
+)
 
 // 数据库数量
 const databaseCount = computed(() => {
@@ -307,6 +314,11 @@ const tableCount = computed(() => {
   return 0
 })
 
+// 当前连接是否为 PostgreSQL（PG 的表结构 / 模式详情尚未提供）
+const isPostgres = computed(() =>
+  connectionStore.connections.some(c => c.id === props.data.connectionId && c.driver === 'postgres')
+)
+
 // 加载数据
 async function loadData() {
   if (!props.data.connectionId) return
@@ -315,6 +327,8 @@ async function loadData() {
   error.value = ''
 
   try {
+    // PostgreSQL 统一走页面上的说明，不调用 MySQL 专用的元数据命令
+    if (isPostgres.value && props.type !== 'connection') return
     if (props.type === 'table' && props.data.database && props.data.tableName) {
       const result = await tauriInvoke<TableStructure>('get_table_structure', {
         connectionId: props.data.connectionId,
@@ -526,7 +540,7 @@ onMounted(() => {
   if (contentRef.value) {
     contentRef.value.addEventListener('scroll', onContentScroll)
     // 延迟更新滚动条，等待内容渲染
-    setTimeout(updateScrollbar, 100)
+    scheduleScrollbarUpdate()
   }
   window.addEventListener('resize', updateScrollbar)
 })
@@ -542,13 +556,16 @@ onUnmounted(() => {
   if (copyTimeout) {
     clearTimeout(copyTimeout)
   }
+  if (scrollbarTimer) {
+    clearTimeout(scrollbarTimer)
+  }
   document.removeEventListener('mouseup', stopDrag)
 })
 
 // 监听数据变化，重新加载
 watch(() => [props.type, props.data], () => {
   loadData()
-  setTimeout(updateScrollbar, 100)
+  scheduleScrollbarUpdate()
 }, { deep: true })
 </script>
 
@@ -628,6 +645,13 @@ watch(() => [props.type, props.data], () => {
   color: var(--color-text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
+}
+
+.info-hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
 }
 
 .section-header-with-action {

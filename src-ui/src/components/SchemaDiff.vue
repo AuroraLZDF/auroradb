@@ -208,7 +208,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import {
   AlertCircle,
   ArrowLeftRight,
@@ -262,6 +262,10 @@ const filter = ref<DiffChange | 'all'>('all')
 const selectedTableName = ref('')
 const copiedKey = ref('')
 let copiedTimer: ReturnType<typeof setTimeout> | undefined
+
+onUnmounted(() => {
+  if (copiedTimer) clearTimeout(copiedTimer)
+})
 
 const connectionOptions = computed(() =>
   props.connections.map((connection) => ({

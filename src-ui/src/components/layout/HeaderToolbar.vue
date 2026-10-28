@@ -204,6 +204,7 @@ import { useConnectionStore } from '@/stores/connection'
 import { useUpdaterStore } from '@/stores/updater'
 import { useLicenseStore } from '@/stores/license'
 import { t, locale, toggleLocale } from '@/i18n'
+import { confirmAction } from '@/composables/useConfirm'
 import { Menu, Plug, FileCode, Moon, Sun, PanelRight, Terminal, RefreshCw, GitCompare, Activity, Languages, KeyRound, Network, HardDrive, Search, Wrench, Settings, ChevronDown, Info } from 'lucide-vue-next'
 
 const themeStore = useThemeStore()
@@ -326,7 +327,13 @@ async function handleUpdateClick() {
     return
   }
   const version = await updateStore.checkForUpdate()
-  if (version && confirm(t('header.updateConfirm', { version }))) {
+  if (
+    version &&
+    (await confirmAction({
+      message: t('header.updateConfirm', { version }),
+      confirmText: t('common.confirm'),
+    }))
+  ) {
     await updateStore.downloadAndInstall()
   }
 }

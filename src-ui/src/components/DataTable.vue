@@ -5,8 +5,13 @@
       <div class="toolbar-left">
         <span class="table-info">{{ currentTab?.name }}</span>
         <div class="toolbar-actions">
-          <button @click="refreshData" :disabled="loading" :title="t('dataTable.refreshHint')">
+          <button v-if="!loading" @click="refreshData" :title="t('dataTable.refreshHint')">
             <RefreshCw :size="14" />
+          </button>
+          <!-- 加载中（大表 COUNT / 慢查询）允许取消，避免界面一直等待 -->
+          <button v-else @click="cancelLoad" class="btn-cancel-query" :title="t('dataTable.cancelLoadHint')">
+            <X :size="14" />
+            {{ t('dataTable.cancelLoad') }}
           </button>
           <button @click="addRow" :disabled="loading || !canEdit" :title="canEdit ? t('dataTable.addRowHint') : editBlockReason">
             <Plus :size="14" />
@@ -27,7 +32,7 @@
           <!-- 事务控制按钮 -->
           <button
             @click="beginTransaction"
-            :disabled="transactionActive || loading"
+            :disabled="transactionActive || loading || isReadOnlyConnection"
             :class="{ active: transactionActive }"
             :title="t('dataTable.beginTransaction')"
           >BEGIN</button>
@@ -44,8 +49,8 @@
           <span v-if="transactionActive" class="transaction-indicator" :title="t('dataTable.transactionActiveHint')">
             <Circle :size="10" fill="var(--success-500)" />
           </span>
-          <span v-if="isReadOnlyConnection" class="readonly-badge" :title="t('dataTable.readOnlyConnectionHint')">
-            {{ t('dataTable.readOnlyConnection') }}
+          <span v-if="isReadOnlyConnection" class="readonly-badge" :title="readOnlyHint">
+            {{ readOnlyBadgeLabel }}
           </span>
           <span v-else-if="currentTableData && !hasPrimaryKey" class="readonly-badge" :title="t('dataTable.noPrimaryKeyReadonlyHint')">
             {{ t('dataTable.readOnlyNoPrimaryKey') }}
@@ -430,25 +435,12 @@
               @update:model-value="onExportFormatChange"
             />
           </div>
-          <div class="form-group" v-if="exportDialog.data">
-            <label>{{ t('dataTable.result') }}</label>
-            <textarea
-              v-model="exportDialog.data"
-              readonly
-              rows="10"
-              class="result-textarea"
-            ></textarea>
-          </div>
         </div>
         <div class="dialog-actions">
-          <button @click="exportDialog.show = false" class="btn-secondary">{{ t('common.close') }}</button>
-          <button v-if="!exportDialog.data" @click="executeExport" :disabled="exportDialog.loading" class="btn-primary">
+          <button @click="exportDialog.show = false" class="btn-secondary">{{ t('common.cancel') }}</button>
+          <button @click="executeExport" :disabled="exportDialog.loading" class="btn-primary">
             {{ exportDialog.loading ? t('dataTable.exporting') : t('common.export') }}
           </button>
-          <template v-else>
-            <button @click="copyExportedData" class="btn-secondary">{{ t('common.copy') }}</button>
-            <button @click="downloadExportedData" class="btn-primary">{{ t('dataTable.download') }}</button>
-          </template>
         </div>
       </div>
     </div>
@@ -462,6 +454,8 @@ import { useDataBrowserStore, type TableChange } from '@/stores/dataBrowser'
 import { useConnectionStore } from '@/stores/connection'
 import { useLicenseStore } from '@/stores/license'
 import { useDebounce } from '@/composables/useDebounce'
+import { confirmAction } from '@/composables/useConfirm'
+import { useUnsavedGuard } from '@/composables/useUnsavedGuard'
 import { useVirtualRows } from '@/composables/useVirtualRows'
 import { collectTableChanges, isSameValue } from '@/utils/tableChanges'
 import { t } from '@/i18n'
@@ -474,6 +468,7 @@ import {
   ChevronDown,
   Circle,
   Folder,
+  X,
   AlignHorizontalDistributeCenter
 } from '@/components/icons'
 import { Calendar } from 'lucide-vue-next'
@@ -656,6 +651,17 @@ const pendingCloseAfterSave = ref(false)
 // 事务状态
 const transactionActive = ref(false)
 
+// 取消查询会把事务连接一并丢弃（后端自动回滚），这里同步复位，避免界面仍显示「事务活跃」
+watch(
+  () => connectionStore.transactionResetSeq,
+  () => {
+    if (transactionActive.value) {
+      transactionActive.value = false
+      showToast(t('dataTable.transactionRolledBack'))
+    }
+  }
+)
+
 // 导入导出弹窗
 const importDialog = ref({
   show: false,
@@ -670,7 +676,6 @@ const importDialog = ref({
 const exportDialog = ref({
   show: false,
   format: 'csv' as 'csv' | 'xlsx' | 'sql' | 'json',
-  data: '',
   loading: false
 })
 
@@ -707,7 +712,6 @@ function onImportFormatChange(value: string) {
 
 function onExportFormatChange(value: string) {
   exportDialog.value.format = value as 'csv' | 'xlsx' | 'sql' | 'json'
-  exportDialog.value.data = ''
 }
 
 // 计算属性
@@ -723,17 +727,37 @@ const hasUnsavedChanges = computed(() => {
          deletedRows.value.length > 0
 })
 
+// 关闭窗口/刷新前的兜底提示，避免直接丢失未保存的单元格修改
+useUnsavedGuard('data-table', hasUnsavedChanges)
+
 const hasSelection = computed(() => selectedRows.value.size > 0)
 
 // 没有主键就无法安全定位行，此时禁止编辑（避免全列匹配误伤）
 const hasPrimaryKey = computed(() => (currentTableData.value?.columns ?? []).some(col => col.is_primary))
 
+// PostgreSQL 当前只提供表数据浏览，写入能力尚未实现
+const isPostgresConnection = computed(() => connectionStore.currentConnection?.driver === 'postgres')
+
 // 只读连接同样禁止写入（后端也会兜底拦截）
-const isReadOnlyConnection = computed(() => connectionStore.currentConnection?.safety_mode === 'read-only')
+const isReadOnlyConnection = computed(
+  () => isPostgresConnection.value || connectionStore.currentConnection?.safety_mode === 'read-only'
+)
+
+const readOnlyHint = computed(() =>
+  isPostgresConnection.value
+    ? t('dataTable.postgresReadOnlyHint')
+    : t('dataTable.readOnlyConnectionHint')
+)
+
+const readOnlyBadgeLabel = computed(() =>
+  isPostgresConnection.value
+    ? t('dataTable.postgresReadOnly')
+    : t('dataTable.readOnlyConnection')
+)
 
 // 编辑拦截原因：只读连接优先提示，其次是无主键表
 const editBlockReason = computed(() => {
-  if (isReadOnlyConnection.value) return t('dataTable.readOnlyConnectionHint')
+  if (isReadOnlyConnection.value) return readOnlyHint.value
   if (!hasPrimaryKey.value) return t('dataTable.noPrimaryKeyEditReason')
   return ''
 })
@@ -787,25 +811,40 @@ onMounted(() => {
 
 onUnmounted(() => {
   document.removeEventListener('keydown', handleKeyDown)
+  // 拖拽列宽中卸载时清理全局监听
+  document.removeEventListener('mousemove', handleResize)
+  document.removeEventListener('mouseup', stopResize)
+  if (toastTimer) clearTimeout(toastTimer)
 })
 
 function handleKeyDown(e: KeyboardEvent) {
+  // 未打开表或当前视图被 v-show 隐藏时，不响应全局快捷键，
+  // 否则在 SQL 编辑器里按 Delete/F5/Ctrl+S 会误操作数据表
+  if (!isTableViewActive()) return
+
   // 检查当前焦点是否在数据表格区域内
-  const target = e.target as HTMLElement
+  const target = e.target as HTMLElement | null
   const isInDataTable = target?.closest('.data-table') !== null
-  
-  // Ctrl+S 保存
-  if (e.ctrlKey && e.key === 's') {
+  if (!isInDataTable) return
+
+  // 正在单元格/输入框中编辑文本时，Delete 属于文本编辑操作，不能删除整行
+  const isEditingText = target?.closest('input, textarea, [contenteditable="true"]') !== null
+
+  // 快捷键同时支持 Ctrl（Windows/Linux）与 Cmd（macOS）
+  const modKey = e.ctrlKey || e.metaKey
+
+  // Ctrl/Cmd+S 保存
+  if (modKey && e.key === 's') {
     e.preventDefault()
     if (hasUnsavedChanges.value) saveChanges()
   }
-  // Ctrl+N 新增行
-  if (e.ctrlKey && e.key === 'n') {
+  // Ctrl/Cmd+N 新增行
+  if (modKey && e.key === 'n') {
     e.preventDefault()
     addRow()
   }
   // Delete 删除选中行
-  if (e.key === 'Delete' && hasSelection.value) {
+  if (e.key === 'Delete' && !isEditingText && hasSelection.value) {
     deleteSelectedRows()
   }
   // F5 刷新
@@ -813,15 +852,20 @@ function handleKeyDown(e: KeyboardEvent) {
     e.preventDefault()
     refreshData()
   }
-  // Ctrl+A 全选 - 只在焦点在数据表格内时生效
-  if (e.ctrlKey && e.key === 'a') {
-    if (isInDataTable) {
-      e.preventDefault()
-      toggleSelectAll()
-    }
-    // 如果不在数据表格内，不阻止默认行为，让浏览器正常处理
+  // Ctrl/Cmd+A 全选 - 只在焦点在数据表格内且不在编辑文本时生效
+  if (modKey && e.key === 'a' && !isEditingText) {
+    e.preventDefault()
+    toggleSelectAll()
   }
 }
+
+// 当前表视图是否真正对用户可见（有打开的表，且没有被 v-show 隐藏）
+function isTableViewActive(): boolean {
+  if (!currentTab.value) return false
+  const el = tableContainer.value
+  return !!el && el.offsetParent !== null
+}
+
 
 // 打开新表
 function openTable(connectionId: string, database: string, tableName: string) {
@@ -1026,10 +1070,24 @@ async function loadData() {
 // 刷新
 async function refreshData() {
   if (hasUnsavedChanges.value) {
-    const confirmed = confirm(t('dataTable.refreshConfirm'))
+    const confirmed = await confirmAction({
+      message: t('dataTable.refreshConfirm'),
+      confirmText: t('common.confirm'),
+    })
     if (!confirmed) return
   }
   await loadData()
+}
+
+// 取消正在进行的表数据加载（大表 COUNT / 慢查询）
+async function cancelLoad() {
+  const conn = connectionStore.currentConnection
+  if (!conn) return
+  try {
+    await connectionStore.cancelQuery(conn.id)
+  } catch (e) {
+    showToast(t('dataTable.cancelLoadFailed', { error: String(e) }), 'error')
+  }
 }
 
 // 搜索：关键字变化后回到第一页，由后端做整表匹配
@@ -1038,7 +1096,10 @@ watch(debouncedSearchText, async (value) => {
   if (!currentTab.value || keyword === activeSearch.value) return
 
   if (hasUnsavedChanges.value) {
-    const confirmed = confirm(t('dataTable.searchDiscardConfirm'))
+    const confirmed = await confirmAction({
+      message: t('dataTable.searchDiscardConfirm'),
+      confirmText: t('common.confirm'),
+    })
     if (!confirmed) {
       searchText.value = activeSearch.value
       return
@@ -1197,8 +1258,8 @@ function isNewRow(rowIndex: number): boolean {
 
 // 删除行
 function deleteSelectedRows() {
-  if (!hasPrimaryKey.value) {
-    showToast(t('dataTable.noPrimaryKeyEditReason'), 'error')
+  if (!canEdit.value) {
+    showToast(editBlockReason.value, 'error')
     return
   }
   const indices = Array.from(selectedRows.value).sort((a, b) => b - a)
@@ -1686,7 +1747,8 @@ function collectChanges(): TableChange[] {
     columns,
     edits: modifiedCells.value.values(),
     inserts: newRows.value.map(row => row.data),
-    deletes: deletedRows.value.map(row => row.rowData)
+    deletes: deletedRows.value.map(row => row.rowData),
+    driver: isPostgresConnection.value ? 'postgres' : 'mysql'
   })
 }
 
@@ -1810,10 +1872,14 @@ function getCellClass(value: unknown): string {
   return 'type-string'
 }
 
+let toastTimer: ReturnType<typeof setTimeout> | null = null
+
 function showToast(message: string, type: 'success' | 'error' = 'success') {
   saveSuccess.value = { show: true, message, type }
-  setTimeout(() => {
+  if (toastTimer) clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => {
     saveSuccess.value.show = false
+    toastTimer = null
   }, 3000)
 }
 
@@ -2067,7 +2133,6 @@ function showExportDialog() {
   exportDialog.value = {
     show: true,
     format: 'csv',
-    data: '',
     loading: false
   }
 }
@@ -2084,26 +2149,26 @@ async function executeExport() {
   }
 
   exportDialog.value.loading = true
+  const format = exportDialog.value.format
   try {
-    if (exportDialog.value.format === 'xlsx') {
-      // Excel 由后端直接生成二进制文件，这里只需等待保存对话框返回路径
-      const filePath = await browserStore.exportTableToExcel(
-        conn.id,
-        currentTab.value.database,
-        currentTab.value.tableName,
-        `${currentTab.value.tableName}.xlsx`
-      )
-      showToast(t('dataTable.fileSaved', { path: filePath }))
-      exportDialog.value.show = false
-      return
-    }
-    const data = await browserStore.exportTableData(
-      conn.id,
-      currentTab.value.database,
-      currentTab.value.tableName,
-      exportDialog.value.format
-    )
-    exportDialog.value.data = data
+    // 两种格式都由后端直接写文件：Excel 用工作簿，其余逐行流式写出
+    const filePath =
+      format === 'xlsx'
+        ? await browserStore.exportTableToExcel(
+            conn.id,
+            currentTab.value.database,
+            currentTab.value.tableName,
+            `${currentTab.value.tableName}.xlsx`
+          )
+        : await browserStore.exportTableToFile(
+            conn.id,
+            currentTab.value.database,
+            currentTab.value.tableName,
+            format,
+            `${currentTab.value.tableName}.${format}`
+          )
+    showToast(t('dataTable.fileSaved', { path: filePath }))
+    exportDialog.value.show = false
   } catch (e: unknown) {
     const errorMessage = String(e)
     // 用户取消保存时不提示错误
@@ -2153,32 +2218,6 @@ async function executeImport() {
     }
   } finally {
     importDialog.value.loading = false
-  }
-}
-
-function copyExportedData() {
-  navigator.clipboard.writeText(exportDialog.value.data)
-  showToast(t('dataTable.copiedToClipboard'))
-}
-
-async function downloadExportedData() {
-  const ext = exportDialog.value.format
-  const defaultFilename = `${currentTab.value?.tableName || 'export'}.${ext}`
-
-  try {
-    // 使用 Tauri 文件对话框保存
-    const filePath = await invoke('save_file_to_dialog', {
-      content: exportDialog.value.data,
-      defaultFilename: defaultFilename,
-      format: ext
-    })
-    showToast(t('dataTable.fileSaved', { path: String(filePath) }))
-  } catch (error: unknown) {
-    const errorMessage = String(error)
-    // 用户取消保存时不显示错误
-    if (!errorMessage.includes('用户取消')) {
-      showToast(t('dataTable.saveFailed', { error: errorMessage }), 'error')
-    }
   }
 }
 
@@ -2264,6 +2303,11 @@ defineExpose({
 .toolbar-actions button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.toolbar-actions button.btn-cancel-query {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
 }
 
 .search-input {

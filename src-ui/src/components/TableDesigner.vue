@@ -18,8 +18,8 @@
         </div>
       </div>
       <div class="header-center">
-        <button class="btn-save" @click="saveChanges" :disabled="!hasChanges">
-          <Save class="icon" :size="16" /> {{ t('common.save') }}
+        <button class="btn-save" @click="saveChanges" :disabled="!hasChanges || saving">
+          <Save class="icon" :size="16" /> {{ saving ? t('tableDesigner.saving') : t('common.save') }}
         </button>
         <span class="action-divider"></span>
         <button class="btn-add-field" @click="addField">
@@ -378,6 +378,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useDataBrowserStore } from '@/stores/dataBrowser'
 import { useToast } from '@/composables/useToast'
 import { confirmDanger } from '@/composables/useConfirm'
+import { useUnsavedGuard } from '@/composables/useUnsavedGuard'
 import {
   Save, Plus, CornerDownLeft, Trash2, Key, ArrowUp, ArrowDown, X, Copy, Table2
 } from 'lucide-vue-next'
@@ -404,6 +405,12 @@ interface Field {
   isModified?: boolean
   isNew?: boolean
   isDeleted?: boolean
+  /** 数据库中原始的列名，用于生成 CHANGE COLUMN 与识别重命名 */
+  originalName?: string
+  /** 加载时的列顺序，用于判断是否需要生成 FIRST / AFTER 位置子句 */
+  originalOrder?: number
+  /** 加载时是否为主键，用于判断主键变更 */
+  originalPrimary?: boolean
 }
 
 interface Index {
@@ -414,6 +421,8 @@ interface Index {
   isModified?: boolean
   isNew?: boolean
   isDeleted?: boolean
+  /** 数据库中原始的索引名，重命名时需先 DROP 旧索引 */
+  originalName?: string
 }
 
 interface ForeignKey {
@@ -426,6 +435,8 @@ interface ForeignKey {
   isModified?: boolean
   isNew?: boolean
   isDeleted?: boolean
+  /** 数据库中原始的外键名，重命名时需先 DROP 旧外键 */
+  originalName?: string
 }
 
 const props = defineProps<{
@@ -501,6 +512,9 @@ const hasChanges = computed(() => {
          foreignKeys.value.some(fk => fk.isModified || fk.isNew || fk.isDeleted)
 })
 
+// 关闭窗口/刷新前的兜底提示，避免直接丢失未保存的表结构修改
+useUnsavedGuard('table-designer', computed(() => Boolean(hasChanges.value)))
+
 // 生成 SQL
 const generatedSql = computed(() => {
   const tableName = props.isNewTable ? newTableName.value : props.tableName
@@ -510,7 +524,7 @@ const generatedSql = computed(() => {
     // 创建新表
     const fieldDefs = fields.value
       .filter(f => !f.isDeleted)
-      .map(fieldToSql)
+      .map(f => fieldToSql(f))
       .join(',\n  ')
     
     // 索引（排除主键，因为主键已在字段定义中添加）
@@ -534,39 +548,98 @@ const generatedSql = computed(() => {
 
   // 修改现有表
   const sqls: string[] = []
+  const table = quoteIdentifier(tableName!)
 
   // 字段修改
-  fields.value.forEach(field => {
+  const pkDrops: string[] = []
+  const pkAdds: string[] = []
+  fields.value.forEach((field, index) => {
     if (field.isNew && !field.isDeleted) {
-      sqls.push(`ALTER TABLE ${quoteIdentifier(tableName)} ADD COLUMN ${fieldToSql(field)};`)
-    } else if (field.isModified && !field.isDeleted && !field.isNew) {
-      sqls.push(`ALTER TABLE ${quoteIdentifier(tableName)} MODIFY COLUMN ${fieldToSql(field)};`)
+      sqls.push(`ALTER TABLE ${table} ADD COLUMN ${fieldToSql(field)}${positionClause(index)};`)
     } else if (field.isDeleted && !field.isNew) {
-      sqls.push(`ALTER TABLE ${quoteIdentifier(tableName)} DROP COLUMN ${quoteIdentifier(field.name)};`)
+      // 删除时用数据库中的原始列名，避免改过名后又删除导致 DROP 不存在的列
+      sqls.push(`ALTER TABLE ${table} DROP COLUMN ${quoteIdentifier(field.originalName ?? field.name)};`)
+    } else if (field.isModified && !field.isNew) {
+      // 列定义里的 PRIMARY KEY 不能用于 ALTER：已存在主键时重复声明会报错，
+      // 因此主键增删单独生成 ADD/DROP PRIMARY KEY
+      const definition = fieldToSql(field, false)
+      const position = movedPositionClause(field, index)
+      const renamed = !!field.originalName && field.originalName !== field.name
+      if (renamed) {
+        sqls.push(
+          `ALTER TABLE ${table} CHANGE COLUMN ${quoteIdentifier(field.originalName!)} ${definition}${position};`
+        )
+      } else {
+        sqls.push(`ALTER TABLE ${table} MODIFY COLUMN ${definition}${position};`)
+      }
+      if (field.isPrimary !== field.originalPrimary) {
+        if (field.isPrimary) {
+          pkAdds.push(`ALTER TABLE ${table} ADD PRIMARY KEY (${quoteIdentifier(field.name)});`)
+        } else {
+          pkDrops.push(`ALTER TABLE ${table} DROP PRIMARY KEY;`)
+        }
+      }
     }
   })
+  sqls.push(...pkDrops, ...pkAdds)
 
   // 索引修改
   indexes.value.forEach(index => {
     if (index.isNew && !index.isDeleted) {
       const unique = index.isUnique ? 'UNIQUE ' : ''
-      sqls.push(`CREATE ${unique}INDEX ${quoteIdentifier(index.name)} ON ${quoteIdentifier(tableName)} (${index.columns.map(c => quoteIdentifier(c)).join(', ')});`)
+      const using = index.type && index.type !== 'BTREE' ? ` USING ${index.type}` : ''
+      sqls.push(`CREATE ${unique}INDEX ${quoteIdentifier(index.name)} ON ${table} (${index.columns.map(c => quoteIdentifier(c)).join(', ')})${using};`)
     } else if (index.isDeleted && !index.isNew) {
-      sqls.push(`DROP INDEX ${quoteIdentifier(index.name)} ON ${quoteIdentifier(tableName)};`)
+      sqls.push(`DROP INDEX ${quoteIdentifier(index.originalName ?? index.name)} ON ${table};`)
+    } else if (index.isModified && !index.isNew) {
+      // MySQL 没有通用的“修改索引”语法：先删除旧索引再按新定义创建
+      sqls.push(`DROP INDEX ${quoteIdentifier(index.originalName ?? index.name)} ON ${table};`)
+      const unique = index.isUnique ? 'UNIQUE ' : ''
+      const using = index.type && index.type !== 'BTREE' ? ` USING ${index.type}` : ''
+      sqls.push(`CREATE ${unique}INDEX ${quoteIdentifier(index.name)} ON ${table} (${index.columns.map(c => quoteIdentifier(c)).join(', ')})${using};`)
     }
   })
 
   // 外键修改
   foreignKeys.value.forEach(fk => {
     if (fk.isNew && !fk.isDeleted) {
-      sqls.push(`ALTER TABLE ${quoteIdentifier(tableName)} ADD CONSTRAINT ${quoteIdentifier(fk.name)} FOREIGN KEY (${quoteIdentifier(fk.column)}) REFERENCES ${quoteIdentifier(fk.refTable)}(${quoteIdentifier(fk.refColumn)}) ON DELETE ${fk.onDelete} ON UPDATE ${fk.onUpdate};`)
+      sqls.push(`ALTER TABLE ${table} ADD CONSTRAINT ${quoteIdentifier(fk.name)} FOREIGN KEY (${quoteIdentifier(fk.column)}) REFERENCES ${quoteIdentifier(fk.refTable)}(${quoteIdentifier(fk.refColumn)}) ON DELETE ${fk.onDelete} ON UPDATE ${fk.onUpdate};`)
     } else if (fk.isDeleted && !fk.isNew) {
-      sqls.push(`ALTER TABLE ${quoteIdentifier(tableName)} DROP FOREIGN KEY ${quoteIdentifier(fk.name)};`)
+      sqls.push(`ALTER TABLE ${table} DROP FOREIGN KEY ${quoteIdentifier(fk.originalName ?? fk.name)};`)
+    } else if (fk.isModified && !fk.isNew) {
+      // 外键改名/改引用关系同样需要先删除旧约束
+      sqls.push(`ALTER TABLE ${table} DROP FOREIGN KEY ${quoteIdentifier(fk.originalName ?? fk.name)};`)
+      sqls.push(`ALTER TABLE ${table} ADD CONSTRAINT ${quoteIdentifier(fk.name)} FOREIGN KEY (${quoteIdentifier(fk.column)}) REFERENCES ${quoteIdentifier(fk.refTable)}(${quoteIdentifier(fk.refColumn)}) ON DELETE ${fk.onDelete} ON UPDATE ${fk.onUpdate};`)
     }
   })
 
   return sqls.join('\n\n') || t('tableDesigner.sqlNoChanges')
 })
+
+/** 生成列位置子句：插到前一个未删除字段之后，否则放到最前 */
+function positionClause(index: number): string {
+  for (let i = index - 1; i >= 0; i--) {
+    const prev = fields.value[i]
+    if (prev && !prev.isDeleted) return ` AFTER ${quoteIdentifier(prev.name)}`
+  }
+  return ' FIRST'
+}
+
+/**
+ * 字段相对原有顺序是否发生移动。
+ * 只在「原有字段之间」比较顺序，避免新增/删除字段导致其余字段被误判为移动。
+ */
+function movedPositionClause(field: Field, index: number): string {
+  if (field.originalOrder === undefined) return ''
+  const originals = fields.value.filter(
+    f => !f.isDeleted && !f.isNew && f.originalOrder !== undefined
+  )
+  const currentPos = originals.indexOf(field)
+  if (currentPos < 0) return ''
+  const originalPos = originals.filter(f => f.originalOrder! < field.originalOrder!).length
+  if (currentPos === originalPos) return ''
+  return positionClause(index)
+}
 
 // 加载表结构
 async function loadTableStructure() {
@@ -585,7 +658,7 @@ async function loadTableStructure() {
     originalStructure.value = structure
 
     // 转换字段
-    fields.value = structure.columns.map((col: { name: string; data_type: string; length?: number; decimals?: number; is_nullable: boolean; default_value?: string; comment?: string; is_primary: boolean; is_auto_increment: boolean; unsigned?: boolean; on_update_current_timestamp?: boolean }) => ({
+    fields.value = structure.columns.map((col: { name: string; data_type: string; length?: number; decimals?: number; is_nullable: boolean; default_value?: string; comment?: string; is_primary: boolean; is_auto_increment: boolean; unsigned?: boolean; on_update_current_timestamp?: boolean }, order: number) => ({
       id: Math.random().toString(36).substr(2, 9),
       name: col.name,
       type: col.data_type,
@@ -603,7 +676,10 @@ async function loadTableStructure() {
       virtual: false,
       isModified: false,
       isNew: false,
-      isDeleted: false
+      isDeleted: false,
+      originalName: col.name,
+      originalOrder: order,
+      originalPrimary: col.is_primary
     }))
 
     // 转换索引
@@ -614,7 +690,8 @@ async function loadTableStructure() {
       isUnique: idx.is_unique,
       isModified: false,
       isNew: false,
-      isDeleted: false
+      isDeleted: false,
+      originalName: idx.name
     }))
 
     // 转换外键
@@ -627,7 +704,8 @@ async function loadTableStructure() {
       onUpdate: fk.on_update,
       isModified: false,
       isNew: false,
-      isDeleted: false
+      isDeleted: false,
+      originalName: fk.name
     }))
 
     // 根据索引信息标记字段的唯一/普通索引图标（主键已在字段映射中处理）
@@ -650,7 +728,8 @@ async function loadTableStructure() {
 }
 
 // 字段转 SQL
-function fieldToSql(field: Field): string {
+// includePrimaryKey=false 用于 ALTER 场景：列定义中重复声明 PRIMARY KEY 会报错
+function fieldToSql(field: Field, includePrimaryKey = true): string {
   let sql = `${quoteIdentifier(field.name)} ${field.type}`
   
   // 长度/精度/显示宽度，如 varchar(255)、decimal(10,2)、int(11)
@@ -685,7 +764,7 @@ function fieldToSql(field: Field): string {
   }
   
   if (field.isAutoIncrement) sql += ' AUTO_INCREMENT'
-  if (field.isPrimary) sql += ' PRIMARY KEY'
+  if (includePrimaryKey && field.isPrimary) sql += ' PRIMARY KEY'
   if (field.comment) sql += ` COMMENT '${field.comment.replace(/'/g, "''")}'`
   return sql
 }
@@ -949,7 +1028,12 @@ async function deleteForeignKey() {
 }
 
 // 保存修改
+const saving = ref(false)
+
 async function saveChanges() {
+  // 防重复提交：执行期间禁用保存按钮，避免重复执行 ALTER
+  if (saving.value) return
+  saving.value = true
   try {
     error.value = ''
     
@@ -982,6 +1066,8 @@ async function saveChanges() {
     }
   } catch (e: unknown) {
     error.value = t('tableDesigner.saveFailed', { error: String(e) })
+  } finally {
+    saving.value = false
   }
 }
 
@@ -990,8 +1076,16 @@ async function copySql() {
   await navigator.clipboard.writeText(generatedSql.value)
 }
 
-// 关闭设计器
-function closeDesigner() {
+// 关闭设计器：有未保存修改时先确认，避免误关丢失改动
+async function closeDesigner() {
+  if (saving.value) return
+  if (hasChanges.value) {
+    const confirmed = await confirmDanger({
+      message: t('tableDesigner.unsavedChangesConfirm'),
+      confirmText: t('tableDesigner.discardChanges'),
+    })
+    if (!confirmed) return
+  }
   emit('close')
 }
 

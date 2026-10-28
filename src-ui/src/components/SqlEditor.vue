@@ -15,7 +15,7 @@
           <Cpu :size="14" />
           {{ t('sqlEditor.explain') }}
         </button>
-        <button @click="formatSql" :disabled="!sql.trim()" class="btn-format">
+        <button @click="handleFormatSql" :disabled="!sql.trim()" class="btn-format">
           <FileText :size="14" />
           {{ t('sqlEditor.format') }}
         </button>
@@ -37,6 +37,7 @@
           <Select
             :model-value="selectedDatabase"
             :options="databaseOptions"
+            :disabled="isPostgres"
             :placeholder="t('sqlEditor.selectDatabase')"
             @update:model-value="manualSelectedDatabase = $event"
           />
@@ -301,9 +302,12 @@ import { useLicenseStore } from '@/stores/license'
 import { useQueryLibraryStore, type QueryHistoryEntry, type SavedQuery } from '@/stores/queryLibrary'
 import { Play, FileText, Trash2, Download, XCircle, CheckCircle, Loader2, Square, History, X, Cpu } from 'lucide-vue-next'
 import { t } from '@/i18n'
-import { findDangerousStatements, quoteIdentifier } from '@/utils/sql'
+import { findDangerousStatements, formatSql, quoteIdentifier } from '@/utils/sql'
+import { formatSqlValue } from '@/utils/tableChanges'
 import { invoke } from '@tauri-apps/api/core'
 import { useVirtualRows } from '@/composables/useVirtualRows'
+import { globalToast } from '@/composables/useToast'
+import { confirmDanger } from '@/composables/useConfirm'
 import {
   useSqlCompletion,
   invalidateSchemaCache,
@@ -426,11 +430,18 @@ const databaseOptions = computed(() =>
 // 获取当前连接的连接ID
 const currentConnectionId = computed(() => connStore.currentConnection?.id || '')
 
+// 当前连接是否为 PostgreSQL（PG 的「库」在连接时固定，下拉里这一层应为 schema）
+const isPostgres = computed(() => connStore.currentConnection?.driver === 'postgres')
+
 // 默认选中当前正在浏览的数据库
 const selectedDatabase = computed(() => {
   // 如果有手动选择的值，优先使用
   if (manualSelectedDatabase.value) {
     return manualSelectedDatabase.value
+  }
+  // PostgreSQL 的库在连接时固定，不使用侧栏残留的库/模式名
+  if (isPostgres.value) {
+    return ''
   }
   // 否则使用当前浏览的数据库
   return browserStore.currentDatabase || ''
@@ -444,15 +455,37 @@ const currentDatabaseName = computed(
   () => selectedDatabase.value || browserStore.currentDatabase || ''
 )
 
+/**
+ * 解析本次执行要用的库名。
+ * 优先当前浏览/手动选择的库，其次连接自身配置的默认库；
+ * 都为空说明用户还没选库，此时不应擅自回落到系统库 mysql。
+ */
+function resolveDatabase(): string {
+  if (isPostgres.value) return manualSelectedDatabase.value
+  return (
+    selectedDatabase.value ||
+    browserStore.currentDatabase ||
+    connStore.currentConnection?.database ||
+    ''
+  )
+}
+
 watch(
   [currentConnectionId, currentDatabaseName],
   ([connectionId, database]) => {
+    // PostgreSQL 尚未提供 schema 快照，补全器只在 MySQL 下加载
+    if (isPostgres.value) return
     if (connectionId && database) {
       completionEngine.loadSchema(connectionId, database)
     }
   },
   { immediate: true }
 )
+
+// 切换连接时清空手动选择，避免沿用上一条连接的库/schema 名
+watch(currentConnectionId, () => {
+  manualSelectedDatabase.value = ''
+})
 
 // 根据数据类型获取列宽
 function getColumnWidthByType(dataType: string): number {
@@ -559,11 +592,28 @@ function setLoading(value: boolean) {
 // 执行 SQL
 async function executeQuery() {
   if (!sql.value.trim() || !currentConnectionId.value) return
+  // 上一次查询还没结束时再次触发（F5 连按、按钮重复点击）会并发发出请求，
+  // 后返回的旧结果可能覆盖新结果，这里直接忽略
+  if (loading.value) return
+
+  // MySQL 必须有库名才能执行（后端会校验），没有可用库时提示用户先选库，
+  // 避免静默落到系统库 mysql 上
+  if (!isPostgres.value && !resolveDatabase()) {
+    error.value = t('sqlEditor.selectDatabaseFirst')
+    result.value = null
+    return
+  }
 
   // 安全模式下对高风险语句二次确认（无 WHERE 的 UPDATE/DELETE 由后端直接拦截）
   if (connStore.currentConnection?.safety_mode === 'safe') {
     const dangerous = findDangerousStatements(sql.value)
-    if (dangerous.length > 0 && !confirm(t('sqlEditor.safetyConfirm', { statements: dangerous.join(', ') }))) {
+    if (
+      dangerous.length > 0 &&
+      !(await confirmDanger({
+        message: t('sqlEditor.safetyConfirm', { statements: dangerous.join(', ') }),
+        confirmText: t('common.confirm'),
+      }))
+    ) {
       return
     }
   }
@@ -576,9 +626,7 @@ async function executeQuery() {
   resultView.value = 'result'
 
   try {
-    // PG 没有「默认 mysql 库」的概念，空串表示沿用服务端默认 search_path
-    const fallbackDb = connStore.currentConnection?.driver === 'postgres' ? '' : 'mysql'
-    const dbName = selectedDatabase.value || browserStore.currentDatabase || fallbackDb
+    const dbName = resolveDatabase()
     const response = await connStore.executeSql(currentConnectionId.value, dbName, sql.value) as {
       columns: { name: string; data_type: string }[]
       rows: unknown[][]
@@ -604,6 +652,16 @@ async function executeQuery() {
     if (isSchemaChangingStatement(sql.value)) {
       invalidateSchemaCache()
       refreshSchema()
+    }
+
+    // `USE db2` 已生效：把编辑器与补全的当前库切到 db2，后续语句不再沿用旧库
+    if (!isPostgres.value) {
+      const usedDatabase = leadingUseDatabase(sql.value)
+      if (usedDatabase) {
+        manualSelectedDatabase.value = usedDatabase
+        invalidateSchemaCache()
+        refreshSchema()
+      }
     }
   } catch (e) {
     const message = String(e)
@@ -632,7 +690,11 @@ async function executeQuery() {
 async function cancelQuery() {
   if (!currentConnectionId.value) return
   try {
-    await connStore.cancelQuery(currentConnectionId.value)
+    const rolledBack = await connStore.cancelQuery(currentConnectionId.value)
+    // 取消会丢弃被取消的事务连接（自动回滚），必须显式提示，避免用户以为事务还在
+    if (rolledBack) {
+      globalToast.warning(t('sqlEditor.transactionRolledBack'))
+    }
   } catch (e) {
     console.error('取消查询失败:', e)
   }
@@ -650,8 +712,7 @@ async function explainSql() {
   resultView.value = 'explain'
 
   try {
-    const fallbackDb = connStore.currentConnection?.driver === 'postgres' ? '' : 'mysql'
-    const dbName = selectedDatabase.value || browserStore.currentDatabase || fallbackDb
+    const dbName = resolveDatabase()
     const response = await invoke<ExplainPlan>('explain_sql', {
       connectionId: currentConnectionId.value,
       database: dbName,
@@ -672,27 +733,8 @@ async function explainSql() {
 }
 
 // 格式化 SQL
-function formatSql() {
-  // 简单的格式化：大写关键字，换行
-  const keywords = ['SELECT', 'FROM', 'WHERE', 'JOIN', 'LEFT', 'RIGHT', 'INNER', 'OUTER',
-    'ON', 'AND', 'OR', 'NOT', 'GROUP BY', 'ORDER BY', 'HAVING', 'LIMIT',
-    'INSERT INTO', 'VALUES', 'UPDATE', 'SET', 'DELETE FROM', 'CREATE TABLE',
-    'ALTER TABLE', 'DROP TABLE', 'TRUNCATE TABLE']
-
-  let formatted = sql.value
-
-  // 大写关键字
-  keywords.forEach(keyword => {
-    const regex = new RegExp(`\\b${keyword}\\b`, 'gi')
-    formatted = formatted.replace(regex, keyword)
-  })
-
-  // 在关键字前换行
-  formatted = formatted
-    .replace(/\s*,\s*/g, ', ')
-    .replace(/\s+/g, ' ')
-
-  sql.value = formatted
+function handleFormatSql() {
+  sql.value = formatSql(sql.value)
 }
 
 // 清空编辑器
@@ -730,8 +772,8 @@ function handleKeydown(e: KeyboardEvent) {
     }
   }
 
-  // Ctrl+Space 手动触发补全
-  if (e.ctrlKey && e.code === 'Space') {
+  // Ctrl/Cmd+Space 手动触发补全
+  if ((e.ctrlKey || e.metaKey) && e.code === 'Space') {
     e.preventDefault()
     openCompletion(true)
     return
@@ -747,7 +789,7 @@ function handleKeydown(e: KeyboardEvent) {
   // Shift+Alt+F 格式化
   if (e.shiftKey && e.altKey && (e.key === 'f' || e.key === 'F')) {
     e.preventDefault()
-    formatSql()
+    handleFormatSql()
     return
   }
 
@@ -843,10 +885,34 @@ function isSchemaChangingStatement(statement: string): boolean {
   return /^\s*(create|alter|drop|rename|truncate)\b/i.test(statement)
 }
 
+/**
+ * 提取 SQL 文本开头 `USE <db>` 切到的库（与后端 leading_use_database 规则一致）。
+ * 用于执行成功后把编辑器的当前库切到新库，避免后续语句仍按旧库补全/执行。
+ */
+function leadingUseDatabase(text: string): string {
+  const withoutComments = text
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/--[^\n]*/g, ' ')
+    .replace(/#[^\n]*/g, ' ')
+  let database = ''
+  for (const raw of withoutComments.split(';')) {
+    const statement = raw.trim()
+    if (!statement) continue
+    if (/^set\b/i.test(statement)) continue
+    const match = statement.match(/^use\s+[`"]?([^`"\s;]+)[`"]?$/i)
+    if (!match) break
+    const name = match[1]
+    if (!name) break
+    database = name
+  }
+  return database
+}
+
 function refreshSchema() {
   const connectionId = currentConnectionId.value
   const database = currentDatabaseName.value
-  if (connectionId && database) {
+  // PostgreSQL 尚未提供 schema 快照
+  if (!isPostgres.value && connectionId && database) {
     completionEngine.loadSchema(connectionId, database)
   }
 }
@@ -1108,23 +1174,18 @@ function exportToSQL(
   timestamp: string
 ) {
   const tableName = 'exported_data'
-  const columnNames = columns.map(col => quoteIdentifier(col.name)).join(', ')
+  // MySQL 与 PG 的标识符引用、字符串转义、二进制字面量都不同，统一交给 formatSqlValue
+  const driver = connStore.currentConnection?.driver === 'postgres' ? 'postgres' : 'mysql'
+  const columnNames = columns.map(col => quoteIdentifier(col.name, driver)).join(', ')
 
   const insertStatements = rows.map(row => {
-    const values = row.map((cell, index) => {
-      if (cell === null) return 'NULL'
-      const col = columns[index]
-      if (!col) return 'NULL'
-      const dataType = col.data_type.toLowerCase()
-      // 数字类型不加引号
-      if (dataType.includes('int') || dataType.includes('float') || dataType.includes('double') || dataType.includes('decimal') || dataType.includes('bool')) {
-        return String(cell)
-      }
-      // 字符串类型加引号并转义
-      return `'${String(cell).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`
-    }).join(', ')
+    const values = row
+      .map((cell, index) =>
+        formatSqlValue(cell, { driver, data_type: columns[index]?.data_type })
+      )
+      .join(', ')
 
-    return `INSERT INTO ${quoteIdentifier(tableName)} (${columnNames}) VALUES (${values});`
+    return `INSERT INTO ${quoteIdentifier(tableName, driver)} (${columnNames}) VALUES (${values});`
   }).join('\n')
 
   downloadFile(insertStatements, `query-result-${timestamp}.sql`, 'text/plain;charset=utf-8;')
@@ -1177,6 +1238,11 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (cancelTimer) clearTimeout(cancelTimer)
+  // 拖拽中卸载时清理全局监听与临时样式
+  document.removeEventListener('mousemove', handleResize)
+  document.removeEventListener('mouseup', stopResize)
+  document.body.style.cursor = ''
+  document.body.style.userSelect = ''
 })
 </script>
 

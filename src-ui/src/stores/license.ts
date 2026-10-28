@@ -2,6 +2,7 @@ import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
 import { globalToast } from '@/composables/useToast'
+import { confirmDanger } from '@/composables/useConfirm'
 import { t } from '@/i18n'
 
 /** 专业版能力键，与后端 `core/license.rs` 中的常量保持一致 */
@@ -122,7 +123,13 @@ export const useLicenseStore = defineStore('license', () => {
   /** 停用本机激活码，回到免费版 */
   async function deactivate(): Promise<boolean> {
     if (!isTauri()) return false
-    if (!confirm(t('license.deactivateConfirm'))) return false
+    if (
+      !(await confirmDanger({
+        message: t('license.deactivateConfirm'),
+        confirmText: t('license.deactivate'),
+      }))
+    )
+      return false
 
     loading.value = true
     error.value = ''
