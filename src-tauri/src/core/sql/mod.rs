@@ -52,7 +52,24 @@ pub fn rewrite_table_names(database: &str, sql: &str, driver: DriverKind) -> (St
         }
     }
 
-    match Parser::parse_sql(&MySqlDialect {}, sql) {
+    // sqlparser 重新序列化 AST 时会丢弃注释，而 MySQL 的可执行注释 `/*! ... */`
+    // 是会被服务端执行的真实语句（如 `/*!40101 SET NAMES utf8 */`），
+    // 重写后丢失会改变语义，因此遇到可执行注释时原样返回。
+    if sql.contains("/*!") {
+        let parsed = Parser::parse_sql(&MySqlDialect {}, sql).is_ok();
+        return (sql.to_string(), parsed);
+    }
+
+    // 普通注释不参与语义，先剥离再解析，避免序列化时把注释丢掉后再拼接出错误语句
+    // （例如 `-- 注释` 后跟关键字时被合并成非法 token）。
+    let sql_without_comments = strip_sql_comments(sql);
+    let sql_for_parse = if sql_without_comments.trim().is_empty() {
+        sql
+    } else {
+        sql_without_comments.as_str()
+    };
+
+    match Parser::parse_sql(&MySqlDialect {}, sql_for_parse) {
         Ok(mut statements) => {
             let _ = statements.visit(&mut TablePrefixer {
                 database: database.to_string(),
@@ -109,6 +126,107 @@ pub fn rewrite_table_names(database: &str, sql: &str, driver: DriverKind) -> (St
     }
 }
 
+/// 判断当前 `-` 是否开始一段 `--` 行注释。
+///
+/// MySQL 规定 `--` 后必须跟至少一个空白或控制字符才是注释，
+/// 否则是两个连续的减号，如 `SELECT 1--1` 表示 `1 - (-1)`。
+/// 只比较两个 `-` 会把后者误判为注释，导致语句被静默截断。
+/// 行尾（`--` 后没有字符）同样不算注释：截断成合法语句比报错更危险。
+///
+/// 调用方传入的迭代器位置在第一个 `-` 之后。
+fn is_line_comment_start(chars: &std::iter::Peekable<std::str::Chars<'_>>) -> bool {
+    let mut lookahead = chars.clone();
+    if lookahead.next() != Some('-') {
+        return false;
+    }
+    matches!(lookahead.next(), Some(next) if next.is_whitespace())
+}
+
+/// 剥离 SQL 中的普通注释（`--` 行注释、`#` 行注释、`/* */` 块注释），
+/// 字符串字面量与反引号标识符内的内容原样保留。
+/// 注释被替换为一个空格，避免前后 token 直接粘连。
+fn strip_sql_comments(sql: &str) -> String {
+    let mut result = String::with_capacity(sql.len());
+    let mut chars = sql.chars().peekable();
+
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut in_backtick = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+
+    while let Some(c) = chars.next() {
+        if in_line_comment {
+            if c == '\n' {
+                in_line_comment = false;
+                result.push('\n');
+            }
+            continue;
+        }
+
+        if in_block_comment {
+            if c == '*' && chars.peek() == Some(&'/') {
+                chars.next();
+                in_block_comment = false;
+                result.push(' ');
+            }
+            continue;
+        }
+
+        if (in_single_quote || in_double_quote) && c == '\\' {
+            result.push(c);
+            if let Some(next) = chars.next() {
+                result.push(next);
+            }
+            continue;
+        }
+
+        if c == '\'' && !in_double_quote && !in_backtick {
+            if in_single_quote && chars.peek() == Some(&'\'') {
+                result.push(c);
+                result.push(chars.next().unwrap());
+                continue;
+            }
+            in_single_quote = !in_single_quote;
+            result.push(c);
+            continue;
+        }
+
+        if c == '"' && !in_single_quote && !in_backtick {
+            in_double_quote = !in_double_quote;
+            result.push(c);
+            continue;
+        }
+
+        if c == '`' && !in_single_quote && !in_double_quote {
+            in_backtick = !in_backtick;
+            result.push(c);
+            continue;
+        }
+
+        if !in_single_quote && !in_double_quote && !in_backtick {
+            if c == '-' && is_line_comment_start(&chars) {
+                chars.next();
+                in_line_comment = true;
+                continue;
+            }
+            if c == '#' {
+                in_line_comment = true;
+                continue;
+            }
+            if c == '/' && chars.peek() == Some(&'*') {
+                chars.next();
+                in_block_comment = true;
+                continue;
+            }
+        }
+
+        result.push(c);
+    }
+
+    result
+}
+
 /// 判断 SQL 是否会改变库/表结构（DDL）。
 ///
 /// 用于执行成功后失效元数据缓存：对象树与表结构有 30 秒 TTL，
@@ -138,10 +256,82 @@ pub fn is_schema_changing(sql: &str) -> bool {
     PREFIXES.iter().any(|prefix| upper.starts_with(prefix))
 }
 
-/// 安全分割 SQL 语句，忽略字符串字面量、反引号标识符和注释中的分号
+/// 提取 SQL 文本开头连续的 `USE <db>` / `SET ...` 预置语句中最后切换到的库名。
+///
+/// 用于「同一次提交内先切库再查询」（如 `USE db2; SELECT * FROM t`）：
+/// 未限定表名必须以最后切换到的库为准补前缀，否则会被补上侧栏选中的库，
+/// 静默查询到错误的库。返回 `None` 表示文本开头没有 USE 语句。
+pub fn leading_use_database(sql: &str) -> Option<String> {
+    // 只在开头一段文本里查找，避免超长脚本全量扫描
+    const MAX_SCAN_LEN: usize = 64 * 1024;
+    let head: String = sql.chars().take(MAX_SCAN_LEN).collect();
+    let cleaned = strip_sql_comments(&head);
+
+    let mut database = None;
+    for statement in split_sql_statements(&cleaned) {
+        let trimmed = statement.trim();
+        let upper = trimmed.to_uppercase();
+        // SET 只是连接级预置（如 `SET NAMES utf8mb4`），不改变目标库，允许跳过
+        if upper.starts_with("SET ") || upper.starts_with("SET\t") {
+            continue;
+        }
+        if !upper.starts_with("USE ") && !upper.starts_with("USE\t") {
+            break;
+        }
+        let raw = trimmed.get(3..).unwrap_or("").trim();
+        let name = raw
+            .strip_prefix('`')
+            .and_then(|s| s.strip_suffix('`'))
+            .or_else(|| raw.strip_prefix('"').and_then(|s| s.strip_suffix('"')))
+            .unwrap_or(raw)
+            .trim();
+        if !name.is_empty() {
+            database = Some(name.to_string());
+        }
+    }
+    database
+}
+
+/// 解析 `DELIMITER <token>` 指令行，返回新的语句分隔符。
+///
+/// 该指令是 mysql 客户端命令，不会发给服务端；导入含存储过程/触发器的脚本时，
+/// 必须按它切换分隔符，否则过程体内部的 `;` 会被当作语句结尾切碎。
+fn parse_delimiter_directive(line: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+    let mut parts = trimmed.splitn(2, char::is_whitespace);
+    let keyword = parts.next()?;
+    if !keyword.eq_ignore_ascii_case("DELIMITER") {
+        return None;
+    }
+    let token = parts.next()?.trim().split_whitespace().next()?;
+    Some(token.to_string())
+}
+
+/// 判断当前位置是否命中语句分隔符；命中时消费分隔符的剩余字符。
+fn consume_delimiter(
+    c: char,
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    delimiter: &str,
+) -> bool {
+    let mut expected = delimiter.chars();
+    if expected.next() != Some(c) {
+        return false;
+    }
+    for want in expected {
+        if chars.peek() != Some(&want) {
+            return false;
+        }
+        chars.next();
+    }
+    true
+}
+
+/// 安全分割 SQL 语句，忽略字符串字面量、反引号标识符和注释中的分号，
+/// 并支持 `DELIMITER` 指令切换分隔符（存储过程/触发器脚本）。
 pub fn split_sql_statements(sql: &str) -> Vec<String> {
     let mut statements = Vec::new();
     let mut current = String::new();
+    let mut delimiter = String::from(";");
     let mut chars = sql.chars().peekable();
 
     // 状态标记
@@ -209,7 +399,7 @@ pub fn split_sql_statements(sql: &str) -> Vec<String> {
         // 处理注释开始（仅在非字符串状态）
         if !in_single_quote && !in_double_quote && !in_backtick {
             // 行注释 --
-            if c == '-' && chars.peek() == Some(&'-') {
+            if c == '-' && is_line_comment_start(&chars) {
                 in_line_comment = true;
                 chars.next();
                 continue;
@@ -222,14 +412,38 @@ pub fn split_sql_statements(sql: &str) -> Vec<String> {
             }
         }
 
-        // 处理分号（语句分隔符）
-        if c == ';' && !in_single_quote && !in_double_quote && !in_backtick {
-            let trimmed = current.trim();
-            if !trimmed.is_empty() {
-                statements.push(trimmed.to_string());
+        if !in_single_quote && !in_double_quote && !in_backtick {
+            // DELIMITER 指令只出现在语句开头，且不影响服务端语义
+            if !c.is_whitespace() && current.trim().is_empty() {
+                let mut line = String::with_capacity(128);
+                line.push(c);
+                for next in chars.clone().take(128) {
+                    if next == '\n' {
+                        break;
+                    }
+                    line.push(next);
+                }
+                if let Some(new_delimiter) = parse_delimiter_directive(&line) {
+                    while let Some(next) = chars.next() {
+                        if next == '\n' {
+                            break;
+                        }
+                    }
+                    delimiter = new_delimiter;
+                    current.clear();
+                    continue;
+                }
             }
-            current.clear();
-            continue;
+
+            // 处理语句分隔符（默认 `;`，可由 DELIMITER 切换为 `$$` 等）
+            if consume_delimiter(c, &mut chars, &delimiter) {
+                let trimmed = current.trim();
+                if !trimmed.is_empty() {
+                    statements.push(trimmed.to_string());
+                }
+                current.clear();
+                continue;
+            }
         }
 
         current.push(c);
@@ -246,7 +460,10 @@ pub fn split_sql_statements(sql: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_schema_changing, rewrite_table_names};
+    use super::{
+        is_schema_changing, leading_use_database, rewrite_table_names, split_sql_statements,
+        strip_sql_comments,
+    };
     use crate::core::connection::driver::DriverKind;
 
     #[test]
@@ -382,6 +599,83 @@ mod tests {
     }
 
     #[test]
+    fn test_rewrite_with_plain_comments_keeps_semantics() {
+        let (sql, parsed) = rewrite_table_names(
+            "mydb",
+            "-- 统计用户数\nSELECT COUNT(*) FROM users /* 注释 */ WHERE id > 0",
+            DriverKind::MySql,
+        );
+        assert!(parsed);
+        assert!(sql.contains("`mydb`.`users`"), "got: {sql}");
+        assert!(sql.contains("WHERE id > 0"), "got: {sql}");
+    }
+
+    #[test]
+    fn test_rewrite_keeps_mysql_executable_comments() {
+        let input = "/*!40101 SET NAMES utf8 */";
+        let (sql, _) = rewrite_table_names("mydb", input, DriverKind::MySql);
+        assert_eq!(sql, input);
+    }
+
+    #[test]
+    fn test_strip_comments_ignores_quoted_content() {
+        let stripped = strip_sql_comments("SELECT '-- not comment', `a#b` FROM t -- real");
+        assert!(stripped.contains("'-- not comment'"), "got: {stripped}");
+        assert!(stripped.contains("`a#b`"), "got: {stripped}");
+        assert!(!stripped.contains("real"), "got: {stripped}");
+    }
+
+    #[test]
+    fn test_double_dash_requires_whitespace() {
+        // `5--3` 是两个减号（5 - (-3)），不能被当成注释截断
+        assert_eq!(strip_sql_comments("SELECT 5--3"), "SELECT 5--3");
+        // 行尾的 `--` 也不算注释，避免被截断成看似合法的语句
+        assert_eq!(strip_sql_comments("SELECT 5--"), "SELECT 5--");
+        // 后随空白或换行才是注释
+        assert_eq!(strip_sql_comments("SELECT 1 -- note"), "SELECT 1 ");
+        assert_eq!(strip_sql_comments("SELECT 1 --\nFROM t"), "SELECT 1 \nFROM t");
+        // `--` 后跟制表符同样算注释
+        assert_eq!(strip_sql_comments("SELECT 1 --\tnote"), "SELECT 1 ");
+    }
+
+    #[test]
+    fn test_split_statements_keeps_double_dash_expression() {
+        let statements = split_sql_statements("SELECT 5--3; SELECT 1 -- 注释\nFROM t;");
+        assert_eq!(statements.len(), 2, "got: {statements:?}");
+        assert_eq!(statements[0], "SELECT 5--3");
+        assert!(statements[1].contains("FROM t"), "got: {statements:?}");
+    }
+
+    #[test]
+    fn test_split_statements_respects_delimiter() {
+        let sql = "DELIMITER $$\n\
+                   CREATE PROCEDURE p()\n\
+                   BEGIN\n  SELECT 1;\n  SELECT 2;\nEND$$\n\
+                   DELIMITER ;\n\
+                   SELECT 3;\n";
+        let statements = split_sql_statements(sql);
+        assert_eq!(statements.len(), 2, "got: {statements:?}");
+        assert!(statements[0].starts_with("CREATE PROCEDURE p()"), "got: {statements:?}");
+        assert!(statements[0].contains("SELECT 2;"), "got: {statements:?}");
+        assert!(!statements[0].contains("DELIMITER"), "got: {statements:?}");
+        assert_eq!(statements[1], "SELECT 3");
+    }
+
+    #[test]
+    fn test_split_statements_respects_custom_delimiter() {
+        let sql = "delimiter //\n\
+                   CREATE TRIGGER tr BEFORE INSERT ON t FOR EACH ROW\n\
+                   BEGIN\n  SET NEW.a = 1;\nEND//\n\
+                   DELIMITER ;\n\
+                   INSERT INTO t VALUES (1);";
+        let statements = split_sql_statements(sql);
+        assert_eq!(statements.len(), 2, "got: {statements:?}");
+        assert!(statements[0].starts_with("CREATE TRIGGER"), "got: {statements:?}");
+        assert!(statements[0].contains("SET NEW.a = 1;"), "got: {statements:?}");
+        assert_eq!(statements[1], "INSERT INTO t VALUES (1)");
+    }
+
+    #[test]
     fn test_is_schema_changing() {
         assert!(is_schema_changing("CREATE TABLE `t` (id INT)"));
         assert!(is_schema_changing("  drop table `t`"));
@@ -391,6 +685,37 @@ mod tests {
         assert!(!is_schema_changing("SELECT * FROM t"));
         assert!(!is_schema_changing("INSERT INTO t VALUES (1)"));
         assert!(!is_schema_changing("TRUNCATE TABLE t"));
+    }
+
+    #[test]
+    fn test_leading_use_database() {
+        assert_eq!(
+            leading_use_database("USE db2; SELECT * FROM t").as_deref(),
+            Some("db2")
+        );
+        assert_eq!(
+            leading_use_database("use `db-2`;\nselect 1").as_deref(),
+            Some("db-2")
+        );
+        // 多条 USE 以最后一条为准
+        assert_eq!(
+            leading_use_database("USE a; USE b; SELECT 1").as_deref(),
+            Some("b")
+        );
+        // 前置 SET 预置语句可跳过
+        assert_eq!(
+            leading_use_database("SET NAMES utf8mb4; USE db3; SELECT 1").as_deref(),
+            Some("db3")
+        );
+        // 注释与可执行注释不影响识别
+        assert_eq!(
+            leading_use_database("-- 切库\n/*!40101 SET NAMES utf8 */ USE db4; SELECT 1")
+                .as_deref(),
+            Some("db4")
+        );
+        // 没有前置 USE，或 USE 出现在普通语句之后，都不改变目标库
+        assert_eq!(leading_use_database("SELECT * FROM t"), None);
+        assert_eq!(leading_use_database("SELECT 1; USE db2; SELECT * FROM t"), None);
     }
 
     #[test]

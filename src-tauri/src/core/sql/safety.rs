@@ -1,7 +1,8 @@
 //! SQL 执行安全守卫：按连接访问模式拦截危险语句。
 //!
 //! - `ReadOnly`：只放行查询类语句（fail-closed：无法识别的语句一律拒绝）；
-//! - `Safe`：拦截不带 WHERE 的 UPDATE/DELETE。
+//! - `Safe`：拦截不带 WHERE 的 UPDATE/DELETE，以及 TRUNCATE/DROP/LOAD DATA/
+//!   `SELECT ... INTO OUTFILE`/CALL 等可能批量破坏数据或读写服务器文件的语句。
 //!
 //! 优先用 sqlparser 解析；遇到 MySQL 特有语法解析失败时，退化为首关键字判断。
 
@@ -13,7 +14,8 @@ use sqlparser::parser::Parser;
 use crate::core::connection::types::SafetyMode;
 
 pub const READ_ONLY_MESSAGE: &str = "当前连接为只读模式，已阻止执行非查询语句";
-pub const SAFE_MODE_MESSAGE: &str = "当前连接已开启安全模式，已阻止执行不带 WHERE 的 UPDATE/DELETE";
+pub const SAFE_MODE_MESSAGE: &str =
+    "当前连接已开启安全模式，已阻止可能造成批量数据损坏的语句（不带 WHERE 的 UPDATE/DELETE、TRUNCATE、DROP、LOAD DATA、SELECT ... INTO OUTFILE 等）";
 
 /// 只读模式下解析失败时的兜底放行关键字
 ///
@@ -29,9 +31,63 @@ pub fn enforce(mode: SafetyMode, sql: &str) -> Result<()> {
         return Ok(());
     }
 
+    // 破坏性语句用文本级判定，解析成功与否都要拦（`TRUNCATE`/`DROP` 等
+    // 在 sqlparser 里没有统一的"危险"标记，逐变体匹配容易漏）
+    if has_destructive_statement(sql) {
+        return Err(anyhow!(match mode {
+            SafetyMode::ReadOnly => READ_ONLY_MESSAGE,
+            _ => SAFE_MODE_MESSAGE,
+        }));
+    }
+
     match Parser::parse_sql(&MySqlDialect {}, sql) {
         Ok(statements) => check_statements(mode, &statements),
         Err(_) => check_by_keyword(mode, sql),
+    }
+}
+
+/// 安全模式下额外拦截的破坏性语句：
+/// - `TRUNCATE`/`DROP`：整表或整库清除，误执行不可恢复；
+/// - `LOAD`（LOAD DATA/XML）：从服务器或客户端文件批量写入；
+/// - `CALL`：存储过程内部动作无法静态判定，按 fail-closed 处理；
+/// - `SELECT ... INTO OUTFILE/DUMPFILE`：绕过导出功能直接写服务器磁盘。
+fn has_destructive_statement(sql: &str) -> bool {
+    const DESTRUCTIVE_KEYWORDS: &[&str] = &["TRUNCATE", "DROP", "LOAD", "CALL"];
+
+    crate::core::sql::split_sql_statements(sql).iter().any(|statement| {
+        let keyword = leading_keyword(statement);
+        DESTRUCTIVE_KEYWORDS.contains(&keyword.as_str())
+            || contains_keyword(statement, "OUTFILE")
+            || contains_keyword(statement, "DUMPFILE")
+    })
+}
+
+/// 校验前端提交的定位条件（WHERE 片段）。
+///
+/// 该片段会被拼进 `SELECT 1 FROM <table> WHERE <fragment>`，必须保证它只是一条
+/// 普通 SELECT 的条件表达式：不接受多语句、UNION 等集合运算与 CTE，
+/// 否则可借 `;` / `UNION SELECT` 改变语句结构。
+pub fn validate_where_clause(table: &str, where_clause: &str) -> Result<()> {
+    if where_clause.trim().is_empty() {
+        return Err(anyhow!("定位条件不能为空"));
+    }
+    let probe = format!("SELECT 1 FROM {} WHERE {}", table, where_clause);
+    let statements = Parser::parse_sql(&MySqlDialect {}, &probe)
+        .map_err(|e| anyhow!("定位条件无法解析：{}", e))?;
+    if statements.len() != 1 {
+        return Err(anyhow!("定位条件只能是一条表达式"));
+    }
+    match &statements[0] {
+        Statement::Query(query) => {
+            if query.with.is_some() {
+                return Err(anyhow!("定位条件不允许使用 CTE"));
+            }
+            match query.body.as_ref() {
+                SetExpr::Select(_) => Ok(()),
+                _ => Err(anyhow!("定位条件不允许包含 UNION 等集合运算")),
+            }
+        }
+        _ => Err(anyhow!("定位条件无法解析")),
     }
 }
 
@@ -366,6 +422,30 @@ mod tests {
         ] {
             assert!(enforce(SafetyMode::Safe, sql).is_ok(), "should allow: {sql}");
         }
+    }
+
+    #[test]
+    fn safe_blocks_destructive_statements() {
+        for sql in [
+            "TRUNCATE TABLE t",
+            "DROP TABLE t",
+            "DROP DATABASE demo",
+            "LOAD DATA INFILE '/tmp/a.csv' INTO TABLE t",
+            "CALL p()",
+            "SELECT * FROM t INTO OUTFILE '/tmp/t.csv'",
+            "SELECT 1; DROP TABLE t",
+        ] {
+            let err = enforce(SafetyMode::Safe, sql).unwrap_err().to_string();
+            assert_eq!(err, SAFE_MODE_MESSAGE, "should block: {sql}");
+        }
+    }
+
+    #[test]
+    fn read_only_blocks_outfile_write() {
+        let err = enforce(SafetyMode::ReadOnly, "SELECT * FROM t INTO OUTFILE '/tmp/t.csv'")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(err, READ_ONLY_MESSAGE);
     }
 
     #[test]
