@@ -109,38 +109,47 @@
       :style="{ top: tableContextMenu.y + 'px', left: tableContextMenu.x + 'px' }"
       @click.stop
     >
-      <div class="menu-item" @click="handleTableMenu('view-data')">
-        <Eye class="menu-icon" :size="14" /> {{ t('app.viewData') }}
-      </div>
-      <div class="menu-item" @click="handleTableMenu('design-table')">
-        <Settings class="menu-icon" :size="14" /> {{ t('app.designTable') }}
-      </div>
-      <div class="menu-item" @click="handleTableMenu('refresh-tables')">
-        <RefreshCw class="menu-icon" :size="14" /> {{ t('common.refresh') }}
-      </div>
-      <div class="menu-divider"></div>
-      <div class="menu-item" @click="handleTableMenu('export')">
-        <Download class="menu-icon" :size="14" /> {{ t('app.exportData') }}
-      </div>
-      <div class="menu-item" @click="handleTableMenu('import')">
-        <Upload class="menu-icon" :size="14" /> {{ t('app.importData') }}
-      </div>
-      <div class="menu-divider"></div>
-      <div class="menu-item" @click="handleTableMenu('copy-name')">
-        <Copy class="menu-icon" :size="14" /> {{ t('app.copyName') }}
-      </div>
-      <div class="menu-item" @click="handleTableMenu('copy-table')">
-        <Copy class="menu-icon" :size="14" /> {{ t('app.copyTable') }}
-      </div>
-      <div class="menu-item" @click="handleTableMenu('clear-table')">
-        <Eraser class="menu-icon" :size="14" /> {{ t('app.clearTable') }}
-      </div>
-      <div class="menu-item" @click="handleTableMenu('truncate-table')">
-        <Trash2 class="menu-icon" :size="14" /> {{ t('app.truncateTable') }}
-      </div>
-      <div class="menu-item menu-item-danger" @click="handleTableMenu('delete-table')">
-        <Trash2 class="menu-icon" :size="14" /> {{ t('app.deleteTable') }}
-      </div>
+      <!-- 多选时仅提供批量删除，避免单表操作含义不明 -->
+      <template v-if="tableContextMenu.tableNames.length > 1">
+        <div class="menu-item menu-item-danger" @click="handleTableMenu('delete-table')">
+          <Trash2 class="menu-icon" :size="14" />
+          {{ t('app.deleteSelectedTables', { count: tableContextMenu.tableNames.length }) }}
+        </div>
+      </template>
+      <template v-else>
+        <div class="menu-item" @click="handleTableMenu('view-data')">
+          <Eye class="menu-icon" :size="14" /> {{ t('app.viewData') }}
+        </div>
+        <div class="menu-item" @click="handleTableMenu('design-table')">
+          <Settings class="menu-icon" :size="14" /> {{ t('app.designTable') }}
+        </div>
+        <div class="menu-item" @click="handleTableMenu('refresh-tables')">
+          <RefreshCw class="menu-icon" :size="14" /> {{ t('common.refresh') }}
+        </div>
+        <div class="menu-divider"></div>
+        <div class="menu-item" @click="handleTableMenu('export')">
+          <Download class="menu-icon" :size="14" /> {{ t('app.exportData') }}
+        </div>
+        <div class="menu-item" @click="handleTableMenu('import')">
+          <Upload class="menu-icon" :size="14" /> {{ t('app.importData') }}
+        </div>
+        <div class="menu-divider"></div>
+        <div class="menu-item" @click="handleTableMenu('copy-name')">
+          <Copy class="menu-icon" :size="14" /> {{ t('app.copyName') }}
+        </div>
+        <div class="menu-item" @click="handleTableMenu('copy-table')">
+          <Copy class="menu-icon" :size="14" /> {{ t('app.copyTable') }}
+        </div>
+        <div class="menu-item" @click="handleTableMenu('clear-table')">
+          <Eraser class="menu-icon" :size="14" /> {{ t('app.clearTable') }}
+        </div>
+        <div class="menu-item" @click="handleTableMenu('truncate-table')">
+          <Trash2 class="menu-icon" :size="14" /> {{ t('app.truncateTable') }}
+        </div>
+        <div class="menu-item menu-item-danger" @click="handleTableMenu('delete-table')">
+          <Trash2 class="menu-icon" :size="14" /> {{ t('app.deleteTable') }}
+        </div>
+      </template>
     </div>
 
     <!-- 数据库右键菜单 -->
@@ -262,6 +271,23 @@
       </div>
     </div>
 
+    <!-- 导入 SQL 进度弹窗：导入结束前即可看到逐条语句的执行结果 -->
+    <div v-if="importTask" class="modal-overlay">
+      <div class="modal-content modal-import">
+        <ImportProgressDialog
+          :file-name="importTask.fileName"
+          :database="importTask.database"
+          :bytes="importTask.bytes"
+          :total="importTask.total"
+          :lines="importTask.lines"
+          :done="importTask.done"
+          :success="importTask.success"
+          :error="importTask.error"
+          @close="importTask = null"
+        />
+      </div>
+    </div>
+
     <!-- 跨库全局搜索弹窗 -->
     <div v-if="showGlobalSearch" class="modal-overlay">
       <div class="modal-content modal-large">
@@ -317,6 +343,7 @@ import { ref, computed, reactive, onMounted, onUnmounted, watch } from 'vue'
 import { quoteIdentifier } from '@/utils/sql'
 import { t, toggleLocale } from '@/i18n'
 import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useConnectionStore, type ConnectionStatus, type SshConfig } from '@/stores/connection'
 import { useSavedConnectionsStore, type SavedConnection } from '@/stores/savedConnections'
 import { useDataBrowserStore, type DatabaseObject } from '@/stores/dataBrowser'
@@ -337,6 +364,7 @@ import ToastNotification from '@/components/ui/Toast.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import CommandPalette from '@/components/CommandPalette.vue'
 import BackupDialog from '@/components/BackupDialog.vue'
+import ImportProgressDialog from '@/components/ImportProgressDialog.vue'
 import GlobalSearchDialog from '@/components/GlobalSearchDialog.vue'
 import { useCommandRegistryStore } from '@/stores/commandRegistry'
 import { useToast } from '@/composables/useToast'
@@ -411,7 +439,9 @@ const tableContextMenu = ref({
   y: 0,
   connectionId: '',
   database: '',
-  tableName: ''
+  tableName: '',
+  // 中间面板多选时包含全部选中表；左侧连接树右键只有一项
+  tableNames: [] as string[]
 })
 
 // 数据库右键菜单
@@ -479,6 +509,30 @@ const showMonitor = ref(false)
 
 // 备份还原
 const showBackup = ref(false)
+
+// 导入 SQL 实时流水
+interface ImportLogLine {
+  no?: number | null
+  level: 'success' | 'error' | 'warn'
+  text: string
+  elapsedMs?: number | null
+}
+interface ImportTaskState {
+  id: string
+  fileName: string
+  database: string
+  connectionId: string
+  bytes: number
+  total: number
+  lines: ImportLogLine[]
+  done: boolean
+  success: boolean
+  error: string
+}
+const importTask = ref<ImportTaskState | null>(null)
+let importUnlisten: UnlistenFn | null = null
+// 流水最多保留的行数，避免超大脚本把内存吃满
+const IMPORT_LOG_LIMIT = 2000
 
 // 跨库全局搜索
 const showGlobalSearch = ref(false)
@@ -1077,7 +1131,13 @@ function onOpenTableFromObjects(tableName: string) {
 }
 
 // 显示表右键菜单
-function showTableContextMenu(event: MouseEvent, connectionId: string, database: string, tableName: string) {
+function showTableContextMenu(
+  event: MouseEvent,
+  connectionId: string,
+  database: string,
+  tableName: string,
+  tableNames?: string[]
+) {
   event.preventDefault()
   event.stopPropagation()
 
@@ -1087,7 +1147,9 @@ function showTableContextMenu(event: MouseEvent, connectionId: string, database:
     y: event.clientY,
     connectionId,
     database,
-    tableName
+    tableName,
+    // 未传多选列表（左侧连接树）时只作用于当前表
+    tableNames: tableNames?.length ? tableNames : [tableName]
   }
 }
 
@@ -1187,6 +1249,76 @@ async function handleSavedConnectionMenu(action: string) {
       }
       break
     }
+  }
+}
+
+/**
+ * 从文件导入 SQL：对话框先弹出，再流式接收后端 import-progress 事件，
+ * 让用户在导入结束前就能看到每条语句的执行结果
+ */
+async function startImportSql(connectionId: string, database: string, filePath: string) {
+  const taskId = `import-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  importTask.value = {
+    id: taskId,
+    fileName: filePath.split(/[\\/]/).pop() || filePath,
+    database,
+    connectionId,
+    bytes: 0,
+    total: 0,
+    lines: [],
+    done: false,
+    success: false,
+    error: '',
+  }
+
+  importUnlisten?.()
+  importUnlisten = await listen<{
+    taskId: string
+    bytes: number
+    total: number
+    lines: ImportLogLine[]
+    done: boolean
+    success: boolean
+  }>('import-progress', (event) => {
+    const payload = event.payload
+    const task = importTask.value
+    if (!task || payload.taskId !== task.id) return
+    task.bytes = payload.bytes
+    task.total = payload.total
+    if (payload.lines.length) {
+      task.lines.push(...payload.lines)
+      if (task.lines.length > IMPORT_LOG_LIMIT) {
+        task.lines.splice(0, task.lines.length - IMPORT_LOG_LIMIT)
+      }
+    }
+    if (payload.done) {
+      task.done = true
+      task.success = payload.success
+    }
+  })
+
+  try {
+    await browserStore.importSqlFile(connectionId, database, filePath, taskId)
+    if (importTask.value) {
+      importTask.value.done = true
+      importTask.value.success = true
+    }
+    // 导入脚本可能重建表结构，关闭旧 Tab 并强制刷新表列表
+    mainContentRef.value?.closeDatabaseTabs(connectionId, database)
+    delete connectionDatabaseTables[connectionId]?.[database]
+    await loadConnectionDatabases(connectionId, true)
+    await loadDatabaseTables(connectionId, database, true)
+  } catch (e: unknown) {
+    const errorMessage = String(e)
+    // 用户取消不是错误；真正的失败保留在弹窗里，便于对照流水
+    if (importTask.value) {
+      importTask.value.done = true
+      importTask.value.success = false
+      importTask.value.error = errorMessage.includes('用户取消') ? '' : errorMessage
+    }
+  } finally {
+    importUnlisten?.()
+    importUnlisten = null
   }
 }
 
@@ -1299,13 +1431,8 @@ async function handleDatabaseMenu(action: string) {
       if (!confirmed) break
       try {
         const filePath = await invoke<string>('pick_file_path', { format: 'sql' })
-        await browserStore.importSqlFile(connectionId, database, filePath)
-        // 导入脚本可能重建表结构，关闭旧 Tab 并强制刷新表列表
-        mainContentRef.value?.closeDatabaseTabs(connectionId, database)
-        delete connectionDatabaseTables[connectionId]?.[database]
-        await loadConnectionDatabases(connectionId, true)
-        await loadDatabaseTables(connectionId, database, true)
-        showToast(t('app.databaseImported'))
+        // 选好文件后立刻弹出进度框，导入过程中的成功/失败逐条实时展示
+        await startImportSql(connectionId, database, filePath)
       } catch (e: unknown) {
         const errorMessage = String(e)
         if (!errorMessage.includes('用户取消')) {
@@ -1433,18 +1560,26 @@ async function handleTableMenu(action: string) {
       break
     }
     case 'delete-table': {
-      // 删除表
+      // 删除表（中间面板多选时批量删除）
+      const names = tableContextMenu.value.tableNames.length
+        ? tableContextMenu.value.tableNames
+        : [tableName]
       const confirmed = await confirmDanger({
-        message: t('app.deleteTableConfirm', { name: tableName }),
+        message:
+          names.length > 1
+            ? t('app.deleteTablesConfirm', { count: names.length, names: names.join(', ') })
+            : t('app.deleteTableConfirm', { name: tableName }),
         requireAcknowledge: true,
       })
       if (!confirmed) break
       try {
-        await browserStore.dropTable(connectionId, database, tableName)
-        // 关闭该表已打开的 Tab，避免残留失效数据
-        mainContentRef.value?.dataTableRef?.closeTableById(`${connectionId}.${database}.${tableName}`)
-        // 如果当前正在查看该表，清除选择
-        if (selectedTable.value === `${connectionId}.${database}.${tableName}`) {
+        await browserStore.dropTables(connectionId, database, names)
+        // 关闭这些表已打开的 Tab，避免残留失效数据
+        for (const name of names) {
+          mainContentRef.value?.dataTableRef?.closeTableById(`${connectionId}.${database}.${name}`)
+        }
+        // 如果当前正在查看其中一张表，清除选择
+        if (names.some(name => selectedTable.value === `${connectionId}.${database}.${name}`)) {
           selectedTable.value = ''
         }
         // 刷新表列表并更新缓存
@@ -1453,7 +1588,11 @@ async function handleTableMenu(action: string) {
           connectionDatabaseTables[connectionId] = {}
         }
         connectionDatabaseTables[connectionId][database] = result
-        showToast(t('app.deleteTableSuccess', { name: tableName }))
+        showToast(
+          names.length > 1
+            ? t('app.deleteTablesSuccess', { count: names.length })
+            : t('app.deleteTableSuccess', { name: tableName })
+        )
       } catch (e: unknown) {
         showError(t('app.deleteTableFailed', { error: String(e) }))
       }
@@ -1608,6 +1747,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   store.stopStatusPolling()
+  importUnlisten?.()
   document.removeEventListener('mousemove', onResize)
   document.removeEventListener('mouseup', stopResize)
   window.removeEventListener('keydown', onGlobalKeydown)
@@ -2200,6 +2340,12 @@ body {
   max-width: 560px;
   width: 92%;
   min-height: 480px;
+}
+
+/* 导入进度：需要容纳逐条执行流水 */
+.modal-content.modal-import {
+  max-width: 680px;
+  width: 92%;
 }
 
 .modal-content.modal-license {

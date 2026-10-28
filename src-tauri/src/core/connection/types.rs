@@ -230,6 +230,15 @@ pub struct DatabaseObject {
     pub object_type: ObjectType,
     pub schema: Option<String>,
     pub children: Option<Vec<DatabaseObject>>,
+    /// 自增值（仅 MySQL 表，视图或未定义自增列时为 None）
+    #[serde(default)]
+    pub auto_increment: Option<i64>,
+    /// 最后修改时间（仅 MySQL 表，字符串由数据库格式化）
+    #[serde(default)]
+    pub updated_at: Option<String>,
+    /// 表占用空间字节数（数据 + 索引，仅 MySQL 表）
+    #[serde(default)]
+    pub size_bytes: Option<i64>,
 }
 
 /// 过滤条件

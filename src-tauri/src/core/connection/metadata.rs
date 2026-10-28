@@ -50,6 +50,9 @@ fn pg_object(database: &str, schema: &str, name: &str, object_type: ObjectType) 
         object_type,
         schema: Some(schema.to_string()),
         children: None,
+        auto_increment: None,
+        updated_at: None,
+        size_bytes: None,
     }
 }
 
@@ -92,23 +95,31 @@ impl ConnectionManager {
         let mut objects = vec![];
 
         if let Some(db) = database {
-            // 获取表 - 按字母顺序排序
-            let tables: Vec<(String,)> = with_metadata_timeout(sqlx::query_as(
-                "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES 
-                 WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'
-                 ORDER BY TABLE_NAME ASC",
-            )
-            .bind(db)
-            .fetch_all(pool))
-            .await?;
+            // 获取表 - 按字母顺序排序，顺带取自增值/修改时间/占用空间供中间面板展示
+            let tables: Vec<(String, Option<i64>, Option<String>, Option<i64>)> =
+                with_metadata_timeout(sqlx::query_as(
+                    "SELECT TABLE_NAME,
+                            CAST(AUTO_INCREMENT AS SIGNED),
+                            CAST(UPDATE_TIME AS CHAR),
+                            CAST(COALESCE(DATA_LENGTH, 0) + COALESCE(INDEX_LENGTH, 0) AS SIGNED)
+                     FROM INFORMATION_SCHEMA.TABLES
+                     WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'
+                     ORDER BY TABLE_NAME ASC",
+                )
+                .bind(db)
+                .fetch_all(pool))
+                .await?;
 
-            for (table_name,) in tables {
+            for (table_name, auto_increment, updated_at, size_bytes) in tables {
                 objects.push(DatabaseObject {
                     id: format!("{}.{}", db, table_name),
                     name: table_name,
                     object_type: ObjectType::Table,
                     schema: Some(db.to_string()),
                     children: None,
+                    auto_increment,
+                    updated_at,
+                    size_bytes,
                 });
             }
 
@@ -129,6 +140,9 @@ impl ConnectionManager {
                     object_type: ObjectType::View,
                     schema: Some(db.to_string()),
                     children: None,
+                    auto_increment: None,
+                    updated_at: None,
+                    size_bytes: None,
                 });
             }
         } else {
@@ -148,6 +162,9 @@ impl ConnectionManager {
                     object_type: ObjectType::Database,
                     schema: None,
                     children: None,
+                    auto_increment: None,
+                    updated_at: None,
+                    size_bytes: None,
                 });
             }
         }
@@ -250,6 +267,9 @@ impl ConnectionManager {
                         object_type: ObjectType::Database,
                         schema: None,
                         children: None,
+                        auto_increment: None,
+                        updated_at: None,
+                        size_bytes: None,
                     });
                 }
             }

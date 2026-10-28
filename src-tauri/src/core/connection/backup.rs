@@ -19,7 +19,10 @@ use super::validation::validate_identifier;
 use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 /// 外部客户端工具的最长执行时间：避免子进程卡死（网络僵死、服务端无响应）时界面永久转圈
@@ -175,6 +178,7 @@ impl ConnectionManager {
             &config.ssl_config,
             &path,
             "还原",
+            None,
         )
         .await?;
         // 还原脚本可能重建表结构，清空缓存让刷新能拿到最新列表
@@ -186,11 +190,13 @@ impl ConnectionManager {
     ///
     /// 由 `mysql` 客户端逐条执行文件中的语句，天然支持 `DELIMITER`、触发器与存储过程，
     /// 而应用内 `import_database_sql` 的内存解析做不到这两点。
+    /// 传入 `reporter` 时读取客户端 `-v` 回显，实时推送逐条语句的执行流水。
     pub async fn import_sql_file(
         &self,
         connection_id: &str,
         database: &str,
         file_path: &str,
+        reporter: Option<ImportReporter>,
     ) -> Result<()> {
         validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败：{}", e))?;
 
@@ -229,6 +235,7 @@ impl ConnectionManager {
             &config.ssl_config,
             &path,
             "导入",
+            reporter,
         )
         .await?;
         // 导入脚本会创建表，清空缓存让刷新能拿到最新列表
@@ -420,10 +427,97 @@ fn mysql_ssl_args(flavor: MysqlClientFlavor, ssl: &SslConfig) -> Vec<String> {
     args
 }
 
+/// 导入流水中的一行
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportLogLine {
+    /// 语句序号（从 1 开始）；服务端输出等非语句信息为 None
+    pub no: Option<u64>,
+    /// success / error / warn
+    pub level: &'static str,
+    pub text: String,
+    /// 语句执行耗时（毫秒）
+    pub elapsed_ms: Option<u64>,
+}
+
+/// 导入进度事件负载：按批次合并，避免大脚本逐条语句刷爆 IPC
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportProgress {
+    /// 已送入 mysql 的字节数
+    pub bytes: u64,
+    /// 脚本文件总字节数
+    pub total: u64,
+    pub lines: Vec<ImportLogLine>,
+    /// 是否已结束
+    pub done: bool,
+    /// 结束时的结果（执行中恒为 false）
+    pub success: bool,
+}
+
+/// 进度回调，由命令层包装成 Tauri 事件
+pub type ImportReporter = Arc<dyn Fn(ImportProgress) + Send + Sync>;
+
+/// 子进程输出到转发任务的消息
+enum ImportMsg {
+    Line(ImportLogLine),
+    Done(bool),
+}
+
+/// `mysql -v` 在每条语句前后各输出一行 `--------------`
+fn is_echo_separator(line: &str) -> bool {
+    line.len() >= 10 && line.chars().all(|c| c == '-')
+}
+
+/// 折叠空白并截断到 `max` 个字符，用于日志展示
+fn collapse_text(raw: &str, max: usize) -> String {
+    let mut text = String::new();
+    let mut last_space = false;
+    for ch in raw.chars() {
+        if ch.is_whitespace() {
+            if !last_space && !text.is_empty() {
+                text.push(' ');
+            }
+            last_space = true;
+        } else {
+            text.push(ch);
+            last_space = false;
+        }
+    }
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= max {
+        return trimmed.to_string();
+    }
+    let mut out: String = trimmed.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+/// 把文件内容写入子进程 stdin，同时记录已发送字节数供进度条使用
+async fn copy_into_stdin(
+    file: &mut tokio::fs::File,
+    stdin: &mut tokio::process::ChildStdin,
+    counter: &AtomicU64,
+) -> std::io::Result<()> {
+    let mut buffer = vec![0u8; 64 * 1024];
+    let mut written = 0u64;
+    loop {
+        let read = file.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        stdin.write_all(&buffer[..read]).await?;
+        written += read as u64;
+        counter.store(written, Ordering::Relaxed);
+    }
+    stdin.flush().await
+}
+
 /// 把 SQL 脚本文件流式送入 `mysql` 客户端执行（还原 / 导入共用）。
 ///
 /// 文件内容直接经 stdin 管道传给子进程，全程不做字符串拼接、不经过 IPC，
 /// 因此文件大小不受限制；`mysql` 客户端本身支持 `DELIMITER` 与多语句脚本。
+/// 传入 `reporter` 时额外开启 `-v`，解析客户端回显并实时推送逐条语句流水。
 async fn run_mysql_script_file(
     host: &str,
     port: u16,
@@ -433,6 +527,7 @@ async fn run_mysql_script_file(
     ssl: &SslConfig,
     path: &Path,
     action: &str,
+    reporter: Option<ImportReporter>,
 ) -> Result<()> {
     let version = check_tool("mysql", "--version").await?;
     let ssl_args = mysql_ssl_args(detect_flavor(&version), ssl);
@@ -440,8 +535,16 @@ async fn run_mysql_script_file(
     let defaults_file =
         write_mysql_defaults(username, password).context("创建 mysql 凭据临时文件失败")?;
 
+    let streaming = reporter.is_some();
+    let total = if streaming {
+        std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
+    } else {
+        0
+    };
+
     // 启动 mysql 进程，stdin 接脚本文件
-    let mut child = match Command::new("mysql")
+    let mut command = Command::new("mysql");
+    command
         .arg(format!("--defaults-extra-file={}", defaults_file.display()))
         .args(&ssl_args)
         .arg("--host")
@@ -453,10 +556,13 @@ async fn run_mysql_script_file(
         .arg(format!("--database={}", database))
         .stdin(Stdio::piped())
         .stderr(Stdio::piped())
-        // 超时/取消导致 Child 被丢弃时一并终止子进程，避免残留的 mysql 继续写库
-        .kill_on_drop(true)
-        .spawn()
-    {
+        .kill_on_drop(true);
+    if streaming {
+        // 还原不需要流水，避免额外输出拖慢大文件
+        command.arg("-v").stdout(Stdio::piped());
+    }
+
+    let mut child = match command.spawn() {
         Ok(child) => child,
         Err(e) => {
             let _ = tokio::fs::remove_file(&defaults_file).await;
@@ -464,7 +570,123 @@ async fn run_mysql_script_file(
         }
     };
 
-    // 并发读取 stderr，避免大脚本输出大量 warning 时管道写满、子进程阻塞
+    // 进度事件按 ~150ms 一批合并后推给前端
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ImportMsg>();
+    let written_bytes = Arc::new(AtomicU64::new(0));
+    let forwarder = reporter.map(|report| {
+        let written_bytes = written_bytes.clone();
+        tokio::spawn(async move {
+            let mut pending: Vec<ImportLogLine> = Vec::new();
+            let mut last_bytes = 0u64;
+            let mut ticker = tokio::time::interval(Duration::from_millis(150));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    message = rx.recv() => match message {
+                        Some(ImportMsg::Line(line)) => {
+                            pending.push(line);
+                            if pending.len() >= 50 {
+                                let bytes = written_bytes.load(Ordering::Relaxed);
+                                last_bytes = bytes;
+                                report(ImportProgress {
+                                    bytes,
+                                    total,
+                                    lines: std::mem::take(&mut pending),
+                                    done: false,
+                                    success: false,
+                                });
+                            }
+                        }
+                        Some(ImportMsg::Done(success)) => {
+                            let bytes = written_bytes.load(Ordering::Relaxed);
+                            report(ImportProgress {
+                                bytes,
+                                total,
+                                lines: std::mem::take(&mut pending),
+                                done: true,
+                                success,
+                            });
+                            return;
+                        }
+                        // 发送端全部释放却没收到 Done：按失败收尾，避免前端一直转圈
+                        None => {
+                            report(ImportProgress {
+                                bytes: written_bytes.load(Ordering::Relaxed),
+                                total,
+                                lines: std::mem::take(&mut pending),
+                                done: true,
+                                success: false,
+                            });
+                            return;
+                        }
+                    },
+                    _ = ticker.tick() => {
+                        let bytes = written_bytes.load(Ordering::Relaxed);
+                        if pending.is_empty() && bytes == last_bytes {
+                            continue;
+                        }
+                        last_bytes = bytes;
+                        report(ImportProgress {
+                            bytes,
+                            total,
+                            lines: std::mem::take(&mut pending),
+                            done: false,
+                            success: false,
+                        });
+                    }
+                }
+            }
+        })
+    });
+
+    // 解析 `-v` 回显：分隔线之间是一条语句。mysql 逐条同步执行，所以
+    // 「下一条语句回显结束」即代表上一条已成功执行完。
+    let stdout_task = if streaming {
+        child.stdout.take().map(|stdout| {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stdout).lines();
+                let mut in_echo = false;
+                let mut buffer = String::new();
+                let mut previous: Option<(u64, String, Instant)> = None;
+                let mut seq = 0u64;
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if is_echo_separator(line.trim()) {
+                        if !in_echo {
+                            in_echo = true;
+                            buffer.clear();
+                            continue;
+                        }
+                        in_echo = false;
+                        let text = collapse_text(&buffer, 160);
+                        if text.is_empty() {
+                            continue;
+                        }
+                        if let Some((no, previous_text, started)) = previous.take() {
+                            let _ = tx.send(ImportMsg::Line(ImportLogLine {
+                                no: Some(no),
+                                level: "success",
+                                text: previous_text,
+                                elapsed_ms: Some(started.elapsed().as_millis() as u64),
+                            }));
+                        }
+                        seq += 1;
+                        previous = Some((seq, text, Instant::now()));
+                    } else if in_echo {
+                        buffer.push_str(&line);
+                        buffer.push('\n');
+                    }
+                }
+                // 最后一条语句的状态要等子进程退出码才能确定，交给调用方处理
+                previous
+            })
+        })
+    } else {
+        None
+    };
+
+    // 并发读取 stderr，避免大脚本输出大量 warning 时管道写满、子进程阻塞；
+    // 同时把服务端错误/警告实时推给前端
     let mut child_stderr = match child.stderr.take() {
         Some(stderr) => stderr,
         None => {
@@ -473,10 +695,34 @@ async fn run_mysql_script_file(
             return Err(anyhow!("无法获取 mysql 子进程 stderr"));
         }
     };
+    let stderr_stream = streaming.then(|| tx.clone());
     let stderr_task = tokio::spawn(async move {
-        let mut buf = Vec::new();
-        let _ = tokio::io::AsyncReadExt::read_to_end(&mut child_stderr, &mut buf).await;
-        buf
+        let mut reader = BufReader::new(&mut child_stderr);
+        let mut raw = Vec::new();
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    raw.extend_from_slice(line.as_bytes());
+                    if let Some(tx) = &stderr_stream {
+                        let text = collapse_text(&line, 400);
+                        // 失败语句在 stderr 里也会带一层分隔线，跳过以免流水出现孤立横线
+                        if !text.is_empty() && !is_echo_separator(&text) {
+                            let level = if text.starts_with("ERROR") { "error" } else { "warn" };
+                            let _ = tx.send(ImportMsg::Line(ImportLogLine {
+                                no: None,
+                                level,
+                                text,
+                                elapsed_ms: None,
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+        raw
     });
 
     // 把脚本文件内容写入子进程 stdin，并等待其退出；整体受超时保护
@@ -488,10 +734,11 @@ async fn run_mysql_script_file(
             return Err(anyhow!("无法获取 mysql 子进程 stdin"));
         }
     };
+    let counter = written_bytes.clone();
 
     let operation = async {
         let write_result = match tokio::fs::File::open(path).await {
-            Ok(mut file) => tokio::io::copy(&mut file, &mut stdin).await,
+            Ok(mut file) => copy_into_stdin(&mut file, &mut stdin, &counter).await,
             Err(e) => Err(e),
         };
         // 关闭 stdin，让 mysql 知道输入结束
@@ -504,8 +751,16 @@ async fn run_mysql_script_file(
         Ok(result) => result,
         Err(_) => {
             stderr_task.abort();
+            if let Some(task) = stdout_task {
+                task.abort();
+            }
             let _ = child.kill().await;
             let _ = tokio::fs::remove_file(&defaults_file).await;
+            let _ = tx.send(ImportMsg::Done(false));
+            drop(tx);
+            if let Some(forwarder) = forwarder {
+                let _ = forwarder.await;
+            }
             return Err(anyhow!(
                 "mysql {}超时（超过 {} 分钟），已终止子进程",
                 action,
@@ -521,6 +776,41 @@ async fn run_mysql_script_file(
     let stderr_bytes = stderr_task.await.unwrap_or_default();
     let stderr_text = String::from_utf8_lossy(&stderr_bytes);
     let stderr_tail = tail_chars(stderr_text.trim(), 800);
+
+    // 最后一条语句随子进程退出结束；失败时它通常就是出错的那条
+    if let Some(task) = stdout_task {
+        if let Ok(Some((no, text, started))) = task.await {
+            let elapsed_ms = started.elapsed().as_millis() as u64;
+            if status.success() {
+                let _ = tx.send(ImportMsg::Line(ImportLogLine {
+                    no: Some(no),
+                    level: "success",
+                    text,
+                    elapsed_ms: Some(elapsed_ms),
+                }));
+            } else {
+                let _ = tx.send(ImportMsg::Line(ImportLogLine {
+                    no: Some(no),
+                    level: "error",
+                    text,
+                    elapsed_ms: Some(elapsed_ms),
+                }));
+                if !stderr_tail.is_empty() {
+                    let _ = tx.send(ImportMsg::Line(ImportLogLine {
+                        no: None,
+                        level: "error",
+                        text: stderr_tail.clone(),
+                        elapsed_ms: None,
+                    }));
+                }
+            }
+        }
+    }
+    let _ = tx.send(ImportMsg::Done(status.success()));
+    drop(tx);
+    if let Some(forwarder) = forwarder {
+        let _ = forwarder.await;
+    }
 
     if let Err(e) = write_result {
         return Err(anyhow!(
@@ -844,5 +1134,27 @@ mod tests {
             ),
             vec!["--skip-ssl".to_string()]
         );
+    }
+
+    #[test]
+    fn echo_separator_matches_mysql_verbose_output() {
+        // `mysql -v` 用 14 个短横线包裹每条语句的回显
+        assert!(is_echo_separator("--------------"));
+        assert!(!is_echo_separator("---------"));
+        assert!(!is_echo_separator("-- comment ----------"));
+        assert!(!is_echo_separator(""));
+    }
+
+    #[test]
+    fn collapse_text_flattens_multiline_statements() {
+        assert_eq!(
+            collapse_text("INSERT INTO t\n  (a, b)\nVALUES\n  (1, 2);", 160),
+            "INSERT INTO t (a, b) VALUES (1, 2);"
+        );
+        // 超长语句截断并补省略号，避免单行日志撑爆事件负载
+        let long = "a".repeat(200);
+        let collapsed = collapse_text(&long, 20);
+        assert_eq!(collapsed.chars().count(), 20);
+        assert!(collapsed.ends_with('…'));
     }
 }

@@ -92,18 +92,32 @@
     <h3>{{ selectedDatabase ? selectedDatabase.split('.').pop() : t('layout.noDatabaseSelected') }}</h3>
   </div>
             <div class="objects-list" v-if="selectedDatabase">
-              <div
-                v-for="table in filteredObjects"
-                :key="table"
-                class="object-item"
-                @click="emit('selectTable', table)"
-                @dblclick="emit('openTable', table)"
-                @contextmenu.prevent="onObjectContextMenu($event, table)"
-              >
-                <Table2 :size="16" />
-                <span>{{ table }}</span>
+              <div class="objects-table">
+                <div class="objects-row objects-head">
+                  <span class="col-name">{{ t('layout.tableNameColumn') }}</span>
+                  <span class="col-auto-inc">{{ t('layout.autoIncrementColumn') }}</span>
+                  <span class="col-updated">{{ t('layout.modifiedAtColumn') }}</span>
+                  <span class="col-size">{{ t('layout.tableSizeColumn') }}</span>
+                </div>
+                <div
+                  v-for="table in tableObjects"
+                  :key="table.id"
+                  class="objects-row object-item"
+                  :class="{ selected: selectedTableNames.includes(table.name) }"
+                  @click="onObjectClick($event, table.name)"
+                  @dblclick="emit('openTable', table.name)"
+                  @contextmenu.prevent="onObjectContextMenu($event, table.name)"
+                >
+                  <span class="col-name">
+                    <Table2 :size="16" />
+                    <span class="name-text" :title="table.name">{{ table.name }}</span>
+                  </span>
+                  <span class="col-auto-inc">{{ table.auto_increment ?? '—' }}</span>
+                  <span class="col-updated">{{ table.updated_at || '—' }}</span>
+                  <span class="col-size">{{ formatBytes(table.size_bytes) }}</span>
+                </div>
               </div>
-              <div v-if="filteredObjects.length === 0" class="objects-empty">
+              <div v-if="tableObjects.length === 0" class="objects-empty">
               {{ t('layout.noTables') }}
             </div>
             </div>
@@ -148,7 +162,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, watch, onMounted } from 'vue'
+import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue'
 import { Database, Table2, FileCode, X, Terminal, Network } from 'lucide-vue-next'
 import DataTable from '@/components/DataTable.vue'
 import SqlEditor from '@/components/SqlEditor.vue'
@@ -211,7 +225,8 @@ const emit = defineEmits<{
   selectTable: [tableName: string]
   openTable: [tableName: string]
   // 对象列表右键菜单：与左侧连接树共用同一套表操作菜单
-  showTableMenu: [event: MouseEvent, connectionId: string, database: string, tableName: string]
+  // tableNames 为当前多选中的表（右键未选中行时仅含该行）
+  showTableMenu: [event: MouseEvent, connectionId: string, database: string, tableName: string, tableNames?: string[]]
 }>()
 
 const dataTableRef = ref<InstanceType<typeof DataTable> | null>(null)
@@ -243,31 +258,97 @@ const erTabs = computed(() => {
   return tabs.value.filter(t => t.type === 'er') as ErTab[]
 })
 
-// 当前数据库的表列表
-const currentTables = computed(() => {
+// 当前数据库的表对象（含自增值、修改时间、占用空间，供对象列表展示）
+const tableObjects = computed<DatabaseObject[]>(() => {
   if (!props.currentConnection || !props.selectedDatabase) return []
   // selectedDatabase 格式: "connectionId.dbName"
   const dbName = props.selectedDatabase.split('.').pop()
   if (!dbName) return []
   const tables = props.connectionDatabaseTables[props.currentConnection.id]?.[dbName]
   if (!tables) return []
-  // 只返回类型为 Table 的对象名称
-  return tables
-    .filter(obj => obj.object_type === 'Table')
-    .map(obj => obj.name)
+  // 只保留类型为 Table 的对象（视图没有这些统计信息）
+  return tables.filter(obj => obj.object_type === 'Table')
 })
 
-// 过滤后的对象列表 - 只显示表
-const filteredObjects = computed(() => {
-  return currentTables.value
+// 字节数转可读大小；无统计信息时显示占位符
+function formatBytes(bytes?: number | null): string {
+  if (bytes == null) return '—'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`
+}
+
+// 对象列表多选：Ctrl/Cmd 点击切换单行，Shift 点击按上次点击位置连选
+const selectedTableNames = ref<string[]>([])
+// Shift 连选的起点（上次普通点击或 Ctrl 点击的行）
+let selectionAnchor = ''
+
+// 表列表刷新后剔除已不存在的表，避免选择残留
+watch(tableObjects, tables => {
+  const names = new Set(tables.map(t => t.name))
+  selectedTableNames.value = selectedTableNames.value.filter(name => names.has(name))
 })
+
+function onObjectClick(event: MouseEvent, tableName: string) {
+  const names = tableObjects.value.map(t => t.name)
+  if (event.shiftKey && selectionAnchor && names.includes(selectionAnchor)) {
+    const from = names.indexOf(selectionAnchor)
+    const to = names.indexOf(tableName)
+    const start = Math.min(from, to)
+    const end = Math.max(from, to)
+    selectedTableNames.value = names.slice(start, end + 1)
+  } else if (event.ctrlKey || event.metaKey) {
+    selectedTableNames.value = selectedTableNames.value.includes(tableName)
+      ? selectedTableNames.value.filter(name => name !== tableName)
+      : [...selectedTableNames.value, tableName]
+    selectionAnchor = tableName
+  } else {
+    selectedTableNames.value = [tableName]
+    selectionAnchor = tableName
+  }
+
+  // 选中（或被追加选中）时刷新右侧信息面板，取消选中则不动
+  if (selectedTableNames.value.includes(tableName)) {
+    emit('selectTable', tableName)
+  }
+}
+
+// Ctrl/Cmd+A 全选当前库的所有表：仅在对象列表视图、焦点不在输入框时生效
+function handleObjectsKeydown(event: KeyboardEvent) {
+  if (activeTab.value?.type !== 'objects') return
+  if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'a') return
+  if (tableObjects.value.length === 0) return
+  const target = event.target as HTMLElement | null
+  if (target?.closest('input, textarea, [contenteditable="true"]')) return
+  // 弹窗打开时让出全选，避免抢走输入框/编辑器里的文本全选
+  if (document.querySelector('.modal-overlay')) return
+  event.preventDefault()
+  selectedTableNames.value = tableObjects.value.map(t => t.name)
+  selectionAnchor = selectedTableNames.value[0] ?? ''
+}
+
+onMounted(() => document.addEventListener('keydown', handleObjectsKeydown))
+onUnmounted(() => document.removeEventListener('keydown', handleObjectsKeydown))
 
 // 对象列表中的表右键菜单，交由外层复用左侧连接树的表菜单
 function onObjectContextMenu(event: MouseEvent, tableName: string) {
   if (!props.currentConnection || !props.selectedDatabase) return
   const dbName = props.selectedDatabase.split('.').pop()
   if (!dbName) return
-  emit('showTableMenu', event, props.currentConnection.id, dbName, tableName)
+  // 右键未选中的行时改为单选，避免菜单里的单表操作误作用到其它选中的表
+  if (!selectedTableNames.value.includes(tableName)) {
+    selectedTableNames.value = [tableName]
+    selectionAnchor = tableName
+  }
+  emit(
+    'showTableMenu',
+    event,
+    props.currentConnection.id,
+    dbName,
+    tableName,
+    [...selectedTableNames.value]
+  )
 }
 
 // 方法
@@ -654,14 +735,37 @@ defineExpose({
 .objects-list {
   flex: 1;
   overflow: auto;
-  padding: var(--space-2);
+  /* 行内自带 padding，容器不留内边距，避免 sticky 表头被裁切 */
+  padding: 0;
+}
+
+/* 表列表按列展示：名称、自增值、修改时间、占用空间 */
+.objects-table {
+  min-width: 520px;
+}
+
+.objects-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) 96px 148px 88px;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+}
+
+.objects-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface-secondary);
+  border-bottom: 1px solid var(--border-default);
+  color: var(--text-secondary);
+  font-weight: var(--font-semibold);
+  font-size: var(--text-xs);
+  white-space: nowrap;
 }
 
 .object-item {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-md);
   cursor: pointer;
   transition: var(--transition-colors);
@@ -671,8 +775,36 @@ defineExpose({
   background: var(--surface-hover);
 }
 
-.object-item svg {
+/* 多选高亮：与表头/悬停背景区分开 */
+.object-item.selected {
+  background: var(--brand-100);
+}
+
+.object-item .col-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.object-item .col-name svg {
   color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.name-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.col-auto-inc,
+.col-updated,
+.col-size {
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .objects-empty {

@@ -1,4 +1,5 @@
 use crate::core::audit::{AuditEntry, AuditLog};
+use crate::core::connection::backup::{ImportLogLine, ImportProgress, ImportReporter};
 use crate::core::connection::{
     ConnectionConfig, ConnectionManager, ConnectionRequest, ConnectionStatus, DataQueryRequest,
     ErDiagramData, ExplainPlan, GlobalSearchRequest, GlobalSearchResult, SshConfig,
@@ -8,7 +9,7 @@ use crate::core::license::{
     FEATURE_MONITOR, FEATURE_QUERY_PLAN, FEATURE_SCHEMA_DIFF,
     FEATURE_SSH_TUNNEL,
 };
-use tauri::{command, State};
+use tauri::{command, Emitter, State};
 use tauri_plugin_dialog::{DialogExt, FilePath};
 use std::sync::Arc;
 use std::time::Instant;
@@ -479,24 +480,50 @@ pub async fn import_database_sql(
     }
 }
 
+/// 导入进度事件负载：附带 taskId，便于前端区分并发任务
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportProgressPayload {
+    task_id: String,
+    bytes: u64,
+    total: u64,
+    lines: Vec<ImportLogLine>,
+    done: bool,
+    success: bool,
+}
+
 /// 从文件导入数据库 SQL
 ///
 /// 只接收文件路径，由后端把文件流式写入 `mysql` 客户端执行，内容不经过 IPC、
 /// 不进入内存，因此没有 10MB 上限，也能正确执行含 `DELIMITER` 的脚本。
+/// 执行过程中逐条推送 `import-progress` 事件，前端据此展示实时流水。
 #[command]
 pub async fn import_sql_file(
+    window: tauri::Window,
     state: State<'_, ConnectionManagerState>,
     audit: State<'_, AuditLog>,
     connection_id: String,
     database: String,
     file_path: String,
+    task_id: String,
 ) -> Result<(), String> {
     let (name, host) = connection_meta(&state, &connection_id).await;
     let started = Instant::now();
+    let reporter: ImportReporter = Arc::new(move |progress: ImportProgress| {
+        let payload = ImportProgressPayload {
+            task_id: task_id.clone(),
+            bytes: progress.bytes,
+            total: progress.total,
+            lines: progress.lines,
+            done: progress.done,
+            success: progress.success,
+        };
+        let _ = window.emit("import-progress", payload);
+    });
     let outcome = {
         let manager = state.manager.read().await;
         manager
-            .import_sql_file(&connection_id, &database, &file_path)
+            .import_sql_file(&connection_id, &database, &file_path, Some(reporter))
             .await
     };
 

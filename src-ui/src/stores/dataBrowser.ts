@@ -19,6 +19,12 @@ export interface DatabaseObject {
   object_type: 'Connection' | 'Database' | 'Table' | 'View' | 'Procedure' | 'Function'
   schema?: string
   children?: DatabaseObject[]
+  /** 自增值（仅 MySQL 表；无自增列时为 null） */
+  auto_increment?: number | null
+  /** 最后修改时间（仅 MySQL 表；空表或从未修改时为 null） */
+  updated_at?: string | null
+  /** 表占用空间字节数（数据 + 索引，仅 MySQL 表） */
+  size_bytes?: number | null
 }
 
 interface ColumnDefinition {
@@ -467,14 +473,16 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
     })
   }
 
-  // 删除表
-  async function dropTable(
+  // 删除表（支持一次删除多张：拼成一条 DROP TABLE 语句）
+  async function dropTables(
     connectionId: string,
     database: string,
-    table: string
+    tables: string[]
   ): Promise<void> {
+    if (tables.length === 0) return
     const driver = driverOf(connectionId)
-    await executeSql(connectionId, database, `DROP TABLE IF EXISTS ${quoteIdentifier(table, driver)}`)
+    const list = tables.map(table => quoteIdentifier(table, driver)).join(', ')
+    await executeSql(connectionId, database, `DROP TABLE IF EXISTS ${list}`)
   }
 
   // 清空表数据 (DELETE - 不清除ID自增值)
@@ -597,15 +605,18 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
   }
 
   // 从文件导入数据库 SQL（后端流式执行，无大小限制）
+  // taskId 用于把后端推送的 import-progress 事件对回本次任务
   async function importSqlFile(
     connectionId: string,
     database: string,
-    filePath: string
+    filePath: string,
+    taskId: string
   ): Promise<void> {
     await tauriInvoke('import_sql_file', {
       connectionId,
       database,
-      filePath
+      filePath,
+      taskId
     })
   }
 
@@ -643,7 +654,7 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
     compareSchemas,
     applyTableChanges,
     executeSql,
-    dropTable,
+    dropTables,
     clearTable,
     truncateTable,
     copyTable,
