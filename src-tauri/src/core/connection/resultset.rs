@@ -1,12 +1,13 @@
 //! 结果集处理模块
 //! 列类型分类、单元格值转换与 SQL 字面量格式化等纯函数。
 
+use super::driver::DriverKind;
 use super::types::*;
-use super::validation::escape_string;
+use super::validation::{escape_string, escape_string_pg};
 use anyhow::{anyhow, Result};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
-use sqlx::{Column, Row};
+use sqlx::{Column, Row, ValueRef};
 
 /// 列值类型分类。在列级别一次性计算，避免对每个单元格重复做字符串匹配和小写化。
 #[derive(Clone, Copy)]
@@ -180,7 +181,7 @@ pub(super) fn convert_value(
         },
         ColumnKind::Timestamp => {
             match row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(index) {
-                Ok(Some(v)) => Ok(CellValue::DateTime(v.format("%Y-%m-%d %H:%M:%S").to_string())),
+                Ok(Some(v)) => Ok(CellValue::DateTime(v.format("%Y-%m-%d %H:%M:%S%.f").to_string())),
                 Ok(None) => Ok(CellValue::Null),
                 Err(e0) => {
                     tracing::debug!("Timestamp 按类型读取失败，尝试按字符串读取: {}", e0);
@@ -194,7 +195,7 @@ pub(super) fn convert_value(
         },
         ColumnKind::DateTime => {
             match row.try_get::<Option<chrono::NaiveDateTime>, _>(index) {
-                Ok(Some(v)) => Ok(CellValue::DateTime(v.format("%Y-%m-%d %H:%M:%S").to_string())),
+                Ok(Some(v)) => Ok(CellValue::DateTime(v.format("%Y-%m-%d %H:%M:%S%.f").to_string())),
                 Ok(None) => Ok(CellValue::Null),
                 Err(e0) => {
                     tracing::debug!("DateTime 按类型读取失败，尝试按字符串读取: {}", e0);
@@ -363,7 +364,7 @@ pub(super) fn convert_pg_value(
         // TIMESTAMP（无时区）
         PgColumnKind::Timestamp => {
             match row.try_get::<Option<chrono::NaiveDateTime>, _>(index) {
-                Ok(Some(v)) => Ok(CellValue::DateTime(v.format("%Y-%m-%d %H:%M:%S").to_string())),
+                Ok(Some(v)) => Ok(CellValue::DateTime(v.format("%Y-%m-%d %H:%M:%S%.f").to_string())),
                 Ok(None) => Ok(CellValue::Null),
                 Err(e0) => {
                     tracing::debug!("Timestamp 按类型读取失败，尝试按字符串读取: {}", e0);
@@ -378,7 +379,7 @@ pub(super) fn convert_pg_value(
         // TIMESTAMPTZ：按 UTC 展示，与 MySQL TIMESTAMP 保持一致
         PgColumnKind::TimestampTz => {
             match row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(index) {
-                Ok(Some(v)) => Ok(CellValue::DateTime(v.format("%Y-%m-%d %H:%M:%S").to_string())),
+                Ok(Some(v)) => Ok(CellValue::DateTime(v.format("%Y-%m-%d %H:%M:%S%.f").to_string())),
                 Ok(None) => Ok(CellValue::Null),
                 Err(e0) => {
                     tracing::debug!("TimestampTz 按类型读取失败，尝试按字符串读取: {}", e0);
@@ -431,31 +432,81 @@ pub(super) fn convert_pg_value(
             Err(e) => Err(fail(&e)),
         },
         // 默认按字符串处理（text/varchar/char/name/enum 等）；
-        // 未识别的类型（interval/inet/数组等）会在这里返回明确的类型不兼容错误
+        // sqlx 没有对应解码器的自定义类型（vector 等）无法按 String 读取，退回原始字节，
+        // 避免一行里的一列就让整个结果集读取失败
         PgColumnKind::Text => match row.try_get::<Option<String>, _>(index) {
             Ok(Some(v)) => Ok(CellValue::String(v)),
             Ok(None) => Ok(CellValue::Null),
-            Err(e) => Err(fail(&e)),
+            Err(e) => match row.try_get_raw(index) {
+                Ok(raw) if raw.is_null() => Ok(CellValue::Null),
+                Ok(raw) => {
+                    let bytes = raw.as_bytes().map_err(|err| fail(&err))?;
+                    Ok(CellValue::String(match std::str::from_utf8(bytes) {
+                        Ok(text) => text.to_string(),
+                        Err(_) => format!(
+                            "\\x{}",
+                            bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+                        ),
+                    }))
+                }
+                Err(_) => Err(fail(&e)),
+            },
         },
     }
 }
 
-/// 引用值
-pub(super) fn quote_value(value: &serde_json::Value) -> Result<String> {
+/// 引用值（按驱动选择字符串转义规则）
+///
+/// MySQL 与 PG 的字符串字面量规则不同：MySQL 用反斜杠转义，PG 标准字符串只翻倍单引号。
+/// 之前 PG 过滤条件复用了 MySQL 的转义，含反斜杠的值会多出一个反斜杠、含 `\'` 的值会直接语法错误。
+pub(super) fn quote_value(value: &serde_json::Value, driver: DriverKind) -> Result<String> {
     match value {
         serde_json::Value::String(s) => {
-            // 使用安全的字符串转义
-            Ok(format!("'{}'", escape_string(s)))
+            let escaped = match driver {
+                DriverKind::MySql => escape_string(s),
+                DriverKind::Postgres => escape_string_pg(s),
+            };
+            Ok(format!("'{}'", escaped))
         }
         serde_json::Value::Number(n) => Ok(n.to_string()),
         serde_json::Value::Bool(b) => Ok(b.to_string()),
         serde_json::Value::Null => Ok("NULL".to_string()),
-        _ => Err(anyhow!("Unsupported value type")),
+        _ => Err(anyhow!("不支持的值类型")),
     }
 }
 
 /// 将数据库行中的值格式化为 SQL 字面量（用于导出）
+///
+/// 解码失败时返回错误，而不是静默写成 `NULL`：导出 SQL 若把真实值写成 NULL，
+/// 重新导入后会永久丢失数据。这里先判断原始值是否真为 NULL，再核对格式化结果。
 pub(super) fn format_sql_value(
+    row: &sqlx::mysql::MySqlRow,
+    column_name: &str,
+    data_type: &str,
+) -> Result<String> {
+    let raw = row.try_get_raw(column_name).map_err(|e| {
+        anyhow!(
+            "读取列 `{}`（{}）失败：{}",
+            column_name,
+            data_type,
+            e
+        )
+    })?;
+    let is_null = raw.is_null();
+
+    let value = format_sql_value_legacy(row, column_name, data_type);
+    if value == "NULL" && !is_null {
+        return Err(anyhow!(
+            "列 `{}`（{}）的值无法解码，已停止导出以避免写入错误的 NULL",
+            column_name,
+            data_type
+        ));
+    }
+    Ok(value)
+}
+
+/// 旧版逐类型解码实现：失败时回退为 "NULL"，由上层 `format_sql_value` 结合原始值判定
+fn format_sql_value_legacy(
     row: &sqlx::mysql::MySqlRow,
     column_name: &str,
     data_type: &str,
@@ -635,7 +686,7 @@ pub(super) fn format_sql_value(
     if lower_type.contains("timestamp") {
         // TIMESTAMP 类型需要用 DateTime<Utc> 读取
         return match row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(column_name) {
-            Ok(Some(v)) => format!("'{}'", v.format("%Y-%m-%d %H:%M:%S")),
+            Ok(Some(v)) => format!("'{}'", v.format("%Y-%m-%d %H:%M:%S%.f")),
             Ok(None) => "NULL".to_string(),
             Err(_) => {
                 // 尝试作为字符串读取
@@ -650,7 +701,7 @@ pub(super) fn format_sql_value(
     if lower_type.contains("datetime") {
         // DATETIME 类型用 NaiveDateTime 读取
         return match row.try_get::<Option<chrono::NaiveDateTime>, _>(column_name) {
-            Ok(Some(v)) => format!("'{}'", v.format("%Y-%m-%d %H:%M:%S")),
+            Ok(Some(v)) => format!("'{}'", v.format("%Y-%m-%d %H:%M:%S%.f")),
             Ok(None) => "NULL".to_string(),
             Err(_) => {
                 // 尝试作为字符串读取
@@ -681,7 +732,7 @@ pub(super) fn format_sql_value(
     }
     if lower_type.contains("time") {
         return match row.try_get::<Option<chrono::NaiveTime>, _>(column_name) {
-            Ok(Some(v)) => format!("'{}'", v.format("%H:%M:%S")),
+            Ok(Some(v)) => format!("'{}'", v.format("%H:%M:%S%.f")),
             Ok(None) => "NULL".to_string(),
             Err(_) => {
                 // 尝试作为字符串读取
