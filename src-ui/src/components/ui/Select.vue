@@ -4,7 +4,15 @@
     <div
       class="select-trigger"
       :class="[{ open: isOpen, disabled }, `size-${size}`]"
+      role="combobox"
+      :tabindex="disabled ? -1 : 0"
+      aria-haspopup="listbox"
+      :aria-expanded="isOpen"
+      :aria-controls="listboxId"
+      :aria-disabled="disabled"
+      :aria-activedescendant="activeDescendant"
       @click="toggleDropdown"
+      @keydown="handleTriggerKeydown"
     >
       <span class="select-value" :class="{ 'is-placeholder': !displayValue }">
         {{ displayValue || placeholderText }}
@@ -21,6 +29,7 @@
           class="select-dropdown"
           :class="`size-${size}`"
           :style="dropdownStyle"
+          @keydown="handleDropdownKeydown"
         >
           <!-- 搜索框（可选） -->
           <div v-if="searchable" class="select-search">
@@ -29,19 +38,32 @@
               v-model="searchText"
               type="text"
               :placeholder="t('common.search')"
+              aria-autocomplete="list"
+              :aria-controls="listboxId"
+              :aria-activedescendant="activeDescendant"
               @click.stop
-              @keydown.esc="closeDropdown"
             />
           </div>
 
           <!-- 选项列表（可滚动） -->
-          <div class="select-options" ref="optionsRef" :style="{ maxHeight: optionsMaxHeight }">
+          <div
+            :id="listboxId"
+            ref="optionsRef"
+            class="select-options"
+            role="listbox"
+            :aria-multiselectable="multiple || undefined"
+            :style="{ maxHeight: optionsMaxHeight }"
+          >
             <div
-              v-for="option in filteredOptions"
+              v-for="(option, index) in filteredOptions"
+              :id="optionId(index)"
               :key="option.value"
               class="select-option"
-              :class="{ selected: isSelected(option) }"
+              :class="{ selected: isSelected(option), active: index === activeIndex }"
+              role="option"
+              :aria-selected="isSelected(option)"
               @click="selectOption(option)"
+              @mousemove="activeIndex = index"
             >
               <span class="option-label">{{ option.label }}</span>
               <Check v-if="isSelected(option)" class="option-check" :size="size === 'sm' ? 12 : 14" />
@@ -57,7 +79,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick, useId } from 'vue'
 import { ChevronDown, Check } from 'lucide-vue-next'
 import { t } from '@/i18n'
 
@@ -97,6 +119,16 @@ const isOpen = ref(false)
 const searchText = ref('')
 const dropdownStyle = ref<Record<string, string>>({})
 const optionsMaxHeight = ref('240px')
+
+/** 组件唯一标识，用于关联 combobox 与选项列表的 aria 属性 */
+const uid = useId()
+const listboxId = `select-listbox-${uid}`
+const optionId = (index: number) => `select-option-${uid}-${index}`
+/** 键盘导航当前高亮项的下标，-1 表示无高亮 */
+const activeIndex = ref(-1)
+const activeDescendant = computed(() =>
+  isOpen.value && activeIndex.value >= 0 ? optionId(activeIndex.value) : undefined,
+)
 
 /** 下拉框与触发框的间距 */
 const DROPDOWN_GAP = 4
@@ -154,16 +186,30 @@ function toggleDropdown() {
     closeDropdown()
     return
   }
+  openDropdown()
+}
+
+/**
+ * 打开下拉框并初始化键盘高亮：
+ * 默认高亮当前选中项（没有选中项时高亮第一项），向上展开时高亮最后一项。
+ */
+function openDropdown(startFromEnd = false) {
   searchText.value = ''
   // 先算好位置再打开，避免下拉框闪现到错误位置
   updateDropdownPosition()
   isOpen.value = true
+  const list = filteredOptions.value
+  if (startFromEnd) {
+    activeIndex.value = list.length - 1
+  } else {
+    const selected = list.findIndex(isSelected)
+    activeIndex.value = selected >= 0 ? selected : list.length > 0 ? 0 : -1
+  }
   nextTick(() => {
     if (props.searchable && searchInputRef.value) {
       searchInputRef.value.focus()
     }
-    // 滚动到选中项
-    scrollToSelected()
+    scrollToActive()
   })
 }
 
@@ -171,6 +217,7 @@ function toggleDropdown() {
 function closeDropdown() {
   isOpen.value = false
   searchText.value = ''
+  activeIndex.value = -1
 }
 
 // 选择选项
@@ -187,14 +234,117 @@ function selectOption(option: Option) {
   closeDropdown()
 }
 
-// 滚动到选中项
-function scrollToSelected() {
-  if (!optionsRef.value) return
-  const selectedEl = optionsRef.value.querySelector('.select-option.selected') as HTMLElement
-  if (selectedEl) {
-    selectedEl.scrollIntoView({ block: 'nearest' })
+// 滚动到键盘高亮项
+function scrollToActive() {
+  if (!optionsRef.value || activeIndex.value < 0) return
+  const activeEl = optionsRef.value.querySelector(
+    `#${optionId(activeIndex.value)}`,
+  ) as HTMLElement | null
+  activeEl?.scrollIntoView({ block: 'nearest' })
+}
+
+// 移动键盘高亮项（循环）
+function moveActive(delta: number) {
+  const total = filteredOptions.value.length
+  if (total === 0) return
+  activeIndex.value =
+    activeIndex.value < 0
+      ? delta > 0
+        ? 0
+        : total - 1
+      : (activeIndex.value + delta + total) % total
+  nextTick(scrollToActive)
+}
+
+// 选中当前高亮项
+function selectActive() {
+  const option = filteredOptions.value[activeIndex.value]
+  if (option) selectOption(option)
+}
+
+// 把焦点交还给触发框（下拉框挂载在 body 上，焦点可能停在搜索框）
+function focusTrigger() {
+  const trigger = selectRef.value?.querySelector('.select-trigger') as HTMLElement | null
+  trigger?.focus()
+}
+
+// 触发框键盘操作
+function handleTriggerKeydown(e: KeyboardEvent) {
+  if (props.disabled) return
+  switch (e.key) {
+    case 'ArrowDown':
+      e.preventDefault()
+      if (isOpen.value) moveActive(1)
+      else openDropdown()
+      break
+    case 'ArrowUp':
+      e.preventDefault()
+      if (isOpen.value) moveActive(-1)
+      else openDropdown(true)
+      break
+    case 'Enter':
+    case ' ':
+      e.preventDefault()
+      if (isOpen.value) selectActive()
+      else openDropdown()
+      break
+    case 'Escape':
+      if (isOpen.value) {
+        e.preventDefault()
+        closeDropdown()
+      }
+      break
+    case 'Tab':
+      if (isOpen.value) closeDropdown()
+      break
   }
 }
+
+// 下拉框内部键盘操作（搜索框聚焦时由容器冒泡接收）
+function handleDropdownKeydown(e: KeyboardEvent) {
+  if (props.disabled) return
+  const total = filteredOptions.value.length
+  switch (e.key) {
+    case 'ArrowDown':
+      e.preventDefault()
+      moveActive(1)
+      break
+    case 'ArrowUp':
+      e.preventDefault()
+      moveActive(-1)
+      break
+    case 'Home':
+      e.preventDefault()
+      activeIndex.value = total > 0 ? 0 : -1
+      nextTick(scrollToActive)
+      break
+    case 'End':
+      e.preventDefault()
+      activeIndex.value = total - 1
+      nextTick(scrollToActive)
+      break
+    case 'Enter':
+      e.preventDefault()
+      selectActive()
+      break
+    case 'Escape':
+      e.preventDefault()
+      closeDropdown()
+      focusTrigger()
+      break
+    case 'Tab':
+      closeDropdown()
+      break
+  }
+}
+
+// 过滤结果变化后重置键盘高亮，默认回到选中项或第一项
+watch(filteredOptions, list => {
+  if (!isOpen.value) return
+  const selected = list.findIndex(isSelected)
+  activeIndex.value = selected >= 0 ? selected : list.length > 0 ? 0 : -1
+  nextTick(scrollToActive)
+})
 
 /**
  * 计算下拉框的固定定位坐标：
@@ -283,6 +433,11 @@ onUnmounted(() => {
 .select-trigger.open {
   border-color: var(--brand-500);
   box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.15);
+}
+
+.select-trigger:focus-visible {
+  outline: 2px solid var(--brand-500);
+  outline-offset: 2px;
 }
 
 .select-trigger.disabled {
@@ -393,10 +548,19 @@ onUnmounted(() => {
   background: var(--surface-hover);
 }
 
+/* 键盘高亮项 */
+.select-option.active {
+  background: var(--surface-hover);
+}
+
 .select-option.selected {
   background: var(--surface-selected);
   color: var(--brand-600);
   font-weight: var(--font-medium);
+}
+
+.select-option.selected.active {
+  background: var(--surface-selected);
 }
 
 .option-label {
