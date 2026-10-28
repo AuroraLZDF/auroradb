@@ -63,7 +63,7 @@ impl ConnectionManager {
         let connections = self.connections.read().await;
         let conn = connections
             .get(connection_id)
-            .ok_or_else(|| anyhow!("Connection {} not found", connection_id))?;
+            .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
         conn.mysql_pool(feature)
     }
 }

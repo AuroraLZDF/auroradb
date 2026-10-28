@@ -155,6 +155,8 @@ pub struct ConnectionStatus {
     pub id: String,
     /// 连接使用的驱动，供前端做方言差异化展示
     pub driver: DriverKind,
+    /// 实际连接的数据库名（PG 配置未填库时为服务端默认库）
+    pub database: Option<String>,
     pub state: String,
     pub message: String,
     pub connected_at: Option<String>,

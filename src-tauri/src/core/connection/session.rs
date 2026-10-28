@@ -6,7 +6,7 @@ use super::manager::{ConnectionManager, ManagedConnection};
 use super::types::*;
 use anyhow::{anyhow, Context, Result};
 use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions, MySqlSslMode};
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
+use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgSslMode};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -80,6 +80,39 @@ fn validate_ssl_files(ssl: &SslConfig) -> Result<()> {
     Ok(())
 }
 
+/// 构造 PostgreSQL 连接参数
+///
+/// `database` 为 None 时沿用服务端默认库（PG 协议中空库名等同未指定）。
+fn build_pg_options(
+    config: &ConnectionConfig,
+    host: &str,
+    port: u16,
+    database: Option<&str>,
+) -> PgConnectOptions {
+    let ssl = &config.ssl_config;
+    let mut opts = PgConnectOptions::new()
+        .host(host)
+        .port(port)
+        .username(&config.username)
+        .password(&config.password)
+        .ssl_mode(to_pg_ssl_mode(ssl.mode));
+
+    // PG 的 CA 参数名为 root_cert
+    if let Some(path) = non_empty_path(&ssl.ca_path) {
+        opts = opts.ssl_root_cert(path);
+    }
+    if let Some(path) = non_empty_path(&ssl.cert_path) {
+        opts = opts.ssl_client_cert(path);
+    }
+    if let Some(path) = non_empty_path(&ssl.key_path) {
+        opts = opts.ssl_client_key(path);
+    }
+    if let Some(db) = database {
+        opts = opts.database(db);
+    }
+    opts
+}
+
 impl ConnectionManager {
     /// 建立连接
     pub async fn connect(&self, request: ConnectionRequest) -> Result<String> {
@@ -89,7 +122,7 @@ impl ConnectionManager {
         {
             let connections = self.connections.read().await;
             if connections.contains_key(&id) {
-                return Err(anyhow!("Connection {} already exists", id));
+                return Err(anyhow!("连接 {} 已存在", id));
             }
         }
 
@@ -161,27 +194,15 @@ impl ConnectionManager {
                 }
             }
             DriverKind::Postgres => {
-                // PG 的 db 名与 MySQL 的库等价，连接时直接指定；切换 schema 走 search_path
-                let mut opts = PgConnectOptions::new()
-                    .host(&host)
-                    .port(port)
-                    .username(&request.config.username)
-                    .password(&request.config.password)
-                    .ssl_mode(to_pg_ssl_mode(ssl.mode));
-
-                // PG 的 CA 参数名为 root_cert
-                if let Some(path) = non_empty_path(&ssl.ca_path) {
-                    opts = opts.ssl_root_cert(path);
-                }
-                if let Some(path) = non_empty_path(&ssl.cert_path) {
-                    opts = opts.ssl_client_cert(path);
-                }
-                if let Some(path) = non_empty_path(&ssl.key_path) {
-                    opts = opts.ssl_client_key(path);
-                }
-                if let Some(db) = &request.config.database {
-                    opts = opts.database(db);
-                }
+                // PG 的 db 名与 MySQL 的库等价，连接时直接指定；切换 schema 走 search_path。
+                // 用户未填库时（空串）交给服务端决定，避免连到名为空串的库
+                let database = request
+                    .config
+                    .database
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|db| !db.is_empty());
+                let opts = build_pg_options(&request.config, &host, port, database);
 
                 PgPoolOptions::new()
                     .max_connections(pool_config.max_connections)
@@ -198,6 +219,24 @@ impl ConnectionManager {
         // 测试连接
         pool.ping().await?;
 
+        // 回查实际落地的数据库名：配置未填库时 PG 由服务端决定（默认与用户名同名），
+        // 前端在连接节点上标注该值，避免把 schema 误当成数据库
+        let current_database = match &pool {
+            AnyPool::Postgres(pg) => {
+                sqlx::query_scalar::<_, String>("SELECT current_database()")
+                    .fetch_one(pg)
+                    .await
+                    .ok()
+            }
+            AnyPool::MySql(mysql) => {
+                sqlx::query_scalar::<_, Option<String>>("SELECT DATABASE()")
+                    .fetch_one(mysql)
+                    .await
+                    .ok()
+                    .flatten()
+            }
+        };
+
         // 启动心跳
         let heartbeat_handle = self.spawn_heartbeat(
             id.clone(),
@@ -209,6 +248,7 @@ impl ConnectionManager {
         let managed = ManagedConnection {
             config: request.config,
             pool: Some(pool),
+            current_database,
             state: ConnectionState::Connected,
             connected_at: Some(Instant::now()),
             last_error: None,
@@ -216,6 +256,8 @@ impl ConnectionManager {
             transaction: Arc::new(Mutex::new(None)),
             query_cancel: Arc::new(AtomicBool::new(false)),
             query_notify: Arc::new(Notify::new()),
+            query_running: Arc::new(AtomicBool::new(false)),
+            session: Arc::new(Mutex::new(None)),
             metadata_cache: Arc::new(Mutex::new(HashMap::new())),
             tunnel,
         };
@@ -226,26 +268,52 @@ impl ConnectionManager {
     }
 
     /// 断开连接
+    ///
+    /// 连接表写锁只用于摘除条目，`pool.close().await` 与隧道关闭都放在锁外执行：
+    /// 关池可能等待在途查询返回，持锁关闭会让其他连接的状态查询/执行全部阻塞。
     pub async fn disconnect(&self, connection_id: &str) -> Result<()> {
-        let mut connections = self.connections.write().await;
+        let removed = {
+            let mut connections = self.connections.write().await;
+            connections.remove(connection_id)
+        };
 
-        if let Some(mut conn) = connections.remove(connection_id) {
+        if let Some(mut conn) = removed {
             // 停止心跳
-            if let Some(handle) = conn.heartbeat_handle {
+            if let Some(handle) = conn.heartbeat_handle.take() {
                 handle.abort();
             }
 
-            // 未提交的事务随 ManagedConnection 丢弃，sqlx Transaction Drop 自动回滚
-
-            // 关闭连接池
-            if let Some(pool) = conn.pool {
-                pool.close().await;
-            }
+            // 先丢弃事务（Drop 自动回滚），再关闭池，避免池关闭等待被事务占用的物理连接
+            conn.transaction = Arc::new(Mutex::new(None));
+            let session = conn.session.clone();
+            let pool = conn.pool.take();
 
             // 关闭 SSH 隧道：Drop 中终止本地监听任务并释放 SSH 会话
             conn.tunnel = None;
 
             conn.state = ConnectionState::Disconnected;
+            drop(conn);
+
+            // 释放持久会话连接（归还池后随池关闭一并销毁）
+            session.lock().await.take();
+
+            if let Some(pool) = pool {
+                pool.close().await;
+            }
+        }
+
+        // 关闭该连接按需建立的按库附加池
+        let extra_pools: Vec<PgPool> = {
+            let mut pools = self.pg_pools.lock().await;
+            let keys: Vec<(String, String)> = pools
+                .keys()
+                .filter(|(id, _)| id == connection_id)
+                .cloned()
+                .collect();
+            keys.into_iter().filter_map(|k| pools.remove(&k)).collect()
+        };
+        for pool in extra_pools {
+            pool.close().await;
         }
 
         Ok(())
@@ -257,19 +325,14 @@ impl ConnectionManager {
 
         let conn = connections
             .get(connection_id)
-            .ok_or_else(|| anyhow!("Connection {} not found", connection_id))?;
+            .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
 
         Ok(ConnectionStatus {
             id: connection_id.to_string(),
             driver: conn.config.driver,
-            state: format!("{:?}", conn.state).to_lowercase(),
-            message: match conn.state {
-                ConnectionState::Connected => "Connected".to_string(),
-                ConnectionState::Connecting => "Connecting...".to_string(),
-                ConnectionState::Reconnecting { attempt } => format!("Reconnecting (attempt {})", attempt),
-                ConnectionState::Failed(ref msg) => msg.clone(),
-                ConnectionState::Disconnected => "Disconnected".to_string(),
-            },
+            database: conn.current_database.clone(),
+            state: state_key(&conn.state).to_string(),
+            message: state_message(&conn.state),
             connected_at: conn.connected_at.map(|t| format!("{:?}", t)),
             last_error: conn.last_error.clone(),
             stability_score: 100,
@@ -279,6 +342,108 @@ impl ConnectionManager {
                 "poor"
             }.to_string(),
         })
+    }
+
+    /// 连接的驱动类型
+    pub(super) async fn driver_of(&self, connection_id: &str) -> Result<DriverKind> {
+        let connections = self.connections.read().await;
+        connections
+            .get(connection_id)
+            .map(|conn| conn.config.driver)
+            .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))
+    }
+
+    /// PG 主池（连接时指定的库；未指定时为服务端默认库）与实际落地的库名
+    pub(super) async fn pg_main_pool(&self, connection_id: &str) -> Result<(PgPool, Option<String>)> {
+        let connections = self.connections.read().await;
+        let conn = connections
+            .get(connection_id)
+            .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
+        let pool = conn
+            .pool
+            .as_ref()
+            .ok_or_else(|| anyhow!("连接不可用: {}", connection_id))?;
+        match pool {
+            AnyPool::Postgres(pg) => Ok((pg.clone(), conn.current_database.clone())),
+            AnyPool::MySql(_) => Err(anyhow!(
+                "连接 {} 不是 PostgreSQL 连接",
+                connection_id
+            )),
+        }
+    }
+
+    /// 取指定数据库的 PG 池
+    ///
+    /// PG 的数据库无法在同一连接内切换：与主库相同时复用主池，否则按需建立附加池并缓存，
+    /// 断开连接时统一关闭。SSH 隧道场景下附加池同样连本地转发端口。
+    pub(super) async fn pg_pool_for(&self, connection_id: &str, database: &str) -> Result<PgPool> {
+        let (main_pool, current_database, config, host, port) = {
+            let connections = self.connections.read().await;
+            let conn = connections
+                .get(connection_id)
+                .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
+            let pool = conn
+                .pool
+                .as_ref()
+                .ok_or_else(|| anyhow!("连接不可用: {}", connection_id))?;
+            let main_pool = match pool {
+                AnyPool::Postgres(pg) => pg.clone(),
+                AnyPool::MySql(_) => {
+                    return Err(anyhow!(
+                        "连接 {} 不是 PostgreSQL 连接",
+                        connection_id
+                    ))
+                }
+            };
+            // 隧道存在时数据库只监听在本地转发端口
+            let (host, port) = match &conn.tunnel {
+                Some(tunnel) => ("127.0.0.1".to_string(), tunnel.local_port()),
+                None => (conn.config.host.clone(), conn.config.port),
+            };
+            (
+                main_pool,
+                conn.current_database.clone(),
+                conn.config.clone(),
+                host,
+                port,
+            )
+        };
+
+        if current_database.as_deref() == Some(database) {
+            return Ok(main_pool);
+        }
+
+        let key = (connection_id.to_string(), database.to_string());
+        if let Some(pool) = self.pg_pools.lock().await.get(&key) {
+            return Ok(pool.clone());
+        }
+
+        // 附加池只为浏览数据/查询元数据服务，连接数按小池配置即可
+        let opts = build_pg_options(&config, &host, port, Some(database));
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .min_connections(0)
+            .acquire_timeout(Duration::from_secs(config.pool_config.connect_timeout))
+            .idle_timeout(Duration::from_secs(config.pool_config.idle_timeout))
+            .max_lifetime(Duration::from_secs(config.pool_config.max_lifetime))
+            .connect_with(opts)
+            .await
+            .map_err(|e| anyhow!("连接数据库 {} 失败：{}", database, e))?;
+
+        // 并发下可能已有同库的池，保留先插入者，关闭后建的
+        let mut pools = self.pg_pools.lock().await;
+        let existing = pools.get(&key).cloned();
+        match existing {
+            Some(existing) => {
+                drop(pools);
+                pool.close().await;
+                Ok(existing)
+            }
+            None => {
+                pools.insert(key, pool.clone());
+                Ok(pool)
+            }
+        }
     }
 
     /// 启动心跳
@@ -294,6 +459,9 @@ impl ConnectionManager {
 
         tokio::spawn(async move {
             let mut ticker = interval(Duration::from_secs(interval_secs));
+            // 单次心跳失败可能只是瞬时网络抖动，连续多次失败才判定连接失效
+            const MAX_CONSECUTIVE_FAILURES: u32 = 3;
+            let mut consecutive_failures: u32 = 0;
 
             loop {
                 ticker.tick().await;
@@ -310,13 +478,32 @@ impl ConnectionManager {
                     }
                 };
                 if let Some(conn) = connections.get_mut(&connection_id) {
-                    if result.is_err() {
-                        tracing::warn!("Heartbeat failed for connection {}", connection_id);
-                        conn.last_error = Some("Heartbeat failed".to_string());
-                        conn.state = ConnectionState::Failed("Heartbeat failed".to_string());
-                    } else {
-                        conn.state = ConnectionState::Connected;
-                        conn.last_error = None;
+                    match result {
+                        Ok(()) => {
+                            consecutive_failures = 0;
+                            conn.state = ConnectionState::Connected;
+                            conn.last_error = None;
+                        }
+                        Err(e) => {
+                            consecutive_failures += 1;
+                            tracing::warn!(
+                                "Heartbeat failed for connection {} ({}/{}): {}",
+                                connection_id,
+                                consecutive_failures,
+                                MAX_CONSECUTIVE_FAILURES,
+                                e
+                            );
+                            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                                let message = format!("心跳连续失败 {} 次：{}", consecutive_failures, e);
+                                conn.last_error = Some(message.clone());
+                                conn.state = ConnectionState::Failed(message);
+                            } else {
+                                conn.last_error = Some(format!("心跳失败：{}", e));
+                                conn.state = ConnectionState::Reconnecting {
+                                    attempt: consecutive_failures,
+                                };
+                            }
+                        }
                     }
                 }
             }
@@ -327,10 +514,10 @@ impl ConnectionManager {
     pub async fn begin_transaction(&self, connection_id: &str) -> Result<()> {
         let connections = self.connections.read().await;
         let conn = connections.get(connection_id)
-            .ok_or_else(|| anyhow!("Connection not found: {}", connection_id))?;
+            .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
 
         let pool = conn.pool.as_ref()
-            .ok_or_else(|| anyhow!("Connection not established"))?;
+            .ok_or_else(|| anyhow!("连接尚未建立"))?;
 
         let mut txn_guard = conn.transaction.lock().await;
         if txn_guard.is_some() {
@@ -346,7 +533,7 @@ impl ConnectionManager {
     pub async fn commit_transaction(&self, connection_id: &str) -> Result<()> {
         let connections = self.connections.read().await;
         let conn = connections.get(connection_id)
-            .ok_or_else(|| anyhow!("Connection not found: {}", connection_id))?;
+            .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
 
         let mut txn_guard = conn.transaction.lock().await;
         let txn = txn_guard.take()
@@ -360,7 +547,7 @@ impl ConnectionManager {
     pub async fn rollback_transaction(&self, connection_id: &str) -> Result<()> {
         let connections = self.connections.read().await;
         let conn = connections.get(connection_id)
-            .ok_or_else(|| anyhow!("Connection not found: {}", connection_id))?;
+            .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
 
         let mut txn_guard = conn.transaction.lock().await;
         let txn = txn_guard.take()
@@ -368,6 +555,31 @@ impl ConnectionManager {
         txn.rollback().await.context("回滚事务失败")?;
 
         Ok(())
+    }
+}
+
+/// `ConnectionStatus.state` 的取值：前端按它做分支判断（InfoPanel / ConnectionTree），
+/// 必须是稳定的小写单词，不能直接格式化枚举的 Debug 输出。
+fn state_key(state: &ConnectionState) -> &'static str {
+    match state {
+        ConnectionState::Disconnected => "disconnected",
+        ConnectionState::Connecting => "connecting",
+        ConnectionState::Connected => "connected",
+        ConnectionState::Reconnecting { .. } => "reconnecting",
+        ConnectionState::Failed(_) => "failed",
+    }
+}
+
+/// `ConnectionStatus.message` 的展示文案；`Failed` 透传底层错误信息。
+fn state_message(state: &ConnectionState) -> String {
+    match state {
+        ConnectionState::Connected => "Connected".to_string(),
+        ConnectionState::Connecting => "Connecting...".to_string(),
+        ConnectionState::Reconnecting { attempt } => {
+            format!("Reconnecting (attempt {})", attempt)
+        }
+        ConnectionState::Failed(msg) => msg.clone(),
+        ConnectionState::Disconnected => "Disconnected".to_string(),
     }
 }
 
@@ -425,5 +637,36 @@ mod tests {
             "Connection refused",
         ));
         assert!(!is_tls_handshake_failure(&refused));
+    }
+
+    #[test]
+    fn test_status_state_keys_are_stable_words() {
+        // 前端（InfoPanel / ConnectionTree）按 state 做分支，取值变更需同步前端映射
+        assert_eq!(state_key(&ConnectionState::Disconnected), "disconnected");
+        assert_eq!(state_key(&ConnectionState::Connecting), "connecting");
+        assert_eq!(state_key(&ConnectionState::Connected), "connected");
+        assert_eq!(
+            state_key(&ConnectionState::Reconnecting { attempt: 3 }),
+            "reconnecting"
+        );
+        assert_eq!(state_key(&ConnectionState::Failed("x".into())), "failed");
+    }
+
+    #[test]
+    fn test_status_message() {
+        assert_eq!(state_message(&ConnectionState::Connected), "Connected");
+        assert_eq!(state_message(&ConnectionState::Connecting), "Connecting...");
+        assert_eq!(
+            state_message(&ConnectionState::Reconnecting { attempt: 2 }),
+            "Reconnecting (attempt 2)"
+        );
+        assert_eq!(state_message(&ConnectionState::Disconnected), "Disconnected");
+
+        // Failed 透传底层错误原文（已由 error.rs 统一中文化），不能二次翻译丢失细节
+        let failed = ConnectionState::Failed("认证失败（MySQL 1045：Access denied）".into());
+        assert_eq!(
+            state_message(&failed),
+            "认证失败（MySQL 1045：Access denied）"
+        );
     }
 }

@@ -5,7 +5,8 @@ use super::driver::{AnyPool, AnyTransaction};
 use super::tunnel::SshTunnel;
 use super::types::*;
 use anyhow::{anyhow, Result};
-use sqlx::MySqlPool;
+use sqlx::pool::PoolConnection;
+use sqlx::{MySql, MySqlPool, PgPool};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -15,12 +16,20 @@ use tokio::sync::{Mutex, Notify, RwLock};
 /// 连接管理器
 pub struct ConnectionManager {
     pub(super) connections: Arc<RwLock<HashMap<String, ManagedConnection>>>,
+    /// PG 按库附加的连接池：key 为 (连接 ID, 数据库名)
+    ///
+    /// PG 的数据库在建立连接时固定、无法在同一连接内切换，浏览非默认库只能另开连接池；
+    /// 按需建立并缓存，断开连接时统一关闭。
+    pub(super) pg_pools: Arc<Mutex<HashMap<(String, String), PgPool>>>,
 }
 
 /// 管理的连接
 pub struct ManagedConnection {
     pub config: ConnectionConfig,
     pub pool: Option<AnyPool>,
+    /// 建立连接后实际落在的数据库名：配置未填库时 PG 由服务端决定（默认与用户名同名），
+    /// 前端据此在连接节点上标注当前库，避免把 schema 误认为数据库
+    pub current_database: Option<String>,
     pub state: ConnectionState,
     pub connected_at: Option<Instant>,
     pub last_error: Option<String>,
@@ -30,6 +39,12 @@ pub struct ManagedConnection {
     /// 查询取消信号：cancel_query 置位并唤醒，执行中的查询据此终止（配合 query_notify 双保险）
     pub query_cancel: Arc<AtomicBool>,
     pub query_notify: Arc<Notify>,
+    /// 是否有查询正在执行：取消时据此判断是否真的需要丢弃事务（无在途查询时不丢用户事务）
+    pub query_running: Arc<AtomicBool>,
+    /// MySQL 持久会话连接：`USE` / `SET` 这类会话级语句必须与后续查询落在同一条物理连接上，
+    /// 且不能随语句结束归还连接池（否则会话语义丢失并污染池中连接的默认库）。
+    /// 懒创建：只有在用户执行过会话语句后才占用一条物理连接。
+    pub session: Arc<Mutex<Option<PoolConnection<MySql>>>>,
     /// 元数据缓存：对象树/表结构带 TTL，避免每次展开都打 INFORMATION_SCHEMA
     pub metadata_cache: Arc<Mutex<HashMap<String, (Instant, MetadataCacheValue)>>>,
     /// SSH 隧道：连接期间必须存活，断开时置 None 触发 Drop 关闭
@@ -42,7 +57,7 @@ impl ManagedConnection {
         let pool = self
             .pool
             .as_ref()
-            .ok_or_else(|| anyhow!("Connection not established"))?;
+            .ok_or_else(|| anyhow!("连接尚未建立"))?;
         Ok(pool.as_mysql(feature)?.clone())
     }
 }
@@ -65,6 +80,7 @@ impl ConnectionManager {
     pub fn new() -> Self {
         Self {
             connections: Arc::new(RwLock::new(HashMap::new())),
+            pg_pools: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
