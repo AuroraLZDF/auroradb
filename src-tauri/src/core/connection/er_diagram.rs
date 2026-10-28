@@ -67,27 +67,68 @@ impl ConnectionManager {
         let (pool, driver) = {
             let mgr = self.connections.read().await;
             let conn = mgr.get(connection_id)
-                .ok_or_else(|| anyhow!("Connection {connection_id} not found"))?;
+                .ok_or_else(|| anyhow!("连接不存在: {connection_id}"))?;
             let pool = conn.pool.as_ref()
-                .ok_or_else(|| anyhow!("Connection not established"))?
+                .ok_or_else(|| anyhow!("连接尚未建立"))?
                 .clone();
             (pool.clone(), pool.driver())
         };
 
-        let tables = match &pool {
+        // PG 的「库」与「schema」是两个层级：前端能拿到的只有库名，
+        // 直接当 schema 用（旧实现）会查不到任何表，ER 图永远是空的。
+        let (tables, foreign_keys, scope) = match &pool {
             AnyPool::MySql(mysql_pool) => {
-                Self::fetch_mysql_er(mysql_pool, database).await?
+                let (tables, foreign_keys) = Self::fetch_mysql_er(mysql_pool, database).await?;
+                (tables, foreign_keys, database.to_string())
             }
             AnyPool::Postgres(pg_pool) => {
-                Self::fetch_pg_er(pg_pool, database).await?
+                let schema = Self::resolve_pg_schema(pg_pool, database).await?;
+                let (tables, foreign_keys) = Self::fetch_pg_er(pg_pool, &schema).await?;
+                (tables, foreign_keys, schema)
             }
         };
         Ok(ErDiagramData {
             driver,
-            database: database.to_string(),
-            tables: tables.0,
-            foreign_keys: tables.1,
+            database: scope,
+            tables,
+            foreign_keys,
         })
+    }
+
+    /// 解析 PG 下要查询的 schema。
+    ///
+    /// 传入值恰好是已存在的 schema 时直接使用；否则（通常是库名）回落到 `current_schema()`，
+    /// 避免把库名当 schema 导致 ER 图空白。
+    async fn resolve_pg_schema(pool: &sqlx::postgres::PgPool, database: &str) -> Result<String> {
+        if !database.is_empty() {
+            let existing: Option<String> = timeout(
+                ER_QUERY_TIMEOUT,
+                sqlx::query_scalar(
+                    "SELECT nspname FROM pg_catalog.pg_namespace
+                     WHERE nspname = $1
+                       AND nspname NOT IN ('pg_catalog', 'information_schema')
+                       AND nspname NOT LIKE 'pg_%'",
+                )
+                .bind(database)
+                .fetch_optional(pool),
+            )
+            .await
+            .context("ER 图查询超时")??;
+            if let Some(name) = existing {
+                return Ok(name);
+            }
+            tracing::debug!("ER 图：`{}` 不是 schema，回落到 current_schema()", database);
+        }
+
+        let current: Option<String> = timeout(
+            ER_QUERY_TIMEOUT,
+            sqlx::query_scalar("SELECT current_schema()::text").fetch_optional(pool),
+        )
+        .await
+        .context("ER 图查询超时")??;
+        Ok(current
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "public".to_string()))
     }
 
     async fn fetch_mysql_er(
