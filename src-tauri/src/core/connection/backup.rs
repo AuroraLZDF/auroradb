@@ -19,7 +19,13 @@ use super::validation::validate_identifier;
 use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::time::Duration;
 use tokio::process::Command;
+
+/// 外部客户端工具的最长执行时间：避免子进程卡死（网络僵死、服务端无响应）时界面永久转圈
+const CLIENT_TIMEOUT: Duration = Duration::from_secs(3600);
+/// 版本探测的短超时
+const VERSION_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 
 impl ConnectionManager {
     /// 外部客户端执行的脚本绕过了连接池，元数据缓存不会自动失效，
@@ -300,20 +306,23 @@ enum MysqlClientFlavor {
 
 /// 检测外部工具是否可执行（mysqldump / mysql / pg_dump / psql），返回版本信息
 async fn check_tool(name: &str, version_arg: &str) -> Result<String> {
-    let result = Command::new(name)
-        .arg(version_arg)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await;
+    let result = tokio::time::timeout(
+        VERSION_CHECK_TIMEOUT,
+        Command::new(name)
+            .arg(version_arg)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output(),
+    )
+    .await;
 
     match result {
-        Ok(output) => Ok(format!(
+        Ok(Ok(output)) => Ok(format!(
             "{} {}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         )),
-        Err(e) => {
+        Ok(Err(e)) => {
             let hint = if name == "mysqldump" {
                 "请安装 MySQL 客户端工具（Debian/Ubuntu: apt install mysql-client-core / \
                  macOS: brew install mysql-client / Windows: 安装 MySQL Community Server 后添加到 PATH）"
@@ -330,6 +339,11 @@ async fn check_tool(name: &str, version_arg: &str) -> Result<String> {
                 hint = hint,
             ))
         }
+        Err(_) => Err(anyhow!(
+            "检测 `{}` 版本超时（超过 {} 秒），请检查该工具是否可正常执行",
+            name,
+            VERSION_CHECK_TIMEOUT.as_secs()
+        )),
     }
 }
 
@@ -439,6 +453,8 @@ async fn run_mysql_script_file(
         .arg(format!("--database={}", database))
         .stdin(Stdio::piped())
         .stderr(Stdio::piped())
+        // 超时/取消导致 Child 被丢弃时一并终止子进程，避免残留的 mysql 继续写库
+        .kill_on_drop(true)
         .spawn()
     {
         Ok(child) => child,
@@ -463,7 +479,7 @@ async fn run_mysql_script_file(
         buf
     });
 
-    // 把脚本文件内容写入子进程 stdin
+    // 把脚本文件内容写入子进程 stdin，并等待其退出；整体受超时保护
     let mut stdin = match child.stdin.take() {
         Some(stdin) => stdin,
         None => {
@@ -472,20 +488,36 @@ async fn run_mysql_script_file(
             return Err(anyhow!("无法获取 mysql 子进程 stdin"));
         }
     };
-    let write_result = match tokio::fs::File::open(path).await {
-        Ok(mut file) => tokio::io::copy(&mut file, &mut stdin).await,
-        Err(e) => Err(e),
+
+    let operation = async {
+        let write_result = match tokio::fs::File::open(path).await {
+            Ok(mut file) => tokio::io::copy(&mut file, &mut stdin).await,
+            Err(e) => Err(e),
+        };
+        // 关闭 stdin，让 mysql 知道输入结束
+        drop(stdin);
+        let status = child.wait().await;
+        (write_result, status)
     };
-    // 关闭 stdin，让 mysql 知道输入结束
-    drop(stdin);
+
+    let (write_result, status) = match tokio::time::timeout(CLIENT_TIMEOUT, operation).await {
+        Ok(result) => result,
+        Err(_) => {
+            stderr_task.abort();
+            let _ = child.kill().await;
+            let _ = tokio::fs::remove_file(&defaults_file).await;
+            return Err(anyhow!(
+                "mysql {}超时（超过 {} 分钟），已终止子进程",
+                action,
+                CLIENT_TIMEOUT.as_secs() / 60
+            ));
+        }
+    };
 
     // 无论成败都删除凭据文件
     let _ = tokio::fs::remove_file(&defaults_file).await;
 
-    let status = child
-        .wait()
-        .await
-        .map_err(|e| anyhow!("等待 mysql {}完成失败：{}", action, e))?;
+    let status = status.map_err(|e| anyhow!("等待 mysql {}完成失败：{}", action, e))?;
     let stderr_bytes = stderr_task.await.unwrap_or_default();
     let stderr_text = String::from_utf8_lossy(&stderr_bytes);
     let stderr_tail = tail_chars(stderr_text.trim(), 800);
@@ -574,6 +606,7 @@ async fn dump_to_temp_file(
         .arg(database)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::piped())
+        .kill_on_drop(true)
         .spawn()
     {
         Ok(child) => child,
@@ -583,12 +616,20 @@ async fn dump_to_temp_file(
         }
     };
 
-    // wait_with_output 会并发读完 stderr，避免管道写满导致子进程阻塞
-    let output = match child.wait_with_output().await {
-        Ok(output) => output,
-        Err(e) => {
+    // wait_with_output 会并发读完 stderr，避免管道写满导致子进程阻塞；
+    // 外层超时防止服务端无响应时导出无限挂起
+    let output = match tokio::time::timeout(CLIENT_TIMEOUT, child.wait_with_output()).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(e)) => {
             let _ = std::fs::remove_file(&temp_path);
             return Err(anyhow!("等待 mysqldump 完成失败：{}", e));
+        }
+        Err(_) => {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(anyhow!(
+                "mysqldump 超时（超过 {} 分钟），已终止子进程并删除临时文件",
+                CLIENT_TIMEOUT.as_secs() / 60
+            ));
         }
     };
 
