@@ -2,6 +2,7 @@ export default {
   'zh-CN': {
     'infoPanel.info': '信息',
     'infoPanel.connectionInfo': '连接信息',
+    'infoPanel.postgresNotSupported': 'PostgreSQL 暂仅提供对象树与表数据浏览，表结构 / 模式详情将在后续版本提供。',
     'infoPanel.databaseInfo': '数据库信息',
     'infoPanel.tableInfo': '表信息',
     'infoPanel.basicInfo': '基本信息',
@@ -26,6 +27,7 @@ export default {
     'infoPanel.copyCreateStatement': '复制建表语句',
     'infoPanel.ddlEmpty': '暂无建表语句',
     'infoPanel.state.connected': '已连接',
+    'infoPanel.state.connecting': '连接中',
     'infoPanel.state.disconnected': '已断开',
     'infoPanel.state.reconnecting': '重连中',
     'infoPanel.state.failed': '连接失败',
@@ -34,6 +36,7 @@ export default {
   'en-US': {
     'infoPanel.info': 'Info',
     'infoPanel.connectionInfo': 'Connection info',
+    'infoPanel.postgresNotSupported': 'PostgreSQL currently supports the object tree and table data browsing; table structure / schema details will follow in a later release.',
     'infoPanel.databaseInfo': 'Database info',
     'infoPanel.tableInfo': 'Table info',
     'infoPanel.basicInfo': 'Basic info',
@@ -58,6 +61,7 @@ export default {
     'infoPanel.copyCreateStatement': 'Copy CREATE statement',
     'infoPanel.ddlEmpty': 'No CREATE statement',
     'infoPanel.state.connected': 'Connected',
+    'infoPanel.state.connecting': 'Connecting',
     'infoPanel.state.disconnected': 'Disconnected',
     'infoPanel.state.reconnecting': 'Reconnecting',
     'infoPanel.state.failed': 'Connection failed',

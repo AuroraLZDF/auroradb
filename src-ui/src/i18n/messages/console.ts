@@ -2,6 +2,7 @@ export default {
   'zh-CN': {
     'console.running': '执行中...',
     'console.notConnected': '未连接到数据库',
+    'console.noDatabase': '尚未选择数据库，请先在侧栏选择数据库或先执行 USE 语句',
     'console.safetyConfirm': '当前连接已开启安全模式，即将执行 {statements} 语句，确定继续吗？',
     'console.rowCountInSet': '{count} 行，耗时 {time}',
     'console.emptySet': '空结果集',
@@ -9,11 +10,13 @@ export default {
     'console.queryOkAffected': '查询成功，{count} 行受影响',
     'console.databaseChanged': '数据库已切换为 \'{database}\'',
     'console.queryCancelled': '查询已取消',
+    'console.transactionRolledBack': '查询已取消，进行中的事务已回滚',
     'console.welcome': '欢迎使用 AuroraDB 控制台。\n输入 \'help\' 获取帮助，输入 \'clear\' 清屏。',
   },
   'en-US': {
     'console.running': 'Executing...',
     'console.notConnected': 'Not connected to a database',
+    'console.noDatabase': 'No database selected. Pick one in the sidebar or run a USE statement first.',
     'console.safetyConfirm': 'Safe mode is enabled for this connection. About to execute {statements} statement(s). Continue?',
     'console.rowCountInSet': '{count} row(s) in set ({time})',
     'console.emptySet': 'Empty set',
@@ -21,6 +24,7 @@ export default {
     'console.queryOkAffected': 'Query OK, {count} row(s) affected',
     'console.databaseChanged': 'Database changed to \'{database}\'',
     'console.queryCancelled': 'Query cancelled',
+    'console.transactionRolledBack': 'Query cancelled; the active transaction was rolled back',
     'console.welcome': 'Welcome to AuroraDB Console.\nType \'help\' for help, \'clear\' to clear the screen.',
   },
 }

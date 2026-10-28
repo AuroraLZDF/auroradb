@@ -19,6 +19,7 @@ export default {
     'backup.restoreSuccess': '还原成功',
     'backup.error': '操作失败：{error}',
     'backup.noDatabase': '请先选择数据库',
+    'backup.noConnection': '请先选择连接',
     'backup.driverMissing': '未检测到 {tool}，请先安装数据库客户端工具',
   },
   'en-US': {
@@ -41,6 +42,7 @@ export default {
     'backup.restoreSuccess': 'Restore completed',
     'backup.error': 'Operation failed: {error}',
     'backup.noDatabase': 'Please select a database first',
+    'backup.noConnection': 'Please select a connection first',
     'backup.driverMissing': '{tool} not found. Please install the database client tool first',
   },
 }

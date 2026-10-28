@@ -8,7 +8,7 @@ export default {
     'connectionForm.driver': '数据库类型',
     'connectionForm.driverMysql': 'MySQL',
     'connectionForm.driverPostgres': 'PostgreSQL',
-    'connectionForm.postgresHint': 'PostgreSQL 当前仅支持在 SQL 编辑器中执行语句，对象树、表数据浏览、导入导出等功能将在后续版本提供。',
+    'connectionForm.postgresHint': 'PostgreSQL 已支持 SQL 执行、对象树浏览与表数据只读查看；导入导出、表结构修改等功能将在后续版本提供。',
     'connectionForm.name': '连接名称',
     'connectionForm.namePlaceholder': '例如：生产环境',
     'connectionForm.host': '主机',
@@ -58,6 +58,7 @@ export default {
     'connectionForm.connect': '连接',
     'connectionForm.saving': '保存中...',
     'connectionForm.duplicateWarning': '提示：该连接信息已存在于 "{name}"，保存将更新现有配置',
+    'connectionForm.clearSavedSecretFailed': '清除已保存的密码失败：{error}',
   },
   'en-US': {
     'connectionForm.tabBasic': 'Basic',
@@ -68,7 +69,7 @@ export default {
     'connectionForm.driver': 'Database type',
     'connectionForm.driverMysql': 'MySQL',
     'connectionForm.driverPostgres': 'PostgreSQL',
-    'connectionForm.postgresHint': 'PostgreSQL currently supports executing statements in the SQL editor only. Object tree, table data browsing, import/export and other features will follow in later releases.',
+    'connectionForm.postgresHint': 'PostgreSQL now supports SQL execution, object tree browsing and read-only table data viewing. Import/export and table structure editing will follow in later releases.',
     'connectionForm.name': 'Connection name',
     'connectionForm.namePlaceholder': 'e.g. Production',
     'connectionForm.host': 'Host',
@@ -118,5 +119,6 @@ export default {
     'connectionForm.connect': 'Connect',
     'connectionForm.saving': 'Saving...',
     'connectionForm.duplicateWarning': 'Note: this connection already exists as "{name}"; saving will update the existing configuration',
+    'connectionForm.clearSavedSecretFailed': 'Failed to clear the saved password: {error}',
   },
 }

@@ -7,6 +7,8 @@ export default {
     'layout.welcomeTitle': '欢迎使用 AuroraDB',
     'layout.welcomeHint': '在左侧打开连接，开始浏览数据',
     'layout.welcomeSavedHint': '双击左侧已保存的连接打开，或点击"新建连接"',
+    'layout.closeDirtyQueryConfirm': '该查询有未保存的内容，关闭后将丢失，确定关闭吗？',
+    'layout.closeDirtyQuery': '关闭并丢弃',
   },
   'en-US': {
     'layout.objectsTab': 'Objects',
@@ -16,5 +18,7 @@ export default {
     'layout.welcomeTitle': 'Welcome to AuroraDB',
     'layout.welcomeHint': 'Open a connection on the left to start browsing data',
     'layout.welcomeSavedHint': 'Double-click a saved connection on the left to open it, or click "New connection"',
+    'layout.closeDirtyQueryConfirm': 'This query has unsaved content. Closing now will discard it. Close anyway?',
+    'layout.closeDirtyQuery': 'Close and discard',
   },
 }
