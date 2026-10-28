@@ -28,10 +28,6 @@
           <span class="meta-label">{{ t('about.version') }}</span>
           <span class="meta-value">{{ versionLabel }}</span>
         </div>
-        <div class="meta-item">
-          <span class="meta-label">{{ t('about.techStack') }}</span>
-          <span class="meta-value">{{ t('about.techStackValue') }}</span>
-        </div>
       </div>
 
       <p class="copyright">{{ t('about.copyright') }}</p>
