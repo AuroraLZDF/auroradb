@@ -1291,7 +1291,9 @@ async function handleDatabaseMenu(action: string) {
     case 'import-sql': {
       // 导入SQL文件 - 使用 Tauri 对话框
       const confirmed = await confirmDanger({
+        title: t('app.importSql'),
         message: t('app.importSqlConfirm', { name: database }),
+        confirmText: t('common.import'),
         requireAcknowledge: true,
       })
       if (!confirmed) break
