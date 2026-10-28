@@ -254,12 +254,29 @@ fi
 APPIMAGE_NAME="$(basename "$APPIMAGE")"
 APPIMAGE_URL="https://gitee.com/$OWNER/$REPO/releases/download/$TAG/$APPIMAGE_NAME"
 
-python3 - "$LATEST_TMP" "$VERSION" "$NOTES" "$APPIMAGE.sig" "$APPIMAGE_URL" <<'PY'
+# deb 安装的应用无法用 AppImage 原地升级，清单里额外给出 deb 包地址，
+# 应用会把它下载到下载目录交给用户手动安装
+DEB=""
+while IFS= read -r f; do
+    DEB="$f"
+    break
+done < <(find "$BUNDLE_DIR/deb" -maxdepth 1 -type f -name '*.deb' 2>/dev/null | sort)
+
+DEB_URL=""
+DEB_SIG=""
+if [[ -n "$DEB" ]]; then
+    DEB_URL="https://gitee.com/$OWNER/$REPO/releases/download/$TAG/$(basename "$DEB")"
+    [[ -f "$DEB.sig" ]] && DEB_SIG="$DEB.sig"
+else
+    echo -e "${YELLOW}  注意: 未找到 deb 安装包，deb 安装的用户将无法在应用内下载更新${NC}"
+fi
+
+python3 - "$LATEST_TMP" "$VERSION" "$NOTES" "$APPIMAGE.sig" "$APPIMAGE_URL" "$DEB_URL" "$DEB_SIG" <<'PY'
 import datetime
 import json
 import sys
 
-out, version, notes, sig_path, url = sys.argv[1:6]
+out, version, notes, sig_path, url, deb_url, deb_sig = sys.argv[1:8]
 signature = open(sig_path, encoding='utf-8').read().strip()
 data = {
     "version": version,
@@ -267,6 +284,10 @@ data = {
     "pub_date": datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
     "platforms": {"linux-x86_64": {"signature": signature, "url": url}},
 }
+if deb_url:
+    data["deb"] = {"url": deb_url}
+    if deb_sig:
+        data["deb"]["signature"] = open(deb_sig, encoding='utf-8').read().strip()
 with open(out, 'w', encoding='utf-8') as f:
     json.dump(data, f, ensure_ascii=False, indent=2)
 PY

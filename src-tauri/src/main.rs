@@ -138,6 +138,8 @@ fn main() {
             commands::license::get_license_status,
             commands::license::activate_license,
             commands::license::deactivate_license,
+            commands::update::get_update_install_kind,
+            commands::update::download_update_package,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

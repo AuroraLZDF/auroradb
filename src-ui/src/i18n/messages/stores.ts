@@ -12,6 +12,8 @@ export default {
     'store.checkFailed': '检查更新失败：{message}',
     'store.checkFirst': '请先检查更新',
     'store.updateInstalled': '更新已安装，正在重启应用',
+    'store.updatePackageDownloaded': '更新包已下载到 {path}，请手动安装',
+    'store.debPackageMissing': '当前为 deb 安装，但发布清单未提供 deb 更新包，请前往发行页手动下载',
     'store.updateFailed': '更新失败：{message}',
   },
   'en-US': {
@@ -27,6 +29,8 @@ export default {
     'store.checkFailed': 'Failed to check for updates: {message}',
     'store.checkFirst': 'Please check for updates first',
     'store.updateInstalled': 'Update installed, restarting the app',
+    'store.updatePackageDownloaded': 'Update package downloaded to {path}, please install it manually',
+    'store.debPackageMissing': 'This is a deb install but the release manifest has no deb package, please download it from the release page',
     'store.updateFailed': 'Update failed: {message}',
   },
 }

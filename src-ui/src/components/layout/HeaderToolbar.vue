@@ -330,7 +330,10 @@ async function handleUpdateClick() {
   if (
     version &&
     (await confirmAction({
-      message: t('header.updateConfirm', { version }),
+      message:
+        updateStore.installKind === 'deb'
+          ? t('header.updateDownloadConfirm', { version })
+          : t('header.updateConfirm', { version }),
       confirmText: t('common.confirm'),
     }))
   ) {

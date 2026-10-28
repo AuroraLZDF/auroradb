@@ -163,6 +163,17 @@ echo -e "${YELLOW}[5/5] 构建 Linux 安装包...${NC}"
 echo "  打包格式: $BUNDLE_TYPE"
 cd src-tauri
 
+# 清掉上一次构建的产物：否则 release.sh 会把旧版本安装包一并上传到新版本发行版
+echo "  清理旧安装包..."
+OLD_BUNDLE="target/release/bundle"
+if [ -d "$OLD_BUNDLE" ]; then
+    rm -f "$OLD_BUNDLE"/*/*.deb \
+          "$OLD_BUNDLE"/*/*.rpm \
+          "$OLD_BUNDLE"/*/*.AppImage \
+          "$OLD_BUNDLE"/*/*.sig \
+          "$OLD_BUNDLE"/*/latest.json
+fi
+
 # 更新包签名：Tauri CLI 只读取 TAURI_SIGNING_PRIVATE_KEY（内容），不读 _PATH
 # 未显式提供时回退到本地默认路径（私钥不入库）
 if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then

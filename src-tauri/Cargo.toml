@@ -15,6 +15,9 @@ tauri-plugin-dialog = "2.0"
 # 自动更新：检查/下载/安装更新包，安装后需要重启进程
 tauri-plugin-updater = "2.0"
 tauri-plugin-process = "2.0"
+# 内置更新器只支持 AppImage；deb 安装需要自行下载安装包，直接复用已编译的 reqwest（rustls，不带 aws-lc）
+reqwest = { version = "0.13", default-features = false, features = ["stream", "rustls-no-provider", "system-proxy"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
