@@ -27,6 +27,17 @@ describe('formatSqlValue', () => {
     expect(formatSqlValue(false)).toBe('0')
     expect(formatSqlValue(42)).toBe('42')
   })
+
+  it('二进制列把 Base64 还原成字节字面量', () => {
+    // 直接写 Base64 文本会污染 BLOB/BYTEA 列，必须解码
+    expect(formatSqlValue('AQID', { data_type: 'blob' })).toBe("FROM_BASE64('AQID')")
+    expect(formatSqlValue('AQID', { data_type: 'bytea', driver: 'postgres' }))
+      .toBe("decode('AQID', 'base64')")
+  })
+
+  it('PG 只翻倍单引号，不转义反斜杠', () => {
+    expect(formatSqlValue('a\\b', { driver: 'postgres' })).toBe("'a\\b'")
+  })
 })
 
 describe('buildWhereClause', () => {
