@@ -33,12 +33,14 @@
         </button>
       </div>
       <div class="toolbar-right">
-        <select :value="selectedDatabase" @change="(e) => manualSelectedDatabase = (e.target as HTMLSelectElement).value" class="database-select">
-          <option value="">{{ t('sqlEditor.selectDatabase') }}</option>
-          <option v-for="db in databases" :key="db.name" :value="db.name">
-            {{ db.name }}
-          </option>
-        </select>
+        <div class="database-select">
+          <Select
+            :model-value="selectedDatabase"
+            :options="databaseOptions"
+            :placeholder="t('sqlEditor.selectDatabase')"
+            @update:model-value="manualSelectedDatabase = $event"
+          />
+        </div>
       </div>
     </div>
 
@@ -132,12 +134,14 @@
           <Download :size="14" />
           {{ t('common.export') }}
         </button>
-        <select v-model="exportFormat" class="export-format-select">
-          <option value="csv">CSV</option>
-          <option value="json">JSON</option>
-          <option value="xlsx">Excel</option>
-          <option value="sql">SQL INSERT</option>
-        </select>
+        <div class="export-format-select">
+          <Select
+            :model-value="exportFormat"
+            :options="exportFormatOptions"
+            size="sm"
+            @update:model-value="onExportFormatChange"
+          />
+        </div>
       </div>
 
       <!-- 结果集截断提示 -->
@@ -308,6 +312,7 @@ import {
 } from '@/composables/useSqlCompletion'
 import ExplainTree from './ExplainTree.vue'
 import type { ExplainPlan } from './ExplainTree.vue'
+import Select from '@/components/ui/Select.vue'
 
 const connStore = useConnectionStore()
 const browserStore = useDataBrowserStore()
@@ -361,6 +366,17 @@ const librarySearch = ref('')
 // 导出格式
 const exportFormat = ref<'csv' | 'json' | 'xlsx' | 'sql'>('csv')
 
+const exportFormatOptions = [
+  { label: 'CSV', value: 'csv' },
+  { label: 'JSON', value: 'json' },
+  { label: 'Excel', value: 'xlsx' },
+  { label: 'SQL INSERT', value: 'sql' },
+]
+
+function onExportFormatChange(value: string) {
+  exportFormat.value = value as typeof exportFormat.value
+}
+
 // 编辑器高度调节
 const editorHeight = ref(200)  // 默认高度 200px
 const minEditorHeight = 100    // 最小高度
@@ -401,6 +417,11 @@ function stopResize() {
 
 // 当前连接的数据库列表
 const databases = computed(() => browserStore.objectTree)
+
+// 数据库下拉选项
+const databaseOptions = computed(() =>
+  databases.value.map(db => ({ label: db.name, value: db.name }))
+)
 
 // 获取当前连接的连接ID
 const currentConnectionId = computed(() => connStore.currentConnection?.id || '')
@@ -1244,67 +1265,35 @@ onUnmounted(() => {
   background: var(--color-background-hover);
 }
 
+/* 数据库选择：外层控制宽度，触发器与工具栏按钮同高 */
 .database-select {
-  padding: 8px 12px;
-  padding-right: 28px;
-  border: 1px solid var(--color-border);
+  width: 160px;
+  flex-shrink: 0;
+}
+
+.database-select :deep(.custom-select .select-trigger) {
+  height: 36px;
+  min-height: 36px;
+  padding: 0 12px;
+  border-color: var(--color-border);
   border-radius: 4px;
+  background: var(--color-background);
+  color: var(--color-text);
   font-size: 13px;
-  min-width: 150px;
-  background: var(--color-background);
-  color: var(--color-text);
-  appearance: none;
-  -webkit-appearance: none;
-  cursor: pointer;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23666' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 8px center;
 }
 
-.database-select:focus {
-  outline: none;
-  border-color: var(--color-primary);
-}
-
-html[data-theme="dark"] .database-select {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23aaa' d='M6 8L1 3h10z'/%3E%3E%3C/svg%3E");
-}
-
-.database-select option {
-  background: var(--color-background);
-  color: var(--color-text);
-}
-
-/* 导出格式选择框 */
+/* 导出格式选择框：紧凑尺寸，与结果区按钮同高 */
 .export-format-select {
-  padding: 4px 8px;
-  padding-right: 20px;
-  border: 1px solid var(--color-border);
+  width: 112px;
+  flex-shrink: 0;
+}
+
+.export-format-select :deep(.custom-select .select-trigger) {
+  border-color: var(--color-border);
   border-radius: 4px;
+  background: var(--color-background);
+  color: var(--color-text);
   font-size: 12px;
-  min-width: 80px;
-  background: var(--color-background);
-  color: var(--color-text);
-  appearance: none;
-  -webkit-appearance: none;
-  cursor: pointer;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 12 12'%3E%3Cpath fill='%23666' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 6px center;
-}
-
-.export-format-select:focus {
-  outline: none;
-  border-color: var(--color-primary);
-}
-
-html[data-theme="dark"] .export-format-select {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 12 12'%3E%3Cpath fill='%23aaa' d='M6 8L1 3h10z'/%3E%3E%3C/svg%3E");
-}
-
-.export-format-select option {
-  background: var(--color-background);
-  color: var(--color-text);
 }
 
 /* 编辑器区域 - 可调节高度 */

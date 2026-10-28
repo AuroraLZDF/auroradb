@@ -3,6 +3,7 @@
     <!-- 头部工具栏 -->
     <div class="designer-header">
       <div class="header-left">
+        <Table2 class="title-icon" :size="16" />
         <div v-if="isNewTable" class="table-name-input">
           <label>{{ t('tableDesigner.tableNameLabel') }}</label>
           <input
@@ -20,6 +21,7 @@
         <button class="btn-save" @click="saveChanges" :disabled="!hasChanges">
           <Save class="icon" :size="16" /> {{ t('common.save') }}
         </button>
+        <span class="action-divider"></span>
         <button class="btn-add-field" @click="addField">
           <Plus class="icon" :size="16" /> {{ t('tableDesigner.addField') }}
         </button>
@@ -29,6 +31,7 @@
         <button class="btn-delete-field" @click="deleteField" :disabled="selectedFieldIndex === null">
           <Trash2 class="icon" :size="16" /> {{ t('tableDesigner.deleteField') }}
         </button>
+        <span class="action-divider"></span>
         <button class="btn-primary-key" @click="togglePrimaryKey" :disabled="selectedFieldIndex === null">
           <Key class="icon" :size="16" /> {{ t('tableDesigner.primaryKey') }}
         </button>
@@ -61,92 +64,102 @@
     <div class="designer-content">
       <!-- 字段标签页 -->
       <div v-if="activeTab === 'fields'" class="tab-panel">
-        <table class="fields-table">
-          <thead>
-            <tr>
-              <th class="col-selected"></th>
-              <th class="col-name">{{ t('common.name') }}</th>
-              <th class="col-type">{{ t('common.type') }}</th>
-              <th class="col-length">{{ t('tableDesigner.length') }}</th>
-              <th class="col-decimals">{{ t('tableDesigner.decimals') }}</th>
-              <th class="col-nullable">{{ t('tableDesigner.notNull') }}</th>
-              <th class="col-virtual">{{ t('tableDesigner.virtual') }}</th>
-              <th class="col-key">{{ t('tableDesigner.key') }}</th>
-              <th class="col-comment">{{ t('tableDesigner.comment') }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="(field, index) in fields"
-              :key="field.id"
-              :class="{ selected: selectedFieldIndex === index, modified: field.isModified, new: field.isNew }"
-              @click="selectField(index)"
-            >
-              <td class="col-selected">
-                <input type="radio" :checked="selectedFieldIndex === index" />
-              </td>
-              <td class="col-name">
-                <input
-                  v-model="field.name"
-                  type="text"
-                  :placeholder="t('tableDesigner.fieldName')"
-                  @change="markFieldModified(index)"
-                />
-              </td>
-              <td class="col-type">
-                <select v-model="field.type" @change="onTypeChange(index)">
-                  <option v-for="type in dataTypes" :key="type" :value="type">{{ type }}</option>
-                </select>
-              </td>
-              <td class="col-length">
-                <input
-                  v-if="hasLength(field.type)"
-                  v-model.number="field.length"
-                  type="number"
-                  min="0"
-                  @change="markFieldModified(index)"
-                />
-              </td>
-              <td class="col-decimals">
-                <input
-                  v-if="hasDecimals(field.type)"
-                  v-model.number="field.decimals"
-                  type="number"
-                  min="0"
-                  max="30"
-                  @change="markFieldModified(index)"
-                />
-              </td>
-              <td class="col-nullable">
-                <input
-                  type="checkbox"
-                  v-model="field.notNull"
-                  @change="markFieldModified(index)"
-                />
-              </td>
-              <td class="col-virtual">
-                <input
-                  type="checkbox"
-                  v-model="field.virtual"
-                  @change="markFieldModified(index)"
-                />
-              </td>
-              <td class="col-key">
-                <span v-if="field.isPrimary" class="key-icon primary">🔑</span>
-                <span v-else-if="field.isUnique" class="key-icon unique">U</span>
-                <span v-else-if="field.isIndex" class="key-icon index">I</span>
-              </td>
-              <td class="col-comment">
-                <input
-                  v-model="field.comment"
-                  type="text"
-                  :placeholder="t('tableDesigner.comment')"
-                  @change="markFieldModified(index)"
-                />
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="table-wrap">
+          <table class="fields-table">
+            <thead>
+              <tr>
+                <th class="col-selected"></th>
+                <th class="col-name">{{ t('common.name') }}</th>
+                <th class="col-type">{{ t('common.type') }}</th>
+                <th class="col-length">{{ t('tableDesigner.length') }}</th>
+                <th class="col-decimals">{{ t('tableDesigner.decimals') }}</th>
+                <th class="col-nullable">{{ t('tableDesigner.notNull') }}</th>
+                <th class="col-virtual">{{ t('tableDesigner.virtual') }}</th>
+                <th class="col-key">{{ t('tableDesigner.key') }}</th>
+                <th class="col-comment">{{ t('tableDesigner.comment') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="(field, index) in fields"
+                :key="field.id"
+                :class="{
+                  selected: selectedFieldIndex === index,
+                  modified: field.isModified,
+                  new: field.isNew,
+                  deleted: field.isDeleted,
+                }"
+                @click="selectField(index)"
+              >
+                <td class="col-selected">
+                  <input type="radio" :checked="selectedFieldIndex === index" />
+                </td>
+                <td class="col-name">
+                  <input
+                    v-model="field.name"
+                    type="text"
+                    :placeholder="t('tableDesigner.fieldName')"
+                    @change="markFieldModified(index)"
+                  />
+                </td>
+                <td class="col-type">
+                  <Select
+                    :model-value="field.type"
+                    :options="dataTypes"
+                    size="sm"
+                    @update:model-value="(value) => onTypeChange(index, value)"
+                  />
+                </td>
+                <td class="col-length">
+                  <input
+                    v-if="hasLength(field.type)"
+                    v-model.number="field.length"
+                    type="number"
+                    min="0"
+                    @change="markFieldModified(index)"
+                  />
+                </td>
+                <td class="col-decimals">
+                  <input
+                    v-if="hasDecimals(field.type)"
+                    v-model.number="field.decimals"
+                    type="number"
+                    min="0"
+                    max="30"
+                    @change="markFieldModified(index)"
+                  />
+                </td>
+                <td class="col-nullable">
+                  <input
+                    type="checkbox"
+                    v-model="field.notNull"
+                    @change="markFieldModified(index)"
+                  />
+                </td>
+                <td class="col-virtual">
+                  <input
+                    type="checkbox"
+                    v-model="field.virtual"
+                    @change="markFieldModified(index)"
+                  />
+                </td>
+                <td class="col-key">
+                  <span v-if="field.isPrimary" class="key-badge primary">PK</span>
+                  <span v-else-if="field.isUnique" class="key-badge unique">UQ</span>
+                  <span v-else-if="field.isIndex" class="key-badge index">IDX</span>
+                </td>
+                <td class="col-comment">
+                  <input
+                    v-model="field.comment"
+                    type="text"
+                    :placeholder="t('tableDesigner.comment')"
+                    @change="markFieldModified(index)"
+                  />
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
         <div v-if="fields.length === 0" class="empty-state">
           {{ t('tableDesigner.emptyFields') }}
         </div>
@@ -211,49 +224,54 @@
             <Trash2 class="icon" :size="16" /> {{ t('tableDesigner.deleteIndex') }}
           </button>
         </div>
-        <table class="indexes-table">
-          <thead>
-            <tr>
-              <th class="col-selected"></th>
-              <th class="col-name">{{ t('tableDesigner.indexName') }}</th>
-              <th class="col-fields">{{ t('tableDesigner.field') }}</th>
-              <th class="col-type">{{ t('common.type') }}</th>
-              <th class="col-unique">{{ t('tableDesigner.unique') }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="(index, idx) in indexes"
-              :key="index.name"
-              :class="{ selected: selectedIndexIndex === idx }"
-              @click="selectIndex(idx)"
-            >
-              <td class="col-selected">
-                <input type="radio" :checked="selectedIndexIndex === idx" />
-              </td>
-              <td class="col-name">
-                <input v-model="index.name" type="text" @change="markIndexModified(idx)" />
-              </td>
-              <td class="col-fields">
-                <select v-model="index.columns" multiple @change="markIndexModified(idx)">
-                  <option v-for="field in fields" :key="field.name" :value="field.name">
-                    {{ field.name }}
-                  </option>
-                </select>
-              </td>
-              <td class="col-type">
-                <select v-model="index.type" @change="markIndexModified(idx)">
-                  <option value="BTREE">BTREE</option>
-                  <option value="HASH">HASH</option>
-                  <option value="FULLTEXT">FULLTEXT</option>
-                </select>
-              </td>
-              <td class="col-unique">
-                <input type="checkbox" v-model="index.isUnique" @change="markIndexModified(idx)" />
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="table-wrap">
+          <table class="indexes-table">
+            <thead>
+              <tr>
+                <th class="col-selected"></th>
+                <th class="col-name">{{ t('tableDesigner.indexName') }}</th>
+                <th class="col-fields">{{ t('tableDesigner.field') }}</th>
+                <th class="col-type">{{ t('common.type') }}</th>
+                <th class="col-unique">{{ t('tableDesigner.unique') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="(index, idx) in indexes"
+                :key="index.name"
+                :class="{ selected: selectedIndexIndex === idx }"
+                @click="selectIndex(idx)"
+              >
+                <td class="col-selected">
+                  <input type="radio" :checked="selectedIndexIndex === idx" />
+                </td>
+                <td class="col-name">
+                  <input v-model="index.name" type="text" @change="markIndexModified(idx)" />
+                </td>
+                <td class="col-fields">
+                  <Select
+                    :multi-value="index.columns"
+                    :options="fieldNameOptions"
+                    multiple
+                    size="sm"
+                    @update:multi-value="updateIndexColumns(idx, $event)"
+                  />
+                </td>
+                <td class="col-type">
+                  <Select
+                    v-model="index.type"
+                    :options="indexTypes"
+                    size="sm"
+                    @update:model-value="markIndexModified(idx)"
+                  />
+                </td>
+                <td class="col-unique">
+                  <input type="checkbox" v-model="index.isUnique" @change="markIndexModified(idx)" />
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
         <div v-if="indexes.length === 0" class="empty-state">
           {{ t('tableDesigner.emptyIndexes') }}
         </div>
@@ -269,63 +287,66 @@
             <Trash2 class="icon" :size="16" /> {{ t('tableDesigner.deleteForeignKey') }}
           </button>
         </div>
-        <table class="fk-table">
-          <thead>
-            <tr>
-              <th class="col-selected"></th>
-              <th class="col-name">{{ t('tableDesigner.fkName') }}</th>
-              <th class="col-field">{{ t('tableDesigner.field') }}</th>
-              <th class="col-ref-table">{{ t('tableDesigner.refTable') }}</th>
-              <th class="col-ref-field">{{ t('tableDesigner.refField') }}</th>
-              <th class="col-on-delete">{{ t('tableDesigner.onDelete') }}</th>
-              <th class="col-on-update">{{ t('tableDesigner.onUpdate') }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="(fk, idx) in foreignKeys"
-              :key="fk.name"
-              :class="{ selected: selectedFkIndex === idx }"
-              @click="selectForeignKey(idx)"
-            >
-              <td class="col-selected">
-                <input type="radio" :checked="selectedFkIndex === idx" />
-              </td>
-              <td class="col-name">
-                <input v-model="fk.name" type="text" @change="markFkModified(idx)" />
-              </td>
-              <td class="col-field">
-                <select v-model="fk.column" @change="markFkModified(idx)">
-                  <option v-for="field in fields" :key="field.name" :value="field.name">
-                    {{ field.name }}
-                  </option>
-                </select>
-              </td>
-              <td class="col-ref-table">
-                <input v-model="fk.refTable" type="text" @change="markFkModified(idx)" />
-              </td>
-              <td class="col-ref-field">
-                <input v-model="fk.refColumn" type="text" @change="markFkModified(idx)" />
-              </td>
-              <td class="col-on-delete">
-                <select v-model="fk.onDelete" @change="markFkModified(idx)">
-                  <option value="RESTRICT">RESTRICT</option>
-                  <option value="CASCADE">CASCADE</option>
-                  <option value="SET NULL">SET NULL</option>
-                  <option value="NO ACTION">NO ACTION</option>
-                </select>
-              </td>
-              <td class="col-on-update">
-                <select v-model="fk.onUpdate" @change="markFkModified(idx)">
-                  <option value="RESTRICT">RESTRICT</option>
-                  <option value="CASCADE">CASCADE</option>
-                  <option value="SET NULL">SET NULL</option>
-                  <option value="NO ACTION">NO ACTION</option>
-                </select>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="table-wrap">
+          <table class="fk-table">
+            <thead>
+              <tr>
+                <th class="col-selected"></th>
+                <th class="col-name">{{ t('tableDesigner.fkName') }}</th>
+                <th class="col-field">{{ t('tableDesigner.field') }}</th>
+                <th class="col-ref-table">{{ t('tableDesigner.refTable') }}</th>
+                <th class="col-ref-field">{{ t('tableDesigner.refField') }}</th>
+                <th class="col-on-delete">{{ t('tableDesigner.onDelete') }}</th>
+                <th class="col-on-update">{{ t('tableDesigner.onUpdate') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="(fk, idx) in foreignKeys"
+                :key="fk.name"
+                :class="{ selected: selectedFkIndex === idx }"
+                @click="selectForeignKey(idx)"
+              >
+                <td class="col-selected">
+                  <input type="radio" :checked="selectedFkIndex === idx" />
+                </td>
+                <td class="col-name">
+                  <input v-model="fk.name" type="text" @change="markFkModified(idx)" />
+                </td>
+                <td class="col-field">
+                  <Select
+                    v-model="fk.column"
+                    :options="fieldNameOptions"
+                    size="sm"
+                    @update:model-value="markFkModified(idx)"
+                  />
+                </td>
+                <td class="col-ref-table">
+                  <input v-model="fk.refTable" type="text" @change="markFkModified(idx)" />
+                </td>
+                <td class="col-ref-field">
+                  <input v-model="fk.refColumn" type="text" @change="markFkModified(idx)" />
+                </td>
+                <td class="col-on-delete">
+                  <Select
+                    v-model="fk.onDelete"
+                    :options="fkActions"
+                    size="sm"
+                    @update:model-value="markFkModified(idx)"
+                  />
+                </td>
+                <td class="col-on-update">
+                  <Select
+                    v-model="fk.onUpdate"
+                    :options="fkActions"
+                    size="sm"
+                    @update:model-value="markFkModified(idx)"
+                  />
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
         <div v-if="foreignKeys.length === 0" class="empty-state">
           {{ t('tableDesigner.emptyForeignKeys') }}
         </div>
@@ -333,13 +354,15 @@
 
       <!-- SQL 预览标签页 -->
       <div v-if="activeTab === 'sql'" class="tab-panel">
-        <div class="sql-preview-header">
-          <span class="label">{{ t('tableDesigner.sqlPreviewTitle') }}</span>
-          <button class="btn-copy" @click="copySql">
-            <Copy class="icon" :size="16" /> {{ t('common.copy') }}
-          </button>
+        <div class="sql-preview">
+          <div class="sql-preview-header">
+            <span class="label">{{ t('tableDesigner.sqlPreviewTitle') }}</span>
+            <button class="btn-copy" @click="copySql">
+              <Copy class="icon" :size="16" /> {{ t('common.copy') }}
+            </button>
+          </div>
+          <pre class="sql-code">{{ generatedSql }}</pre>
         </div>
-        <pre class="sql-code">{{ generatedSql }}</pre>
       </div>
     </div>
 
@@ -356,10 +379,11 @@ import { useDataBrowserStore } from '@/stores/dataBrowser'
 import { useToast } from '@/composables/useToast'
 import { confirmDanger } from '@/composables/useConfirm'
 import {
-  Save, Plus, CornerDownLeft, Trash2, Key, ArrowUp, ArrowDown, X, Copy
+  Save, Plus, CornerDownLeft, Trash2, Key, ArrowUp, ArrowDown, X, Copy, Table2
 } from 'lucide-vue-next'
 import { quoteIdentifier } from '@/utils/sql'
 import { t } from '@/i18n'
+import Select from '@/components/ui/Select.vue'
 
 interface Field {
   id: string
@@ -437,6 +461,12 @@ const dataTypes = [
   'varchar', 'year'
 ]
 
+// 索引类型
+const indexTypes = ['BTREE', 'HASH', 'FULLTEXT']
+
+// 外键动作
+const fkActions = ['RESTRICT', 'CASCADE', 'SET NULL', 'NO ACTION']
+
 // 数据
 const fields = ref<Field[]>([])
 const indexes = ref<Index[]>([])
@@ -457,6 +487,9 @@ const selectedField = computed(() => {
   if (selectedFieldIndex.value === null) return null
   return fields.value[selectedFieldIndex.value]
 })
+
+// 字段名选项（外键引用列）
+const fieldNameOptions = computed(() => fields.value.map(f => f.name))
 
 // 是否有修改
 const hasChanges = computed(() => {
@@ -679,8 +712,9 @@ function isTimestampType(type: string): boolean {
 }
 
 // 类型变更
-function onTypeChange(index: number) {
+function onTypeChange(index: number, type: string) {
   const field = fields.value[index]!
+  field.type = type
   // 切换类型时重置长度/小数位/显示宽度，避免旧类型数值残留
   field.length = undefined
   field.decimals = undefined
@@ -703,6 +737,12 @@ function markFieldModified(index: number) {
 // 标记索引修改
 function markIndexModified(index: number) {
   indexes.value[index]!.isModified = true
+}
+
+// 更新索引字段列
+function updateIndexColumns(index: number, columns: string[]) {
+  indexes.value[index]!.columns = columns
+  markIndexModified(index)
 }
 
 // 标记外键修改
@@ -965,149 +1005,274 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--color-background);
+  background: var(--bg-primary);
+  color: var(--text-primary);
 }
 
+/* ---------- 头部 ---------- */
 .designer-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 8px 12px;
-  background: var(--color-background-soft);
-  border-bottom: 1px solid var(--color-border);
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-default);
+  border-bottom: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-sm);
 }
 
 .header-left {
   display: flex;
   align-items: center;
-  min-width: 200px;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.title-icon {
+  flex-shrink: 0;
+  color: var(--brand-600);
+}
+
+.table-title {
+  font-size: var(--text-md);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .table-name-input {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .table-name-input label {
-  font-weight: 500;
-  color: var(--color-text);
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--text-secondary);
+  white-space: nowrap;
 }
 
 .table-name-field {
-  padding: 6px 10px;
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
-  font-size: 14px;
-  width: 180px;
-  background: var(--color-background);
-  color: var(--color-text);
+  width: 200px;
+  height: 30px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-default);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--text-sm);
+  transition: var(--transition-colors), box-shadow var(--duration-fast) var(--ease-in-out);
+}
+
+.table-name-field::placeholder {
+  color: var(--text-tertiary);
+}
+
+.table-name-field:hover {
+  border-color: var(--border-strong);
 }
 
 .table-name-field:focus {
-  border-color: var(--color-primary);
   outline: none;
-}
-
-.table-title {
-  font-weight: 600;
-  font-size: 16px;
-  color: var(--color-text);
+  border-color: var(--brand-500);
+  box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.15);
 }
 
 .header-center {
   display: flex;
-  gap: 8px;
-  flex: 1;
+  align-items: center;
   justify-content: center;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  flex: 1;
 }
 
-.header-center button, .header-left button {
+.header-right {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 6px 12px;
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
-  background: var(--color-background);
-  color: var(--color-text);
+  flex-shrink: 0;
+}
+
+/* ---------- 按钮 ---------- */
+.header-center button,
+.panel-toolbar button,
+.btn-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: 30px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-default);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  white-space: nowrap;
   cursor: pointer;
-  font-size: 13px;
+  transition: var(--transition-colors);
 }
 
-.header-left button:hover:not(:disabled) {
-  background: var(--color-background-hover);
+.header-center button:hover:not(:disabled),
+.panel-toolbar button:hover:not(:disabled),
+.btn-copy:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
 }
 
-.header-left button:disabled {
-  opacity: 0.5;
+.header-center button:active:not(:disabled),
+.panel-toolbar button:active:not(:disabled),
+.btn-copy:active:not(:disabled) {
+  background: var(--surface-active);
+}
+
+.header-center button:disabled,
+.panel-toolbar button:disabled {
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
-.btn-save {
-  background: var(--color-success) !important;
-  color: white !important;
-  border-color: var(--color-success) !important;
+.header-center button:focus-visible,
+.panel-toolbar button:focus-visible,
+.btn-copy:focus-visible,
+.btn-close:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
 }
 
-.btn-save:hover:not(:disabled) {
-  background: var(--color-primary-dark) !important;
+.header-center .btn-delete-field:hover:not(:disabled),
+.panel-toolbar .btn-delete:hover:not(:disabled) {
+  background: var(--error-50);
+  border-color: var(--error-300);
+  color: var(--error-600);
+}
+
+.header-center .btn-save {
+  border-color: var(--brand-500);
+  background: var(--brand-500);
+  color: #fff;
+  box-shadow: var(--shadow-sm);
+}
+
+.header-center .btn-save:hover:not(:disabled) {
+  border-color: var(--brand-600);
+  background: var(--brand-600);
+  color: #fff;
+  box-shadow: var(--shadow-md);
+}
+
+.header-center .btn-save:disabled {
+  background: var(--brand-500);
+  border-color: var(--brand-500);
+  color: #fff;
+  opacity: 0.45;
+  box-shadow: none;
+}
+
+.action-divider {
+  width: 1px;
+  height: 18px;
+  margin: 0 var(--space-1);
+  background: var(--border-subtle);
 }
 
 .btn-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
   background: transparent;
-  border: none;
-  font-size: 20px;
+  color: var(--text-tertiary);
   cursor: pointer;
-  color: var(--color-text-secondary);
+  transition: var(--transition-colors);
 }
 
 .btn-close:hover {
-  color: var(--color-text);
+  background: var(--surface-hover);
+  color: var(--text-primary);
 }
 
+/* ---------- 标签页 ---------- */
 .designer-tabs {
   display: flex;
-  border-bottom: 1px solid var(--color-border);
-  background: var(--color-background-soft);
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-4);
+  background: var(--surface-default);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .tab-item {
-  padding: 10px 20px;
+  position: relative;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--text-secondary);
   cursor: pointer;
-  border-right: 1px solid var(--color-border);
-  font-size: 13px;
-  color: var(--color-text-secondary);
+  user-select: none;
+  transition: var(--transition-colors);
 }
 
 .tab-item:hover {
-  background: var(--color-background-hover);
+  background: var(--surface-hover);
+  color: var(--text-primary);
 }
 
 .tab-item.active {
-  background: var(--color-background);
-  color: var(--color-primary);
-  border-bottom: 2px solid var(--color-primary);
+  color: var(--brand-600);
+}
+
+.tab-item.active::after {
+  content: '';
+  position: absolute;
+  left: var(--space-2);
+  right: var(--space-2);
+  bottom: -1px;
+  height: 2px;
+  border-radius: var(--radius-full);
+  background: var(--brand-500);
 }
 
 .designer-content {
   flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-3) var(--space-4) var(--space-4);
 }
 
 .tab-panel {
-  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
 }
 
-/* 字段表格 */
+/* ---------- 表格卡片 ---------- */
+.table-wrap {
+  background: var(--surface-default);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  overflow-x: auto;
+}
+
 .fields-table,
 .indexes-table,
 .fk-table {
   width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: var(--text-sm);
 }
 
 /* 固定列宽布局，避免内容撑宽表格产生横向滚动条 */
@@ -1121,262 +1286,394 @@ onMounted(() => {
 .indexes-table td,
 .fk-table th,
 .fk-table td {
-  border: 1px solid var(--color-border);
-  padding: 6px 8px;
+  padding: var(--space-1) var(--space-2);
   text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.fields-table tbody tr:last-child td,
+.indexes-table tbody tr:last-child td,
+.fk-table tbody tr:last-child td {
+  border-bottom: none;
 }
 
 .fields-table th,
 .indexes-table th,
 .fk-table th {
-  background: var(--color-background-soft);
-  font-weight: 500;
-  color: var(--color-text);
+  height: 32px;
+  background: var(--surface-subtle);
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.02em;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.fields-table thead th:first-child,
+.indexes-table thead th:first-child,
+.fk-table thead th:first-child {
+  border-top-left-radius: var(--radius-md);
+}
+
+.fields-table thead th:last-child,
+.indexes-table thead th:last-child,
+.fk-table thead th:last-child {
+  border-top-right-radius: var(--radius-md);
+}
+
+.fields-table tbody tr,
+.indexes-table tbody tr,
+.fk-table tbody tr {
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-in-out);
+}
+
+.fields-table tbody tr.modified,
+.indexes-table tbody tr.modified,
+.fk-table tbody tr.modified {
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.fields-table tbody tr.new,
+.indexes-table tbody tr.new,
+.fk-table tbody tr.new {
+  background: rgba(16, 185, 129, 0.08);
 }
 
 .fields-table tbody tr:hover,
 .indexes-table tbody tr:hover,
 .fk-table tbody tr:hover {
-  background: var(--color-background-hover);
+  background: var(--surface-hover);
 }
 
 .fields-table tbody tr.selected,
 .indexes-table tbody tr.selected,
 .fk-table tbody tr.selected {
-  background: rgba(25, 118, 210, 0.15);
+  background: var(--surface-selected);
 }
 
-.fields-table tbody tr.modified {
-  background: rgba(243, 156, 18, 0.15);
-}
-
-.fields-table tbody tr.new {
-  background: rgba(76, 175, 80, 0.15);
+.fields-table tbody tr.selected td:first-child,
+.indexes-table tbody tr.selected td:first-child,
+.fk-table tbody tr.selected td:first-child {
+  box-shadow: inset 2px 0 0 var(--brand-500);
 }
 
 .fields-table tbody tr.deleted {
-  opacity: 0.5;
+  opacity: 0.55;
+}
+
+.fields-table tbody tr.deleted input[type="text"] {
   text-decoration: line-through;
 }
 
+/* ---------- 列宽 ---------- */
 .col-selected {
-  width: 30px;
+  width: 36px;
   text-align: center;
 }
 
 .col-name {
-  width: 150px;
+  width: 170px;
 }
 
 .col-type {
-  width: 120px;
+  width: 130px;
 }
 
 .col-length,
 .col-decimals {
-  width: 80px;
+  width: 76px;
 }
 
 .col-nullable,
 .col-virtual {
-  width: 50px;
+  width: 56px;
   text-align: center;
 }
 
 .col-key {
-  width: 60px;
+  width: 64px;
   text-align: center;
 }
 
+/* ---------- 单元格控件 ---------- */
 .fields-table input[type="text"],
 .fields-table input[type="number"],
-.fields-table select,
 .indexes-table input[type="text"],
-.indexes-table select,
-.fk-table input[type="text"],
-.fk-table select {
+.fk-table input[type="text"] {
   width: 100%;
-  padding: 4px;
-  border: 1px solid var(--color-border);
-  border-radius: 2px;
-  font-size: 12px;
-  background: var(--color-background);
-  color: var(--color-text);
+  height: 26px;
+  padding: 0 var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--text-sm);
+  cursor: text;
+  transition: var(--transition-colors), box-shadow var(--duration-fast) var(--ease-in-out);
+}
+
+.fields-table input[type="text"]::placeholder,
+.indexes-table input[type="text"]::placeholder,
+.fk-table input[type="text"]::placeholder {
+  color: var(--text-tertiary);
+}
+
+.fields-table input[type="text"]:hover:not(:focus),
+.fields-table input[type="number"]:hover:not(:focus),
+.indexes-table input[type="text"]:hover:not(:focus),
+.fk-table input[type="text"]:hover:not(:focus) {
+  border-color: var(--border-default);
+  background: var(--surface-default);
 }
 
 .fields-table input:focus,
-.fields-table select:focus,
 .indexes-table input:focus,
-.indexes-table select:focus,
-.fk-table input:focus,
-.fk-table select:focus {
-  border-color: var(--color-primary);
+.fk-table input:focus {
   outline: none;
+  border-color: var(--brand-500);
+  background: var(--surface-default);
+  box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.15);
 }
 
-.key-icon {
-  font-size: 12px;
+.fields-table input[type="checkbox"],
+.indexes-table input[type="checkbox"],
+.fk-table input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--brand-500);
+  cursor: pointer;
 }
 
-.key-icon.primary {
-  color: var(--color-warning);
+.fields-table input[type="radio"],
+.indexes-table input[type="radio"],
+.fk-table input[type="radio"] {
+  width: 13px;
+  height: 13px;
+  accent-color: var(--brand-500);
+  cursor: pointer;
 }
 
-.key-icon.unique {
-  color: var(--color-success);
-  font-weight: bold;
+/* 单元格内自定义下拉框：与文本输入框保持一致的“无边框”外观 */
+.fields-table :deep(.custom-select .select-trigger),
+.indexes-table :deep(.custom-select .select-trigger),
+.fk-table :deep(.custom-select .select-trigger) {
+  width: 100%;
+  border-color: transparent;
+  background: transparent;
 }
 
-.key-icon.index {
-  color: var(--color-info);
+.fields-table :deep(.select-trigger:hover:not(.open)),
+.indexes-table :deep(.select-trigger:hover:not(.open)),
+.fk-table :deep(.select-trigger:hover:not(.open)) {
+  border-color: var(--border-default);
+  background: var(--surface-default);
+}
+
+.fields-table :deep(.select-trigger.open),
+.indexes-table :deep(.select-trigger.open),
+.fk-table :deep(.select-trigger.open) {
+  border-color: var(--brand-500);
+  background: var(--surface-default);
+  box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.15);
+}
+
+/* ---------- 关键字段徽章 ---------- */
+.key-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  font-weight: var(--font-bold);
+  letter-spacing: 0.03em;
+  line-height: 1;
+}
+
+.key-badge.primary {
+  background: var(--warning-100);
+  color: var(--warning-700);
+}
+
+.key-badge.unique {
+  background: var(--success-100);
+  color: var(--success-700);
+}
+
+.key-badge.index {
+  background: var(--brand-100);
+  color: var(--brand-700);
+}
+
+[data-theme="dark"] .key-badge.primary {
+  background: rgba(245, 158, 11, 0.18);
+  color: var(--warning-300);
+}
+
+[data-theme="dark"] .key-badge.unique {
+  background: rgba(16, 185, 129, 0.18);
+  color: var(--success-300);
+}
+
+[data-theme="dark"] .key-badge.index {
+  background: rgba(100, 181, 246, 0.18);
+  color: var(--brand-300);
 }
 
 /* 面板工具栏 */
 .panel-toolbar {
   display: flex;
-  gap: 8px;
-  padding: 8px 12px;
-  background: var(--color-background-soft);
-  border-bottom: 1px solid var(--color-border);
-}
-
-.panel-toolbar button {
-  display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 5px 10px;
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
-  background: var(--color-background);
-  color: var(--color-text);
-  cursor: pointer;
-  font-size: 12px;
+  gap: var(--space-2);
 }
 
-.panel-toolbar button:hover:not(:disabled) {
-  background: var(--color-background-hover);
+/* ---------- SQL 预览 ---------- */
+.sql-preview {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
 }
 
-.panel-toolbar button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-/* SQL 预览 */
 .sql-preview-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 12px;
-  background: var(--color-background-soft);
-  border-bottom: 1px solid var(--color-border);
+  justify-content: space-between;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-subtle);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .sql-preview-header .label {
-  font-weight: 500;
-  color: var(--color-text);
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-secondary);
 }
 
 .btn-copy {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 5px 10px;
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
-  background: var(--color-background);
-  color: var(--color-text);
-  cursor: pointer;
-  font-size: 12px;
+  height: 26px;
+  padding: 0 var(--space-2);
 }
 
 .sql-code {
-  padding: 16px;
   margin: 0;
-  background: #263238;
-  color: #aed581;
-  font-family: 'Consolas', 'Monaco', monospace;
-  font-size: 13px;
-  line-height: 1.5;
+  padding: var(--space-4);
+  max-height: 60vh;
+  background: #1E1E1E;
+  color: #A5D6A7;
+  font-family: var(--font-mono);
+  font-size: var(--text-base);
+  line-height: var(--leading-relaxed);
   overflow: auto;
   white-space: pre-wrap;
-  word-break: break-all;
+  word-break: break-word;
 }
 
-/* 错误提示 */
+/* ---------- 错误提示 ---------- */
 .error-message {
-  padding: 12px;
-  background: rgba(244, 67, 54, 0.1);
-  color: var(--color-danger);
-  border-top: 1px solid var(--color-danger);
-  font-size: 13px;
+  margin: 0 var(--space-4) var(--space-4);
+  padding: var(--space-2) var(--space-3);
+  background: var(--error-50);
+  border: 1px solid var(--error-200);
+  border-radius: var(--radius-sm);
+  color: var(--error-700);
+  font-size: var(--text-sm);
+  line-height: var(--leading-snug);
 }
 
+[data-theme="dark"] .error-message {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.4);
+  color: var(--error-300);
+}
+
+/* ---------- 空状态 ---------- */
 .empty-state {
-  padding: 40px;
+  padding: var(--space-10) var(--space-4);
+  background: var(--surface-subtle);
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-md);
   text-align: center;
-  color: var(--color-text-secondary);
-  font-size: 14px;
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
 }
 
-/* 字段属性面板 */
+/* ---------- 字段属性面板 ---------- */
 .field-properties-panel {
-  margin-top: 16px;
-  padding: 16px;
-  background: var(--color-background-soft);
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-default);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
 }
 
 .field-properties-panel .panel-title {
-  font-weight: 600;
-  font-size: 14px;
-  color: var(--color-text);
-  margin-bottom: 12px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--color-border);
+  margin-bottom: var(--space-3);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
 }
 
 .field-properties-panel .properties-form {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--space-3) var(--space-4);
 }
 
 .field-properties-panel .property-row {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-2);
+  min-width: 0;
 }
 
 .field-properties-panel .property-row label {
   min-width: 140px;
-  font-size: 13px;
-  color: var(--color-text);
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
 }
 
 .field-properties-panel .property-row input[type="text"] {
   flex: 1;
-  max-width: 300px;
-  padding: 6px 10px;
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
-  font-size: 13px;
-  background: var(--color-background);
-  color: var(--color-text);
+  min-width: 0;
+  height: 30px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-default);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--text-sm);
+  transition: var(--transition-colors), box-shadow var(--duration-fast) var(--ease-in-out);
+}
+
+.field-properties-panel .property-row input[type="text"]::placeholder {
+  color: var(--text-tertiary);
+}
+
+.field-properties-panel .property-row input[type="text"]:hover {
+  border-color: var(--border-strong);
 }
 
 .field-properties-panel .property-row input[type="text"]:focus {
-  border-color: var(--color-primary);
   outline: none;
+  border-color: var(--brand-500);
+  box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.15);
 }
 
 .field-properties-panel .property-row input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
+  width: 15px;
+  height: 15px;
+  accent-color: var(--brand-500);
   cursor: pointer;
 }
 </style>

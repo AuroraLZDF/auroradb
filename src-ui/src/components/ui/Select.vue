@@ -3,17 +3,25 @@
     <!-- 选择框 -->
     <div
       class="select-trigger"
-      :class="{ open: isOpen, disabled }"
+      :class="[{ open: isOpen, disabled }, `size-${size}`]"
       @click="toggleDropdown"
     >
-      <span class="select-value">{{ displayValue || placeholderText }}</span>
-      <ChevronDown class="select-arrow" :size="16" />
+      <span class="select-value" :class="{ 'is-placeholder': !displayValue }">
+        {{ displayValue || placeholderText }}
+      </span>
+      <ChevronDown class="select-arrow" :size="size === 'sm' ? 12 : 16" />
     </div>
 
     <!-- 下拉选项列表：挂载到 body，避免被弹窗等滚动容器裁剪 -->
     <Teleport to="body">
       <Transition name="dropdown">
-        <div v-if="isOpen" ref="dropdownRef" class="select-dropdown" :style="dropdownStyle">
+        <div
+          v-if="isOpen"
+          ref="dropdownRef"
+          class="select-dropdown"
+          :class="`size-${size}`"
+          :style="dropdownStyle"
+        >
           <!-- 搜索框（可选） -->
           <div v-if="searchable" class="select-search">
             <input
@@ -32,11 +40,11 @@
               v-for="option in filteredOptions"
               :key="option.value"
               class="select-option"
-              :class="{ selected: option.value === modelValue }"
+              :class="{ selected: isSelected(option) }"
               @click="selectOption(option)"
             >
               <span class="option-label">{{ option.label }}</span>
-              <Check v-if="option.value === modelValue" class="option-check" :size="14" />
+              <Check v-if="isSelected(option)" class="option-check" :size="size === 'sm' ? 12 : 14" />
             </div>
             <div v-if="filteredOptions.length === 0" class="select-empty">
               {{ t('ui.noMatchOptions') }}
@@ -59,18 +67,26 @@ interface Option {
 }
 
 const props = withDefaults(defineProps<{
-  modelValue: string
+  modelValue?: string
+  multiValue?: string[]
   options: (Option | string)[]
   placeholder?: string
   disabled?: boolean
   searchable?: boolean
+  multiple?: boolean
+  size?: 'sm' | 'md'
 }>(), {
+  modelValue: '',
+  multiValue: undefined,
   disabled: false,
-  searchable: false
+  searchable: false,
+  multiple: false,
+  size: 'md'
 })
 
 const emit = defineEmits<{
   'update:modelValue': [value: string]
+  'update:multiValue': [value: string[]]
 }>()
 
 const selectRef = ref<HTMLElement | null>(null)
@@ -110,11 +126,23 @@ const filteredOptions = computed(() => {
   )
 })
 
-// 显示值
-const displayValue = computed(() => {
-  const option = normalizedOptions.value.find(opt => opt.value === props.modelValue)
-  return option?.label || ''
+// 当前选中值（多选时取 multiValue，单选时取 modelValue）
+const selectedValues = computed<string[]>(() => {
+  if (props.multiple) return props.multiValue ?? []
+  return props.modelValue ? [props.modelValue] : []
 })
+
+// 显示值（多选按选择顺序拼接）
+const displayValue = computed(() => {
+  if (selectedValues.value.length === 0) return ''
+  const labelMap = new Map(normalizedOptions.value.map(opt => [opt.value, opt.label]))
+  return selectedValues.value.map(value => labelMap.get(value) ?? value).join(', ')
+})
+
+// 选项是否选中
+function isSelected(option: Option): boolean {
+  return selectedValues.value.includes(option.value)
+}
 
 // 占位提示（未传 placeholder 时使用通用文案）
 const placeholderText = computed(() => props.placeholder ?? t('common.pleaseSelect'))
@@ -147,6 +175,14 @@ function closeDropdown() {
 
 // 选择选项
 function selectOption(option: Option) {
+  if (props.multiple) {
+    const current = props.multiValue ?? []
+    const next = current.includes(option.value)
+      ? current.filter(value => value !== option.value)
+      : [...current, option.value]
+    emit('update:multiValue', next)
+    return
+  }
   emit('update:modelValue', option.value)
   closeDropdown()
 }
@@ -222,13 +258,22 @@ onUnmounted(() => {
   justify-content: space-between;
   padding: 10px 12px;
   border: 1px solid var(--border-default);
-  border-radius: 6px;
-  background: var(--bg-primary);
+  border-radius: var(--radius-md);
+  background: var(--surface-default);
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: var(--text-base);
   cursor: pointer;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  transition: var(--transition-colors), box-shadow var(--duration-fast) var(--ease-in-out);
   min-height: 40px;
+}
+
+/* 紧凑尺寸：用于表格单元格等密集场景 */
+.select-trigger.size-sm {
+  min-height: 26px;
+  height: 26px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
 }
 
 .select-trigger:hover:not(.disabled) {
@@ -237,7 +282,7 @@ onUnmounted(() => {
 
 .select-trigger.open {
   border-color: var(--brand-500);
-  box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.1);
+  box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.15);
 }
 
 .select-trigger.disabled {
@@ -253,11 +298,15 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
+.select-value.is-placeholder {
+  color: var(--text-tertiary);
+}
+
 .select-arrow {
   flex-shrink: 0;
-  margin-left: 8px;
-  color: var(--text-secondary);
-  transition: transform 0.2s;
+  margin-left: var(--space-1);
+  color: var(--text-tertiary);
+  transition: transform var(--duration-fast) var(--ease-in-out);
 }
 
 .select-trigger.open .select-arrow {
@@ -266,10 +315,10 @@ onUnmounted(() => {
 
 /* 下拉列表（坐标与宽度由 JS 以内联样式注入） */
 .select-dropdown {
-  background: var(--bg-primary);
+  background: var(--surface-default);
   border: 1px solid var(--border-default);
-  border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
   z-index: 1000;
   overflow: hidden;
 }
@@ -328,20 +377,26 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   padding: 10px 12px;
-  font-size: 14px;
+  font-size: var(--text-base);
   color: var(--text-primary);
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background-color var(--duration-fast) var(--ease-in-out);
+}
+
+/* 紧凑尺寸的选项 */
+.select-dropdown.size-sm .select-option {
+  padding: 6px 10px;
+  font-size: var(--text-sm);
 }
 
 .select-option:hover {
-  background: var(--bg-hover);
+  background: var(--surface-hover);
 }
 
 .select-option.selected {
-  background: rgba(33, 150, 243, 0.1);
-  color: var(--brand-500);
-  font-weight: 500;
+  background: var(--surface-selected);
+  color: var(--brand-600);
+  font-weight: var(--font-medium);
 }
 
 .option-label {
@@ -353,15 +408,15 @@ onUnmounted(() => {
 
 .option-check {
   flex-shrink: 0;
-  margin-left: 8px;
+  margin-left: var(--space-1);
   color: var(--brand-500);
 }
 
 .select-empty {
-  padding: 20px;
+  padding: var(--space-5);
   text-align: center;
   color: var(--text-tertiary);
-  font-size: 13px;
+  font-size: var(--text-sm);
 }
 
 /* 下拉动画 */

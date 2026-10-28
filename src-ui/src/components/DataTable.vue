@@ -273,12 +273,12 @@
         <button @click="lastPage" :disabled="page >= totalPages">{{ t('dataTable.lastPage') }}</button>
       </div>
       <div class="page-size">
-        <select v-model="pageSize" @change="reload">
-          <option :value="50">{{ t('dataTable.rowsPerPage', { count: 50 }) }}</option>
-          <option :value="100">{{ t('dataTable.rowsPerPage', { count: 100 }) }}</option>
-          <option :value="500">{{ t('dataTable.rowsPerPage', { count: 500 }) }}</option>
-          <option :value="1000">{{ t('dataTable.rowsPerPage', { count: 1000 }) }}</option>
-        </select>
+        <Select
+          :model-value="String(pageSize)"
+          :options="pageSizeOptions"
+          size="sm"
+          @update:model-value="onPageSizeChange"
+        />
       </div>
       <div class="execution-time" v-if="currentTableData">
         {{ t('dataTable.executionTime', { ms: currentTableData.execution_time_ms }) }}
@@ -380,10 +380,11 @@
         <div class="dialog-content">
           <div class="form-group">
             <label>{{ t('dataTable.format') }}</label>
-            <select v-model="importDialog.format" @change="handleImportFormatChange">
-              <option value="csv">CSV</option>
-              <option value="sql">SQL</option>
-            </select>
+            <Select
+              :model-value="importDialog.format"
+              :options="importFormatOptions"
+              @update:model-value="onImportFormatChange"
+            />
           </div>
           <div class="form-group">
             <label>{{ t('dataTable.file') }}</label>
@@ -423,12 +424,11 @@
         <div class="dialog-content">
           <div class="form-group">
             <label>{{ t('dataTable.format') }}</label>
-            <select v-model="exportDialog.format" @change="exportDialog.data = ''">
-              <option value="csv">CSV</option>
-              <option value="xlsx">Excel (xlsx)</option>
-              <option value="sql">SQL</option>
-              <option value="json">JSON</option>
-            </select>
+            <Select
+              :model-value="exportDialog.format"
+              :options="exportFormatOptions"
+              @update:model-value="onExportFormatChange"
+            />
           </div>
           <div class="form-group" v-if="exportDialog.data">
             <label>{{ t('dataTable.result') }}</label>
@@ -477,6 +477,7 @@ import {
   AlignHorizontalDistributeCenter
 } from '@/components/icons'
 import { Calendar } from 'lucide-vue-next'
+import Select from '@/components/ui/Select.vue'
 
 interface TableTab {
   id: string
@@ -672,6 +673,42 @@ const exportDialog = ref({
   data: '',
   loading: false
 })
+
+// 每页条数选项
+const pageSizeOptions = computed(() =>
+  [50, 100, 500, 1000].map(size => ({
+    label: t('dataTable.rowsPerPage', { count: size }),
+    value: String(size),
+  }))
+)
+
+// 导入 / 导出格式选项
+const importFormatOptions = [
+  { label: 'CSV', value: 'csv' },
+  { label: 'SQL', value: 'sql' },
+]
+
+const exportFormatOptions = [
+  { label: 'CSV', value: 'csv' },
+  { label: 'Excel (xlsx)', value: 'xlsx' },
+  { label: 'SQL', value: 'sql' },
+  { label: 'JSON', value: 'json' },
+]
+
+function onPageSizeChange(value: string) {
+  browserStore.setPageSize(Number(value))
+  reload()
+}
+
+function onImportFormatChange(value: string) {
+  importDialog.value.format = value as 'csv' | 'sql'
+  handleImportFormatChange()
+}
+
+function onExportFormatChange(value: string) {
+  exportDialog.value.format = value as 'csv' | 'xlsx' | 'sql' | 'json'
+  exportDialog.value.data = ''
+}
 
 // 计算属性
 const totalPages = computed(() => {
@@ -2821,31 +2858,19 @@ td.editing::before {
   cursor: not-allowed;
 }
 
-.page-size select {
-  padding: 4px 8px;
-  padding-right: 22px;
-  border: 1px solid var(--color-border);
+/* 分页条数选择：外层定宽，触发器与分页按钮同高 */
+.page-size {
+  width: 132px;
+  flex-shrink: 0;
+}
+
+.page-size :deep(.custom-select .select-trigger) {
+  padding: 0 8px;
+  border-color: var(--color-border);
   border-radius: 4px;
-  font-size: 12px;
-  /* WebKitGTK 的原生下拉控件会忽略背景色，禁用原生外观后由 CSS 绘制 */
-  background-color: var(--color-background);
-  color: var(--color-text);
-  appearance: none;
-  -webkit-appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 12 12'%3E%3Cpath fill='%23888' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 6px center;
-  cursor: pointer;
-}
-
-.page-size select:focus {
-  outline: none;
-  border-color: var(--color-primary);
-}
-
-.page-size select option {
   background: var(--color-background);
   color: var(--color-text);
+  font-size: 12px;
 }
 
 /* 空状态 */
@@ -3123,7 +3148,6 @@ td.editing::before {
   color: var(--color-text-secondary);
 }
 
-.form-group select,
 .form-group textarea {
   width: 100%;
   padding: 8px 12px;
@@ -3135,25 +3159,17 @@ td.editing::before {
   color: var(--color-text);
 }
 
-.form-group select {
-  padding-right: 32px;
-  cursor: pointer;
-  /* 同分页选择器：禁用 WebKitGTK 原生外观，避免暗色主题下白底 */
-  appearance: none;
-  -webkit-appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23888' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 12px center;
-}
-
-.form-group select:focus {
-  outline: none;
-  border-color: var(--color-primary);
-}
-
-.form-group select option {
+/* 自定义下拉框：触发器与对话框内输入框保持相同的外观 */
+.form-group :deep(.select-trigger) {
+  width: 100%;
+  height: 38px;
+  min-height: 38px;
+  padding: 0 12px;
+  border-color: var(--color-border);
+  border-radius: 4px;
   background: var(--color-background);
   color: var(--color-text);
+  font-size: 13px;
 }
 
 .form-group textarea {

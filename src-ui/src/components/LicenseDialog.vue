@@ -60,9 +60,13 @@
         <section class="section">
           <div class="section-label">{{ t('license.featuresTitle') }}</div>
           <div class="feature-list">
-            <span v-for="feature in proFeatures" :key="feature" class="feature-chip">
-              {{ t(`license.feature.${feature}`) }}
-            </span>
+            <div v-for="item in proFeatures" :key="item.key" class="feature-item">
+              <component :is="item.icon" :size="16" class="feature-icon" />
+              <div class="feature-text">
+                <span class="feature-name">{{ t(`license.feature.${item.key}`) }}</span>
+                <span class="feature-desc">{{ t(`license.featureDesc.${item.key}`) }}</span>
+              </div>
+            </div>
           </div>
           <p class="hint success-hint">
             <BadgeCheck :size="14" /> {{ t('license.activatedHint') }}
@@ -113,8 +117,25 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { KeyRound, X, Copy, Check, TriangleAlert, CircleAlert, BadgeCheck } from 'lucide-vue-next'
+import { ref, onMounted, type Component } from 'vue'
+import {
+  KeyRound,
+  X,
+  Copy,
+  Check,
+  TriangleAlert,
+  CircleAlert,
+  BadgeCheck,
+  GitCompare,
+  GitBranch,
+  ListTree,
+  Activity,
+  ScrollText,
+  HardDrive,
+  ArrowDownUp,
+  Search,
+  Network,
+} from 'lucide-vue-next'
 import Button from '@/components/ui/Button.vue'
 import { useLicenseStore, type ProFeature } from '@/stores/license'
 import { globalToast } from '@/composables/useToast'
@@ -126,12 +147,21 @@ const store = useLicenseStore()
 const code = ref('')
 const copied = ref(false)
 
-const proFeatures: ProFeature[] = [
-  'schema-diff',
-  'monitor',
-  'audit',
-  'import-export',
-  'ssh-tunnel',
+interface FeatureItem {
+  key: ProFeature
+  icon: Component
+}
+
+const proFeatures: FeatureItem[] = [
+  { key: 'schema-diff', icon: GitCompare },
+  { key: 'er-diagram', icon: GitBranch },
+  { key: 'query-plan', icon: ListTree },
+  { key: 'monitor', icon: Activity },
+  { key: 'audit', icon: ScrollText },
+  { key: 'backup', icon: HardDrive },
+  { key: 'import-export', icon: ArrowDownUp },
+  { key: 'global-search', icon: Search },
+  { key: 'ssh-tunnel', icon: Network },
 ]
 
 onMounted(() => {
@@ -381,17 +411,51 @@ function formatDate(value: string): string {
 }
 
 .feature-list {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-2);
 }
 
-.feature-chip {
-  padding: 2px var(--space-2);
-  border-radius: var(--radius-full, 999px);
-  background: rgba(33, 150, 243, 0.1);
+.feature-item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.feature-item:hover {
+  border-color: var(--brand-500);
+  background: rgba(33, 150, 243, 0.06);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+  transform: translateY(-1px);
+}
+
+.feature-icon {
+  flex-shrink: 0;
+  margin-top: 1px;
   color: var(--brand-500);
+}
+
+.feature-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.feature-name {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--text-primary);
+}
+
+.feature-desc {
   font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  line-height: 1.4;
 }
 
 .dialog-footer {

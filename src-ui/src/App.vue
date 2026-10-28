@@ -14,6 +14,7 @@
       @open-backup="handleOpenBackup"
       @open-global-search="handleOpenGlobalSearch"
       @open-license="licenseStore.openDialog()"
+      @open-about="showAbout = true"
     />
 
     <div class="app-body" :class="{ 'sidebar-open': sidebarOpen, 'panel-open': infoPanelOpen }">
@@ -224,6 +225,13 @@
       </div>
     </div>
 
+    <!-- 关于弹窗 -->
+    <div v-if="showAbout" class="modal-overlay">
+      <div class="modal-content modal-about">
+        <AboutDialog @close="showAbout = false" />
+      </div>
+    </div>
+
     <!-- Schema 对比弹窗 -->
     <div v-if="showSchemaDiff" class="modal-overlay">
       <div class="modal-content modal-large">
@@ -324,6 +332,7 @@ import DatabaseDesigner from '@/components/DatabaseDesigner.vue'
 import SchemaDiff from '@/components/SchemaDiff.vue'
 import MonitorPanel from '@/components/MonitorPanel.vue'
 import LicenseDialog from '@/components/LicenseDialog.vue'
+import AboutDialog from '@/components/AboutDialog.vue'
 import ToastNotification from '@/components/ui/Toast.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import CommandPalette from '@/components/CommandPalette.vue'
@@ -473,6 +482,9 @@ const showBackup = ref(false)
 // 跨库全局搜索
 const showGlobalSearch = ref(false)
 
+// 关于
+const showAbout = ref(false)
+
 // 专业版入口：未激活时先弹出激活窗口
 function handleOpenSchemaDiff() {
   if (licenseStore.requirePro('schema-diff', t('license.feature.schema-diff'))) {
@@ -527,6 +539,7 @@ const hasOpenModal = computed(() =>
   showMonitor.value ||
   showBackup.value ||
   showGlobalSearch.value ||
+  showAbout.value ||
   showTableDesigner.value ||
   showDatabaseDesigner.value
 )
@@ -2151,6 +2164,11 @@ body {
 
 .modal-content.modal-license {
   max-width: 560px;
+  width: 92%;
+}
+
+.modal-content.modal-about {
+  max-width: 520px;
   width: 92%;
 }
 

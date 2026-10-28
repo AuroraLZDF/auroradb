@@ -33,10 +33,11 @@
         <div class="form-grid">
           <div class="form-group col-4">
             <label>{{ t('connectionForm.driver') }}</label>
-            <select v-model="form.driver">
-              <option value="mysql">{{ t('connectionForm.driverMysql') }}</option>
-              <option value="postgres">{{ t('connectionForm.driverPostgres') }}</option>
-            </select>
+            <Select
+              :model-value="form.driver"
+              :options="driverOptions"
+              @update:model-value="(value) => (form.driver = value as DriverKind)"
+            />
           </div>
 
           <div class="form-group col-8">
@@ -83,11 +84,11 @@
           </div>
           <div class="form-group col-6">
             <label>{{ t('connectionForm.safetyMode') }}</label>
-            <select v-model="form.safetyMode">
-              <option value="off">{{ t('connectionForm.safetyModeOff') }}</option>
-              <option value="safe">{{ t('connectionForm.safetyModeSafe') }}</option>
-              <option value="read-only">{{ t('connectionForm.safetyModeReadOnly') }}</option>
-            </select>
+            <Select
+              :model-value="form.safetyMode"
+              :options="safetyModeOptions"
+              @update:model-value="(value) => (form.safetyMode = value as SafetyMode)"
+            />
           </div>
         </div>
 
@@ -101,13 +102,11 @@
           <div class="form-grid">
             <div class="form-group col-6">
               <label>{{ t('connectionForm.sslMode') }}</label>
-              <select v-model="form.sslMode">
-                <option value="preferred">{{ t('connectionForm.sslPreferred') }}</option>
-                <option value="disabled">{{ t('connectionForm.sslDisabled') }}</option>
-                <option value="required">{{ t('connectionForm.sslRequired') }}</option>
-                <option value="verify-ca">{{ t('connectionForm.sslVerifyCa') }}</option>
-                <option value="verify-identity">{{ t('connectionForm.sslVerifyIdentity') }}</option>
-              </select>
+              <Select
+                :model-value="form.sslMode"
+                :options="sslModeOptions"
+                @update:model-value="(value) => (form.sslMode = value as SslMode)"
+              />
             </div>
 
             <template v-if="form.sslMode !== 'disabled'">
@@ -151,10 +150,11 @@
             </div>
             <div class="form-group col-6">
               <label>{{ t('connectionForm.sshAuthType') }}</label>
-              <select v-model="form.sshAuthType">
-                <option value="password">{{ t('connectionForm.sshAuthPassword') }}</option>
-                <option value="private-key">{{ t('connectionForm.sshAuthPrivateKey') }}</option>
-              </select>
+              <Select
+                :model-value="form.sshAuthType"
+                :options="sshAuthTypeOptions"
+                @update:model-value="(value) => (form.sshAuthType = value as SshAuthType)"
+              />
             </div>
 
             <div v-if="form.sshAuthType === 'password'" class="form-group col-12">
@@ -229,6 +229,7 @@
 <script setup lang="ts">
 import { reactive, ref, computed, watch, onMounted } from 'vue'
 import { Eye, EyeOff } from 'lucide-vue-next'
+import Select from '@/components/ui/Select.vue'
 import { useConnectionStore } from '@/stores/connection'
 import { useSavedConnectionsStore } from '@/stores/savedConnections'
 import { useLicenseStore } from '@/stores/license'
@@ -289,6 +290,31 @@ const form = reactive({
 })
 
 const defaultPort = computed(() => DEFAULT_PORTS[form.driver])
+
+/** 下拉选项（随语言切换更新文案） */
+const driverOptions = computed(() => [
+  { label: t('connectionForm.driverMysql'), value: 'mysql' },
+  { label: t('connectionForm.driverPostgres'), value: 'postgres' },
+])
+
+const safetyModeOptions = computed(() => [
+  { label: t('connectionForm.safetyModeOff'), value: 'off' },
+  { label: t('connectionForm.safetyModeSafe'), value: 'safe' },
+  { label: t('connectionForm.safetyModeReadOnly'), value: 'read-only' },
+])
+
+const sslModeOptions = computed(() => [
+  { label: t('connectionForm.sslPreferred'), value: 'preferred' },
+  { label: t('connectionForm.sslDisabled'), value: 'disabled' },
+  { label: t('connectionForm.sslRequired'), value: 'required' },
+  { label: t('connectionForm.sslVerifyCa'), value: 'verify-ca' },
+  { label: t('connectionForm.sslVerifyIdentity'), value: 'verify-identity' },
+])
+
+const sshAuthTypeOptions = computed(() => [
+  { label: t('connectionForm.sshAuthPassword'), value: 'password' },
+  { label: t('connectionForm.sshAuthPrivateKey'), value: 'private-key' },
+])
 
 /** 高级设置里是否已有内容，用于在 Tab 上显示标记 */
 const advancedConfigured = computed(
@@ -672,8 +698,7 @@ async function handleSubmit() {
   color: var(--color-text);
 }
 
-.form-group input,
-.form-group select {
+.form-group input {
   width: 100%;
   padding: 8px 12px;
   border: 1px solid var(--color-border);
@@ -681,6 +706,19 @@ async function handleSubmit() {
   font-size: 14px;
   background: var(--color-background);
   color: var(--color-text);
+}
+
+/* 自定义下拉框：触发器与同组输入框保持相同的尺寸与配色 */
+.form-group :deep(.custom-select .select-trigger) {
+  width: 100%;
+  height: 38px;
+  min-height: 38px;
+  padding: 0 12px;
+  border-color: var(--color-border);
+  border-radius: 4px;
+  background: var(--color-background);
+  color: var(--color-text);
+  font-size: 14px;
 }
 
 .password-input-wrapper {

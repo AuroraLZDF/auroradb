@@ -32,15 +32,6 @@
           <FileCode class="header-btn-icon" :size="16" />
           <span class="header-btn-label u-hidden-mobile">{{ t('header.newQuery') }}</span>
         </button>
-        <button
-          class="header-btn"
-          @click="emit('openNewConsoleTab')"
-          :title="t('header.console')"
-          :disabled="!currentConnection"
-        >
-          <Terminal class="header-btn-icon" :size="16" />
-          <span class="header-btn-label u-hidden-mobile">{{ t('header.console') }}</span>
-        </button>
         <div class="tools-menu" ref="toolsMenuRef">
           <button
             class="header-btn"
@@ -48,7 +39,7 @@
             :title="t('header.tools')"
             aria-haspopup="menu"
             :aria-expanded="toolsOpen"
-            @click.stop="toolsOpen = !toolsOpen"
+            @click.stop="toggleMenu('tools')"
           >
             <Wrench class="header-btn-icon" :size="16" />
             <span class="header-btn-label u-hidden-mobile">{{ t('header.tools') }}</span>
@@ -109,49 +100,89 @@
               <Search :size="16" />
               <span>{{ t('header.globalSearch') }}</span>
             </button>
+            <div class="tools-divider"></div>
+            <button
+              class="tools-item"
+              role="menuitem"
+              :title="t('header.console')"
+              :disabled="!currentConnection"
+              @click="openTool('openNewConsoleTab')"
+            >
+              <Terminal :size="16" />
+              <span>{{ t('header.console') }}</span>
+            </button>
           </div>
         </div>
-        <button
-          class="header-btn"
-          :class="{ 'license-active': licenseStore.activated }"
-          @click="emit('openLicense')"
-          :title="t('header.licenseHint')"
-        >
-          <KeyRound class="header-btn-icon" :size="16" />
-          <span class="header-btn-label u-hidden-mobile">
-            {{ licenseStore.activated ? t('header.licensePro') : t('header.license') }}
-          </span>
-        </button>
+        <div class="tools-menu" ref="settingsMenuRef">
+          <button
+            class="header-btn"
+            :class="{ active: settingsOpen }"
+            :title="t('header.settings')"
+            aria-haspopup="menu"
+            :aria-expanded="settingsOpen"
+            @click.stop="toggleMenu('settings')"
+          >
+            <Settings class="header-btn-icon" :size="16" />
+            <span class="header-btn-label u-hidden-mobile">{{ t('header.settings') }}</span>
+            <ChevronDown
+              class="tools-chevron"
+              :class="{ open: settingsOpen }"
+              :size="14"
+            />
+          </button>
+          <div v-if="settingsOpen" class="tools-dropdown" role="menu">
+            <button
+              class="tools-item"
+              role="menuitem"
+              :title="t('header.checkUpdate')"
+              :disabled="updateStore.busy"
+              @click="handleUpdateClick"
+            >
+              <RefreshCw :class="{ spinning: updateStore.busy }" :size="16" />
+              <span>{{ updateStore.label }}</span>
+            </button>
+            <button
+              class="tools-item"
+              role="menuitem"
+              :title="t('header.licenseHint')"
+              @click="openTool('openLicense')"
+            >
+              <KeyRound :size="16" />
+              <span>{{ licenseStore.activated ? t('header.licensePro') : t('header.license') }}</span>
+            </button>
+            <div class="tools-divider"></div>
+            <button
+              class="tools-item"
+              role="menuitem"
+              :title="t('header.switchLanguage')"
+              @click="closeMenus(); toggleLocale()"
+            >
+              <Languages :size="16" />
+              <span>{{ t('header.switchLanguage') }}</span>
+              <span class="tools-item-hint">{{ languageLabel }}</span>
+            </button>
+            <button
+              class="tools-item"
+              role="menuitem"
+              :title="themeTooltip"
+              @click="closeMenus(); themeStore.toggleTheme()"
+            >
+              <component :is="themeIcon" :size="16" />
+              <span>{{ t('header.switchTheme') }}</span>
+            </button>
+            <div class="tools-divider"></div>
+            <button
+              class="tools-item"
+              role="menuitem"
+              :title="t('header.aboutHint')"
+              @click="openTool('openAbout')"
+            >
+              <Info :size="16" />
+              <span>{{ t('header.about') }}</span>
+            </button>
+          </div>
+        </div>
       </div>
-      <button
-        class="header-btn update-btn"
-        @click="handleUpdateClick"
-        :title="updateStore.busy ? updateStore.label : t('header.checkUpdate')"
-        :disabled="updateStore.busy"
-      >
-        <RefreshCw
-          class="header-btn-icon"
-          :class="{ spinning: updateStore.busy }"
-          :size="16"
-        />
-        <span class="header-btn-label u-hidden-mobile">{{ updateStore.label }}</span>
-      </button>
-      <button
-        class="header-btn lang-btn"
-        @click="toggleLocale"
-        :title="t('header.switchLanguage')"
-      >
-        <Languages class="header-btn-icon" :size="16" />
-        <span class="header-btn-label u-hidden-mobile">{{ languageLabel }}</span>
-      </button>
-      <button
-        class="header-btn theme-btn"
-        @click="themeStore.toggleTheme"
-        :title="themeTooltip"
-      >
-        <component :is="themeIcon" class="header-btn-icon" :size="16" />
-        <span class="header-btn-label u-hidden-mobile">{{ t('header.switchTheme') }}</span>
-      </button>
     </div>
 
     <!-- 面板切换按钮（平板/小屏） -->
@@ -173,7 +204,7 @@ import { useConnectionStore } from '@/stores/connection'
 import { useUpdaterStore } from '@/stores/updater'
 import { useLicenseStore } from '@/stores/license'
 import { t, locale, toggleLocale } from '@/i18n'
-import { Menu, Plug, FileCode, Moon, Sun, PanelRight, Terminal, RefreshCw, GitCompare, Activity, Languages, KeyRound, Network, HardDrive, Search, Wrench, ChevronDown } from 'lucide-vue-next'
+import { Menu, Plug, FileCode, Moon, Sun, PanelRight, Terminal, RefreshCw, GitCompare, Activity, Languages, KeyRound, Network, HardDrive, Search, Wrench, Settings, ChevronDown, Info } from 'lucide-vue-next'
 
 const themeStore = useThemeStore()
 const connStore = useConnectionStore()
@@ -202,37 +233,67 @@ const emit = defineEmits<{
   openBackup: []
   openGlobalSearch: []
   openLicense: []
+  openAbout: []
 }>()
 
 const currentConnection = computed(() => connStore.currentConnection)
 
-// 「工具」下拉菜单
+// 「工具」「设置」下拉菜单
 const toolsMenuRef = ref<HTMLElement | null>(null)
+const settingsMenuRef = ref<HTMLElement | null>(null)
 const toolsOpen = ref(false)
+const settingsOpen = ref(false)
 
-type ToolEvent = 'openSchemaDiff' | 'openErDiagram' | 'openMonitor' | 'openBackup' | 'openGlobalSearch'
+function toggleMenu(menu: 'tools' | 'settings') {
+  if (menu === 'tools') {
+    toolsOpen.value = !toolsOpen.value
+    settingsOpen.value = false
+  } else {
+    settingsOpen.value = !settingsOpen.value
+    toolsOpen.value = false
+  }
+}
+
+function closeMenus() {
+  toolsOpen.value = false
+  settingsOpen.value = false
+}
+
+type ToolEvent =
+  | 'openSchemaDiff'
+  | 'openErDiagram'
+  | 'openMonitor'
+  | 'openBackup'
+  | 'openGlobalSearch'
+  | 'openNewConsoleTab'
+  | 'openLicense'
+  | 'openAbout'
 
 const toolActions: Record<ToolEvent, () => void> = {
   openSchemaDiff: () => emit('openSchemaDiff'),
   openErDiagram: () => emit('openErDiagram'),
   openMonitor: () => emit('openMonitor'),
   openBackup: () => emit('openBackup'),
-  openGlobalSearch: () => emit('openGlobalSearch')
+  openGlobalSearch: () => emit('openGlobalSearch'),
+  openNewConsoleTab: () => emit('openNewConsoleTab'),
+  openLicense: () => emit('openLicense'),
+  openAbout: () => emit('openAbout')
 }
 
 function openTool(name: ToolEvent) {
-  toolsOpen.value = false
+  closeMenus()
   toolActions[name]()
 }
 
 function handleClickOutside(e: MouseEvent) {
-  if (toolsMenuRef.value && !toolsMenuRef.value.contains(e.target as Node)) {
-    toolsOpen.value = false
-  }
+  const target = e.target as Node
+  const inTools = toolsMenuRef.value?.contains(target)
+  const inSettings = settingsMenuRef.value?.contains(target)
+  if (!inTools && !inSettings) closeMenus()
 }
 
 function handleKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape') toolsOpen.value = false
+  if (e.key === 'Escape') closeMenus()
 }
 
 onMounted(() => {
@@ -258,6 +319,7 @@ const languageLabel = computed(() => (locale.value === 'zh-CN' ? 'EN' : '中文'
 
 // 已发现更新则直接下载安装，否则先检查；下载前由用户确认
 async function handleUpdateClick() {
+  closeMenus()
   if (updateStore.busy) return
   if (updateStore.availableVersion) {
     await updateStore.downloadAndInstall()
@@ -306,14 +368,6 @@ async function handleUpdateClick() {
   display: flex;
   min-width: 0;
   gap: var(--space-2);
-}
-
-.update-btn {
-  margin-left: auto;
-}
-
-.theme-btn {
-  margin-left: 0;
 }
 
 /* 「工具」下拉菜单 */
@@ -372,6 +426,19 @@ async function handleUpdateClick() {
   cursor: not-allowed;
 }
 
+.tools-divider {
+  height: 1px;
+  margin: var(--space-1) 0;
+  background: var(--border-default);
+}
+
+.tools-item-hint {
+  margin-left: auto;
+  padding-left: var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
 .header-btn {
   display: flex;
   align-items: center;
@@ -408,12 +475,6 @@ async function handleUpdateClick() {
   background: var(--brand-500);
   border-color: var(--brand-500);
   color: white;
-}
-
-/* 已激活：图标与文字用品牌色，与「激活」入口区分 */
-.header-btn.license-active {
-  border-color: var(--brand-500);
-  color: var(--brand-500);
 }
 
 .header-btn-icon {
