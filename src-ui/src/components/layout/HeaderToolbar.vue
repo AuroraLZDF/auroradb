@@ -54,7 +54,7 @@
               class="tools-item"
               role="menuitem"
               :title="t('header.schemaDiffHint')"
-              :disabled="connStore.activeConnections.length === 0"
+              :disabled="connStore.activeConnections.length === 0 || !licenseStore.allows('schema-diff')"
               @click="openTool('openSchemaDiff')"
             >
               <GitCompare :size="16" />
@@ -74,7 +74,7 @@
               class="tools-item"
               role="menuitem"
               :title="t('header.monitorHint')"
-              :disabled="connStore.activeConnections.length === 0"
+              :disabled="connStore.activeConnections.length === 0 || !licenseStore.allows('monitor')"
               @click="openTool('openMonitor')"
             >
               <Activity :size="16" />
