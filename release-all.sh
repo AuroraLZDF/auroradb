@@ -8,7 +8,7 @@
 # 用法:
 #   ./release-all.sh                        # 自动 patch +1 (1.0.4 -> 1.0.5)
 #   ./release-all.sh --version 1.1.0        # 指定版本号
-#   ./release-all.sh --notes "修复若干问题"  # 自定义发行说明
+#   ./release-all.sh --notes "修复若干问题"  # 自定义发行说明（默认自动收集 git log）
 #   ./release-all.sh --bundles deb          # 只构建 deb (默认 deb,appimage)
 #   ./release-all.sh --skip-checks          # 跳过 type-check 与单元测试
 #   ./release-all.sh --dry-run              # 只打印计划, 不做任何改动
@@ -121,7 +121,22 @@ if [[ -f "$SIGN_KEY" && -z "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]] \
         || die "签名私钥已加密但未提供密码: 请设置 TAURI_SIGNING_PRIVATE_KEY_PASSWORD 或写入 ~/.config/auroradb/updater.password"
 fi
 
-NOTES="${NOTES:-AuroraDB $VERSION 版本发布}"
+# 未显式传入 --notes 时，自动收集上一个版本 tag 以来的提交作为发行说明
+if [[ -z "$NOTES" ]]; then
+    LAST_TAG="v$CURRENT"
+    CHANGELOG=""
+    if git rev-parse -q --verify "refs/tags/$LAST_TAG" >/dev/null 2>&1; then
+        CHANGELOG="$(git log --pretty=format:'- %s' "$LAST_TAG..HEAD" 2>/dev/null \
+            | grep -vE '^\- (chore\(release\):|Merge)' || true)"
+    fi
+    if [[ -n "$CHANGELOG" ]]; then
+        NOTES="AuroraDB $VERSION 版本发布
+
+$CHANGELOG"
+    else
+        NOTES="AuroraDB $VERSION 版本发布"
+    fi
+fi
 
 # ---------- 2. 确认发布计划 ----------
 echo ""

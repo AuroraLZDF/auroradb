@@ -178,6 +178,13 @@ interface ApplyChangesResult {
   unchanged: number
 }
 
+/** Schema 差异脚本执行结果：逐条应用，遇错即停；failed_at 为失败语句序号（从 1 开始） */
+export interface ApplySchemaDiffResult {
+  applied: number
+  failed_at: number | null
+  error: string | null
+}
+
 /** SHOW FULL PROCESSLIST 中的一行 */
 export interface ProcessInfo {
   id: number
@@ -569,6 +576,19 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
     })
   }
 
+  /** 将 Schema 差异迁移脚本逐条应用到目标库，遇错即停 */
+  async function applySchemaDiff(
+    connectionId: string,
+    database: string,
+    statements: string[]
+  ): Promise<ApplySchemaDiffResult> {
+    return await tauriInvoke<ApplySchemaDiffResult>('apply_schema_diff', {
+      connectionId,
+      database,
+      statements
+    })
+  }
+
   /** 读取实例当前会话列表（SHOW FULL PROCESSLIST） */
   async function getProcessList(connectionId: string): Promise<ProcessInfo[]> {
     return await tauriInvoke<ProcessInfo[]>('get_process_list', { connectionId })
@@ -652,6 +672,7 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
     getSchemaSnapshot,
     listDatabases,
     compareSchemas,
+    applySchemaDiff,
     applyTableChanges,
     executeSql,
     dropTables,

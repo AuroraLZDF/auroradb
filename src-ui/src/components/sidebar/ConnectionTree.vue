@@ -210,6 +210,8 @@ function getConnectionStatus(state: string): 'online' | 'offline' | 'reconnectin
 .tree-section {
   flex: 1;
   overflow: auto;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .section-header {
@@ -249,6 +251,8 @@ function getConnectionStatus(state: string): 'online' | 'offline' | 'reconnectin
   border-radius: var(--radius-md);
   outline: none;
   transition: var(--transition-colors);
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .filter-input:focus {

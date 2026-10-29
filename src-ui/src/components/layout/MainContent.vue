@@ -227,6 +227,8 @@ const emit = defineEmits<{
   // 对象列表右键菜单：与左侧连接树共用同一套表操作菜单
   // tableNames 为当前多选中的表（右键未选中行时仅含该行）
   showTableMenu: [event: MouseEvent, connectionId: string, database: string, tableName: string, tableNames?: string[]]
+  // 表 Tab 被真正移除后通知父组件，用于同步右侧信息面板
+  tableTabClosed: [tab: { connectionId: string; database: string; tableName: string }]
 }>()
 
 const dataTableRef = ref<InstanceType<typeof DataTable> | null>(null)
@@ -404,6 +406,15 @@ function removeTab(tabId: string) {
   if (tab?.type === 'sql') {
     browserStore.clearQueryResult(tabId)
     editorTabs.remove(tabId)
+  }
+
+  // 表 Tab 关闭时通知父组件，父组件据此同步右侧信息面板
+  if (tab?.type === 'table') {
+    emit('tableTabClosed', {
+      connectionId: tab.connectionId,
+      database: tab.database,
+      tableName: tab.tableName,
+    })
   }
 
   tabs.value.splice(index, 1)

@@ -65,6 +65,7 @@
         @select-table="onSelectTableFromObjects"
         @open-table="onOpenTableFromObjects"
         @show-table-menu="showTableContextMenu"
+        @table-tab-closed="onTableTabClosed"
       />
 
       <!-- 右分隔条 -->
@@ -214,17 +215,18 @@
       :style="{ top: activeConnectionContextMenu.y + 'px', left: activeConnectionContextMenu.x + 'px' }"
       @click.stop
     >
-      <div
-        v-if="activeConnectionContextMenu.driver !== 'postgres'"
-        class="menu-item"
-        @click="handleActiveConnectionMenu('new-database')"
-      >
-        <Plus class="menu-icon" :size="14" /> {{ t('app.newDatabase') }}
-      </div>
-      <div class="menu-divider"></div>
       <div class="menu-item menu-item-danger" @click="handleActiveConnectionMenu('disconnect')">
         <X class="menu-icon" :size="14" /> {{ t('app.disconnect') }}
       </div>
+      <template v-if="activeConnectionContextMenu.driver !== 'postgres'">
+        <div class="menu-divider"></div>
+        <div
+          class="menu-item"
+          @click="handleActiveConnectionMenu('new-database')"
+        >
+          <Plus class="menu-icon" :size="14" /> {{ t('app.newDatabase') }}
+        </div>
+      </template>
     </div>
 
     <!-- 授权激活弹窗 -->
@@ -825,14 +827,6 @@ async function openSavedConnection(savedConn: SavedConnection) {
 
 // 断开指定连接
 async function disconnectConnection(connectionId: string) {
-  const target = activeConnections.value.find(c => c.id === connectionId)
-  // 断开连接会关闭该连接下所有已打开的表/查询 Tab，未保存的编辑内容会丢失，必须先确认
-  const confirmed = await confirmDanger({
-    message: t('app.disconnectConfirm', { name: target?.name ?? '' }),
-    confirmText: t('app.disconnect'),
-  })
-  if (!confirmed) return
-
   try {
     // 关闭该连接的所有表格
     if (mainContentRef.value?.closeConnectionTabs) {
@@ -856,6 +850,10 @@ async function disconnectConnection(connectionId: string) {
     selectedDatabase.value = ''
     selectedTable.value = ''
     viewingTableStructure.value = ''
+    // 右侧信息面板若显示该连接相关对象，同步关闭
+    if (selectedInfoData.value.connectionId === connectionId) {
+      closeInfoPanel()
+    }
     activeTool.value = 'connection'
     currentView.value = 'data'
   } catch (e) {
@@ -919,6 +917,14 @@ function closeDatabase(connectionId: string, dbName: string) {
   // 如果当前选中的是该数据库，清空选中
   if (selectedDatabase.value === key) {
     selectedDatabase.value = ''
+  }
+  // 右侧信息面板若显示该库或其下的表，同步关闭
+  if (
+    (selectedInfoType.value === 'database' || selectedInfoType.value === 'table') &&
+    selectedInfoData.value.connectionId === connectionId &&
+    selectedInfoData.value.database === dbName
+  ) {
+    closeInfoPanel()
   }
   // 关闭该数据库下所有打开的表Tab
   mainContentRef.value?.closeDatabaseTabs(connectionId, dbName)
@@ -1009,6 +1015,18 @@ function selectTable(connectionId: string, dbName: string, tableName: string) {
 function closeInfoPanel() {
   selectedInfoType.value = null
   selectedInfoData.value = {}
+}
+
+// 表 Tab 关闭后同步右侧信息面板：若右侧正显示该表，则关闭面板
+function onTableTabClosed(tab: { connectionId: string; database: string; tableName: string }) {
+  if (
+    selectedInfoType.value === 'table' &&
+    selectedInfoData.value.connectionId === tab.connectionId &&
+    selectedInfoData.value.database === tab.database &&
+    selectedInfoData.value.tableName === tab.tableName
+  ) {
+    closeInfoPanel()
+  }
 }
 
 // 表格设计器保存后的回调

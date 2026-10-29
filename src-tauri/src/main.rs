@@ -105,6 +105,7 @@ fn main() {
             commands::connection::get_table_structure,
             commands::connection::get_schema_snapshot,
             commands::connection::compare_schemas,
+            commands::connection::apply_schema_diff,
             commands::connection::get_database_info,
             commands::connection::begin_transaction,
             commands::connection::commit_transaction,

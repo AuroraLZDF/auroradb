@@ -511,6 +511,14 @@ pub struct SchemaDiff {
     pub summary: SchemaDiffSummary,
 }
 
+/// Schema 差异脚本执行结果：逐条应用，遇错即停；`failed_at` 为失败语句的序号（从 1 开始）
+#[derive(Debug, Clone, Serialize)]
+pub struct ApplySchemaDiffResult {
+    pub applied: usize,
+    pub failed_at: Option<usize>,
+    pub error: Option<String>,
+}
+
 /// 服务端会话/进程（对应 `SHOW FULL PROCESSLIST` 的一行）
 #[derive(Debug, Clone, Serialize)]
 pub struct ProcessInfo {

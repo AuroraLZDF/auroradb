@@ -73,6 +73,11 @@
       <span>{{ errorMessage }}</span>
     </div>
 
+    <div v-if="successMessage" class="diff-success">
+      <CheckCircle2 :size="16" />
+      <span>{{ successMessage }}</span>
+    </div>
+
     <!-- 空状态 -->
     <div v-if="!diff" class="diff-empty">
       <GitCompare :size="40" class="empty-icon" />
@@ -150,14 +155,26 @@
           <div class="detail-header">
             <h3>{{ activeTable.name }}</h3>
             <span class="badge" :class="activeTable.change">{{ changeLabel(activeTable.change) }}</span>
-            <Button
-              size="xs"
-              variant="text"
-              :icon="Copy"
-              @click="copyStatements(activeTable.statements, activeTable.name)"
-            >
-              {{ copiedKey === activeTable.name ? t('common.copied') : t('schemaDiff.copyTable') }}
-            </Button>
+            <div class="detail-actions">
+              <Button
+                size="xs"
+                variant="danger"
+                :icon="Zap"
+                :loading="applying"
+                :disabled="activeTable.statements.length === 0 || applying"
+                @click="applyTableDiff"
+              >
+                {{ applying ? t('schemaDiff.applying') : t('schemaDiff.apply') }}
+              </Button>
+              <Button
+                size="xs"
+                variant="text"
+                :icon="Copy"
+                @click="copyStatements(activeTable.statements, activeTable.name)"
+              >
+                {{ copiedKey === activeTable.name ? t('common.copied') : t('schemaDiff.copyTable') }}
+              </Button>
+            </div>
           </div>
 
           <div class="detail-body">
@@ -216,7 +233,8 @@ import {
   Copy,
   GitCompare,
   Play,
-  X
+  X,
+  Zap
 } from 'lucide-vue-next'
 import Select from '@/components/ui/Select.vue'
 import Button from '@/components/ui/Button.vue'
@@ -229,6 +247,8 @@ import {
 } from '@/stores/dataBrowser'
 import type { ConnectionStatus } from '@/stores/connection'
 import { t } from '@/i18n'
+import { confirmDanger } from '@/composables/useConfirm'
+import { useToast } from '@/composables/useToast'
 
 const props = withDefaults(defineProps<{
   connections: ConnectionStatus[]
@@ -244,6 +264,7 @@ const emit = defineEmits<{
 }>()
 
 const dataBrowser = useDataBrowserStore()
+const { success: showSuccess } = useToast()
 
 const SYSTEM_DATABASES = ['information_schema', 'mysql', 'performance_schema', 'sys']
 
@@ -256,7 +277,9 @@ const dbCache = reactive<Record<string, string[]>>({})
 const dbLoading = reactive({ source: false, target: false })
 
 const comparing = ref(false)
+const applying = ref(false)
 const errorMessage = ref('')
+const successMessage = ref('')
 const diff = ref<SchemaDiff | null>(null)
 const filter = ref<DiffChange | 'all'>('all')
 const selectedTableName = ref('')
@@ -427,6 +450,61 @@ async function copyStatements(statements: string[], key: string) {
     errorMessage.value = t('schemaDiff.copyFailed', { message: String(err) })
   }
 }
+
+function isDestructive(sql: string): boolean {
+  return /\b(drop|modify|change|rename)\b/i.test(sql)
+}
+
+function hasDestructiveChange(statements: string[]): boolean {
+  return statements.some(isDestructive)
+}
+
+async function applyTableDiff() {
+  const table = activeTable.value
+  if (!table || table.statements.length === 0 || applying.value) return
+
+  // 仅破坏性操作（DROP/MODIFY/CHANGE/RENAME）才弹确认；纯新增直接执行
+  if (hasDestructiveChange(table.statements)) {
+    const confirmed = await confirmDanger({
+      title: t('schemaDiff.applyConfirmTitle'),
+      message: t('schemaDiff.applyConfirm', {
+        table: table.name,
+        count: table.statements.length,
+        database: targetDatabase.value
+      }),
+      confirmText: t('schemaDiff.apply'),
+      requireAcknowledge: true
+    })
+    if (!confirmed) return
+  }
+
+  applying.value = true
+  errorMessage.value = ''
+  successMessage.value = ''
+  try {
+    const result = await dataBrowser.applySchemaDiff(
+      targetConnectionId.value,
+      targetDatabase.value,
+      table.statements
+    )
+    if (result.failed_at != null) {
+      errorMessage.value = t('schemaDiff.applyFailedAt', {
+        applied: result.applied,
+        failedAt: result.failed_at,
+        error: result.error ?? ''
+      })
+    } else {
+      successMessage.value = t('schemaDiff.applySuccess', { count: result.applied })
+      showSuccess(t('schemaDiff.applySuccess', { count: result.applied }))
+      // 同步成功后重新对比，刷新差异视图
+      await runCompare()
+    }
+  } catch (err) {
+    errorMessage.value = t('schemaDiff.applyFailed', { message: String(err) })
+  } finally {
+    applying.value = false
+  }
+}
 </script>
 
 <style scoped>
@@ -573,6 +651,19 @@ async function copyStatements(statements: string[], key: string) {
   border-radius: var(--radius-md);
   background: rgba(239, 68, 68, 0.08);
   color: var(--error-500);
+  font-size: var(--text-sm);
+}
+
+.diff-success {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-3) var(--space-5) 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--success-500);
+  border-radius: var(--radius-md);
+  background: rgba(16, 185, 129, 0.08);
+  color: var(--success-500);
   font-size: var(--text-sm);
 }
 
@@ -800,8 +891,11 @@ async function copyStatements(statements: string[], key: string) {
   white-space: nowrap;
 }
 
-.detail-header .btn {
+.detail-actions {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 .detail-body {

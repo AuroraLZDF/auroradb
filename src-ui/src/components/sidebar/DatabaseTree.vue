@@ -147,6 +147,8 @@ function isCategoryExpanded(dbName: string, categoryType: string): boolean {
 .connection-databases {
   margin-left: var(--space-5);
   margin-top: var(--space-1);
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .database-item {

@@ -19,7 +19,7 @@ show_help() {
     echo "用法: ./build.sh [选项]"
     echo ""
     echo "选项:"
-    echo "  --deb         只打包 .deb 格式 (Debian/Ubuntu)"
+    echo "  --deb         只打包 .deb 格式 (Debian/Ubuntu，推荐)"
     echo "  --appimage    只打包 .AppImage 格式 (需要下载工具)"
     echo "  --rpm         只打包 .rpm 格式 (Fedora/CentOS)"
     echo "  --bundles X   自定义格式，逗号分隔，如 deb,appimage"
@@ -266,23 +266,27 @@ echo "使用说明:"
 echo "========================================"
 echo ""
 
-if [ -d "$BUNDLE_DIR/appimage" ] && [ -n "$(ls -A "$BUNDLE_DIR/appimage"/*.AppImage 2>/dev/null)" ]; then
-    echo "1. AppImage (推荐):"
-    echo "   cd $BUNDLE_DIR/appimage"
-    echo "   chmod +x *.AppImage"
-    echo "   ./mysql-client_*.AppImage"
-    echo ""
-fi
-
+STEP=1
 if [ -d "$BUNDLE_DIR/deb" ] && [ -n "$(ls -A "$BUNDLE_DIR/deb"/*.deb 2>/dev/null)" ]; then
-    echo "2. Debian/Ubuntu 安装:"
+    echo "$STEP. Debian/Ubuntu 安装 (推荐):"
     echo "   cd $BUNDLE_DIR/deb"
-    echo "   sudo dpkg -i mysql-client_*.deb"
+    echo "   sudo dpkg -i AuroraDB_*.deb"
     echo "   sudo apt-get install -f  # 如有依赖问题"
     echo ""
-    echo "3. 卸载应用:"
-    echo "   sudo apt remove mysql-client"
+    STEP=$((STEP + 1))
+    echo "$STEP. 卸载应用:"
+    echo "   sudo apt remove auroradb"
     echo ""
+    STEP=$((STEP + 1))
+fi
+
+if [ -d "$BUNDLE_DIR/appimage" ] && [ -n "$(ls -A "$BUNDLE_DIR/appimage"/*.AppImage 2>/dev/null)" ]; then
+    echo "$STEP. AppImage (免安装，跨发行版可选):"
+    echo "   cd $BUNDLE_DIR/appimage"
+    echo "   chmod +x *.AppImage"
+    echo "   ./AuroraDB_*.AppImage"
+    echo ""
+    STEP=$((STEP + 1))
 fi
 
 echo "重新打包:"

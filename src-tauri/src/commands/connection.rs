@@ -292,6 +292,37 @@ pub async fn compare_schemas(
     }
 }
 
+/// 将 Schema 差异迁移脚本逐条应用到目标库，遇错即停并返回失败序号
+#[command]
+pub async fn apply_schema_diff(
+    state: State<'_, ConnectionManagerState>,
+    audit: State<'_, AuditLog>,
+    license: State<'_, LicenseManager>,
+    connection_id: String,
+    database: String,
+    statements: Vec<String>,
+) -> Result<crate::core::connection::ApplySchemaDiffResult, String> {
+    license.ensure(FEATURE_SCHEMA_DIFF, "结构对比").await?;
+
+    let mut applied = 0usize;
+    for (idx, sql) in statements.iter().enumerate() {
+        if let Err(e) = execute_with_audit(&state, &audit, &connection_id, &database, sql).await {
+            return Ok(crate::core::connection::ApplySchemaDiffResult {
+                applied,
+                failed_at: Some(idx + 1),
+                error: Some(e),
+            });
+        }
+        applied += 1;
+    }
+
+    Ok(crate::core::connection::ApplySchemaDiffResult {
+        applied,
+        failed_at: None,
+        error: None,
+    })
+}
+
 /// 获取数据库信息
 #[command]
 pub async fn get_database_info(

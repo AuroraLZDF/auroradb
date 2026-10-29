@@ -163,55 +163,6 @@
         <div v-if="fields.length === 0" class="empty-state">
           {{ t('tableDesigner.emptyFields') }}
         </div>
-
-        <!-- 选中字段属性面板 -->
-        <div v-if="selectedField" class="field-properties-panel">
-          <div class="panel-title">{{ t('tableDesigner.fieldProperties', { name: selectedField.name }) }}</div>
-          <div class="properties-form">
-            <!-- 默认值 -->
-            <div class="property-row">
-              <label>{{ t('tableDesigner.defaultValue') }}</label>
-              <input
-                v-model="selectedField.defaultValue"
-                type="text"
-                placeholder="NULL"
-                @change="markFieldModified(selectedFieldIndex!)"
-              />
-            </div>
-
-            <!-- Unsigned (仅整数类型) -->
-            <div class="property-row" v-if="isIntegerType(selectedField.type)">
-              <label>{{ t('tableDesigner.unsigned') }}</label>
-              <input
-                type="checkbox"
-                v-model="selectedField.unsigned"
-                @change="markFieldModified(selectedFieldIndex!)"
-              />
-            </div>
-
-            <!-- 自增 (仅整数类型) -->
-            <div class="property-row" v-if="isIntegerType(selectedField.type)">
-              <label>{{ t('tableDesigner.autoIncrement') }}</label>
-              <input
-                type="checkbox"
-                v-model="selectedField.isAutoIncrement"
-                @change="onAutoIncrementChange"
-              />
-            </div>
-
-            <!-- On Update Current_Timestamp (仅时间戳类型) -->
-            <div class="property-row" v-if="isTimestampType(selectedField.type)">
-              <label>
-                <input
-                  type="checkbox"
-                  v-model="selectedField.onUpdateCurrentTimestamp"
-                  @change="markFieldModified(selectedFieldIndex!)"
-                />
-                On Update CURRENT_TIMESTAMP
-              </label>
-            </div>
-          </div>
-        </div>
       </div>
 
       <!-- 索引标签页 -->
@@ -362,6 +313,55 @@
             </button>
           </div>
           <pre class="sql-code">{{ generatedSql }}</pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- 选中字段属性面板（固定在弹窗底部） -->
+    <div v-if="activeTab === 'fields' && selectedField" class="field-properties-panel">
+      <div class="panel-title">{{ t('tableDesigner.fieldProperties', { name: selectedField.name }) }}</div>
+      <div class="properties-form">
+        <!-- 默认值 -->
+        <div class="property-row">
+          <label>{{ t('tableDesigner.defaultValue') }}</label>
+          <input
+            v-model="selectedField.defaultValue"
+            type="text"
+            placeholder="NULL"
+            @change="markFieldModified(selectedFieldIndex!)"
+          />
+        </div>
+
+        <!-- Unsigned (仅整数类型) -->
+        <div class="property-row" v-if="isIntegerType(selectedField.type)">
+          <label>{{ t('tableDesigner.unsigned') }}</label>
+          <input
+            type="checkbox"
+            v-model="selectedField.unsigned"
+            @change="markFieldModified(selectedFieldIndex!)"
+          />
+        </div>
+
+        <!-- 自增 (仅整数类型) -->
+        <div class="property-row" v-if="isIntegerType(selectedField.type)">
+          <label>{{ t('tableDesigner.autoIncrement') }}</label>
+          <input
+            type="checkbox"
+            v-model="selectedField.isAutoIncrement"
+            @change="onAutoIncrementChange"
+          />
+        </div>
+
+        <!-- On Update Current_Timestamp (仅时间戳类型) -->
+        <div class="property-row" v-if="isTimestampType(selectedField.type)">
+          <label>
+            <input
+              type="checkbox"
+              v-model="selectedField.onUpdateCurrentTimestamp"
+              @change="markFieldModified(selectedFieldIndex!)"
+            />
+            On Update CURRENT_TIMESTAMP
+          </label>
         </div>
       </div>
     </div>
@@ -1060,8 +1060,11 @@ async function saveChanges() {
 
     emit('saved')
     
-    // 如果是编辑模式，重新加载结构
-    if (!props.isNewTable) {
+    // 编辑模式：重新加载结构；新建模式：保存成功后直接关闭设计器，
+    // 避免仍在新建模式下重复编辑导致再次执行 CREATE TABLE 报“表已存在”
+    if (props.isNewTable) {
+      emit('close')
+    } else {
       await loadTableStructure()
     }
   } catch (e: unknown) {
@@ -1698,6 +1701,8 @@ onMounted(() => {
 
 /* ---------- 字段属性面板 ---------- */
 .field-properties-panel {
+  flex-shrink: 0;
+  margin: var(--space-3) var(--space-4) var(--space-3);
   padding: var(--space-3) var(--space-4);
   background: var(--surface-default);
   border: 1px solid var(--border-subtle);
