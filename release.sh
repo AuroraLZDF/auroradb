@@ -85,7 +85,8 @@ echo -e "${YELLOW}发布仓库: $OWNER/$REPO  版本: $TAG${NC}"
 
 TMP="$(mktemp)"
 LATEST_TMP="$(mktemp)"
-trap 'rm -f "$TMP" "$LATEST_TMP"' EXIT
+README_TMP=""
+trap 'rm -f "$TMP" "$LATEST_TMP" "$README_TMP"' EXIT
 
 json_id() {
     # 忽略 JSON 中的换行与空格，取第一个顶层 "id"
@@ -330,4 +331,65 @@ else
     echo -e "${RED}✗ 自动更新清单更新失败 (HTTP $HTTP_CODE)${NC}"
     cat "$TMP"
     exit 1
+fi
+
+# 7. 同步 README 中的版本号：徽章、「最新版本」、安装包名与下载直链
+#    README 由终端用户直接打开，版本号写死在其中，发版后必须一起更新。
+HTTP_CODE="$(curl -sS -o "$TMP" -w '%{http_code}' \
+    "$API/contents/README.md?access_token=$GITEE_TOKEN&ref=$TARGET_BRANCH")"
+
+if [[ "$HTTP_CODE" != "200" ]]; then
+    echo -e "${YELLOW}  注意: 未读取到发布仓库的 README.md (HTTP $HTTP_CODE)，跳过版本号同步${NC}"
+else
+    README_SHA="$(json_field sha "$TMP")"
+    README_TMP="$(mktemp)"
+    CHANGED="$(python3 - "$TMP" "$README_TMP" "$VERSION" "$TAG" <<'PY'
+import base64
+import json
+import re
+import sys
+
+api_json, out, version, tag = sys.argv[1:5]
+text = base64.b64decode(json.load(open(api_json, encoding='utf-8'))['content']).decode('utf-8')
+
+new = text
+# shields.io 版本徽章
+new = re.sub(r'version-[0-9][^-]*?-blue', f'version-{version}-blue', new)
+# 「最新版本：**v1.0.7**」
+new = re.sub(r'(最新版本：\*\*)v[^*]+(\*\*)', rf'\g<1>{tag}\g<2>', new)
+# 安装包文件名 AuroraDB_1.0.7_amd64.*
+new = re.sub(r'AuroraDB_[0-9][^_]*_amd64', f'AuroraDB_{version}_amd64', new)
+# 下载直链 .../releases/download/v1.0.7/...
+new = re.sub(r'releases/download/v[^/]+/', f'releases/download/{tag}/', new)
+
+open(out, 'w', encoding='utf-8').write(new)
+print('changed' if new != text else 'same')
+PY
+)"
+
+    if [[ "$CHANGED" != "changed" ]]; then
+        echo -e "${GREEN}✓ README 版本号已是最新 ($TAG)${NC}"
+    else
+        B64_CONTENT="$(base64 -w0 "$README_TMP")"
+        HTTP_CODE="$(curl -sS -X PUT -o "$TMP" -w '%{http_code}' \
+            "$API/contents/README.md" \
+            --data-urlencode "access_token=$GITEE_TOKEN" \
+            --data-urlencode "content=$B64_CONTENT" \
+            --data-urlencode "message=chore: 更新 README 版本号 $TAG" \
+            --data-urlencode "sha=$README_SHA" \
+            --data-urlencode "branch=$TARGET_BRANCH")"
+
+        if [[ "$HTTP_CODE" == "200" || "$HTTP_CODE" == "201" ]]; then
+            echo -e "${GREEN}✓ README 版本号已更新为 $TAG${NC}"
+            # 本地副本同步，避免下次手工编辑时又用旧版本号
+            LOCAL_README="../docs/auroradb-releases-README.md"
+            if [[ -f "$LOCAL_README" ]]; then
+                cp "$README_TMP" "$LOCAL_README"
+                echo -e "  本地副本已同步: $LOCAL_README"
+            fi
+        else
+            echo -e "${YELLOW}  注意: README 版本号更新失败 (HTTP $HTTP_CODE)，可手工修改${NC}"
+            cat "$TMP"
+        fi
+    fi
 fi
