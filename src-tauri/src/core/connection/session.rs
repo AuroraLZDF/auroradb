@@ -145,6 +145,9 @@ impl ConnectionManager {
         let ssl = &request.config.ssl_config;
         let pool_config = &request.config.pool_config;
 
+        // 记录 MySQL 连接是否因 TLS 握手失败回退为明文，供备份/还原 CLI 保持一致
+        let mut tls_disabled = false;
+
         // 按驱动创建连接池
         let pool = match request.config.driver {
             DriverKind::MySql => {
@@ -188,6 +191,7 @@ impl ConnectionManager {
                     // 必需/校验类模式不满足条件，仍然硬失败。
                     Err(e) if mode == SslMode::Preferred && is_tls_handshake_failure(&e) => {
                         tracing::warn!("TLS 握手失败，按「首选」语义回退为明文连接：{}", e);
+                        tls_disabled = true;
                         connect(MySqlSslMode::Disabled).await.map(AnyPool::MySql)?
                     }
                     Err(e) => return Err(e.into()),
@@ -260,6 +264,7 @@ impl ConnectionManager {
             session: Arc::new(Mutex::new(None)),
             metadata_cache: Arc::new(Mutex::new(HashMap::new())),
             tunnel,
+            tls_disabled,
         };
 
         self.connections.write().await.insert(id.clone(), managed);

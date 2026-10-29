@@ -14,6 +14,7 @@ export default {
     'backup.noFile': '未选择文件',
     'backup.startRestore': '执行还原',
     'backup.restoring': '还原中…',
+    'backup.progressStatements': '已执行 {count} 条语句',
 
     'backup.success': '备份成功，已保存到 {path}',
     'backup.restoreSuccess': '还原成功',
@@ -37,6 +38,7 @@ export default {
     'backup.noFile': 'No file selected',
     'backup.startRestore': 'Execute Restore',
     'backup.restoring': 'Restoring…',
+    'backup.progressStatements': '{count} statements executed',
 
     'backup.success': 'Backup saved to {path}',
     'backup.restoreSuccess': 'Restore completed',

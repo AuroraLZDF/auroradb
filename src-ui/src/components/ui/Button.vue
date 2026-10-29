@@ -194,8 +194,17 @@ function handleClick(event: MouseEvent) {
 
 /* Loading state */
 .btn.is-loading {
-  color: transparent;
   pointer-events: none;
+}
+
+/* 仅纯图标按钮隐藏内容、只留居中转圈；带文字的按钮保留文案，避免加载中按钮「空白」 */
+.btn.is-loading:not(.has-text) {
+  color: transparent;
+}
+
+.btn.is-loading.has-text {
+  cursor: progress;
+  opacity: 0.85;
 }
 
 .btn-spinner {
@@ -203,6 +212,11 @@ function handleClick(event: MouseEvent) {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+/* 带文字时转圈改回文档流，与文案并排显示 */
+.btn.is-loading.has-text .btn-spinner {
+  position: static;
 }
 
 .spin {

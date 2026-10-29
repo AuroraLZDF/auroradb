@@ -49,6 +49,9 @@ pub struct ManagedConnection {
     pub metadata_cache: Arc<Mutex<HashMap<String, (Instant, MetadataCacheValue)>>>,
     /// SSH 隧道：连接期间必须存活，断开时置 None 触发 Drop 关闭
     pub tunnel: Option<SshTunnel>,
+    /// 连接是否因 TLS 握手失败已回退为明文连接（仅 MySQL「首选」模式可能为 true）。
+    /// 外部备份/还原 CLI 需要据此决定是否禁用 TLS，否则会与连接实际状态不一致。
+    pub tls_disabled: bool,
 }
 
 impl ManagedConnection {
@@ -59,6 +62,19 @@ impl ManagedConnection {
             .as_ref()
             .ok_or_else(|| anyhow!("连接尚未建立"))?;
         Ok(pool.as_mysql(feature)?.clone())
+    }
+
+    /// 外部客户端工具（mysqldump / mysql 等）应使用的有效 SSL 配置。
+    ///
+    /// 应用自身在「首选」模式下若 TLS 握手失败会回退明文；但外部 CLI 不会自动回退
+    /// （MySQL 的 `--ssl-mode=PREFERRED` 遇到不支持 TLS 的服务端会直接报错退出）。
+    /// 因此这里按连接实际是否已回退为明文，把模式覆盖为 Disabled，保持 CLI 与连接状态一致。
+    pub fn effective_ssl_config(&self) -> SslConfig {
+        let mut ssl = self.config.ssl_config.clone();
+        if self.tls_disabled {
+            ssl.mode = SslMode::Disabled;
+        }
+        ssl
     }
 }
 

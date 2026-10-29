@@ -706,8 +706,12 @@ pub async fn backup_database(
 }
 
 /// 从 dump 文件还原数据库
+///
+/// 执行过程中推送 `restore-progress` 事件，前端据此展示字节进度与逐条语句流水，
+/// 避免大文件还原期间界面只有静止的按钮、用户无从判断是否卡死。
 #[command]
 pub async fn restore_database(
+    window: tauri::Window,
     state: State<'_, ConnectionManagerState>,
     license: State<'_, LicenseManager>,
     connection_id: String,
@@ -717,8 +721,20 @@ pub async fn restore_database(
     license.ensure(FEATURE_BACKUP, "数据库还原").await?;
     let manager = state.manager.read().await;
 
+    let reporter: ImportReporter = Arc::new(move |progress: ImportProgress| {
+        let payload = ImportProgressPayload {
+            task_id: String::new(),
+            bytes: progress.bytes,
+            total: progress.total,
+            lines: progress.lines,
+            done: progress.done,
+            success: progress.success,
+        };
+        let _ = window.emit("restore-progress", payload);
+    });
+
     match manager
-        .restore_database(&connection_id, &database, &dump_path)
+        .restore_database(&connection_id, &database, &dump_path, Some(reporter))
         .await
     {
         Ok(()) => Ok(()),

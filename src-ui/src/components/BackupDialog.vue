@@ -113,6 +113,26 @@
           <Upload :size="14" />
           {{ restoring ? t('backup.restoring') : t('backup.startRestore') }}
         </Button>
+
+        <!-- 还原进度：大文件执行期间给出实时反馈，避免用户误以为卡死 -->
+        <div v-if="restoring || restoreProgress.total > 0" class="restore-progress">
+          <div class="progress-track">
+            <div class="progress-bar" :style="{ width: `${restorePercent}%` }" />
+          </div>
+          <div class="progress-meta">
+            <span>
+              {{ restorePercent }}% · {{ formatBytes(restoreProgress.bytes) }} /
+              {{ formatBytes(restoreProgress.total) }}
+            </span>
+            <span>{{ t('backup.progressStatements', { count: restoreStatementCount }) }}</span>
+          </div>
+          <div v-if="restoreTail.length" class="progress-log">
+            <div v-for="(line, index) in restoreTail" :key="index" :class="['log-line', line.level]">
+              <span class="log-text">{{ line.text }}</span>
+            </div>
+          </div>
+        </div>
+
         <p v-if="restoreError" class="error-msg">
           <AlertCircle :size="14" /> {{ restoreError }}
         </p>
@@ -122,8 +142,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
+import type { UnlistenFn } from '@tauri-apps/api/event'
 import { t } from '@/i18n'
 import { useToast } from '@/composables/useToast'
 import { confirmDanger } from '@/composables/useConfirm'
@@ -180,6 +202,42 @@ const restoreError = ref('')
 const restoreDbLoading = ref(false)
 const restoreDbOptions = computed(() => dbOptionsFor(restoreConnId.value))
 
+/** 还原进度事件（由后端 restore-progress 推送） */
+interface RestoreLogLine {
+  no?: number | null
+  level: 'success' | 'error' | 'warn'
+  text: string
+  elapsedMs?: number | null
+}
+
+const restoreProgress = ref({
+  bytes: 0,
+  total: 0,
+  lines: [] as RestoreLogLine[],
+  done: false,
+  success: false,
+})
+
+const restorePercent = computed(() => {
+  const { bytes, total, done, success } = restoreProgress.value
+  if (done && success) return 100
+  if (total <= 0) return done ? 100 : 0
+  return Math.min(99, Math.floor((bytes / total) * 100))
+})
+
+const restoreStatementCount = computed(
+  () => restoreProgress.value.lines.filter(line => line.no != null && line.level === 'success').length
+)
+
+/** 只展示最近几条流水，让用户感知到「正在执行」而不挤占对话框 */
+const restoreTail = computed(() => restoreProgress.value.lines.slice(-6))
+
+function formatBytes(value: number): string {
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
+  return `${(value / 1024 / 1024).toFixed(1)} MB`
+}
+
 const activeTab = ref<'backup' | 'restore'>('backup')
 
 onMounted(() => {
@@ -189,6 +247,38 @@ onMounted(() => {
     backupConnId.value = first.value
     restoreConnId.value = first.value
   }
+})
+
+let restoreUnlisten: UnlistenFn | undefined
+
+onMounted(async () => {
+  restoreUnlisten = await listen<{
+    bytes: number
+    total: number
+    lines: RestoreLogLine[]
+    done: boolean
+    success: boolean
+  }>('restore-progress', (event) => {
+    // 只处理本次还原期间的事件，避免上一次残留进度串到新任务
+    if (!restoring.value) return
+    const payload = event.payload
+    const progress = restoreProgress.value
+    progress.bytes = payload.bytes
+    progress.total = payload.total
+    if (payload.lines.length) {
+      progress.lines.push(...payload.lines)
+      // 超长脚本的流水只保留尾部，防止内存无限增长
+      if (progress.lines.length > 500) {
+        progress.lines.splice(0, progress.lines.length - 500)
+      }
+    }
+    progress.done = payload.done
+    progress.success = payload.success
+  })
+})
+
+onUnmounted(() => {
+  restoreUnlisten?.()
 })
 
 const canBackup = computed(() => !!backupConnId.value && !!backupDatabase.value && !backuping.value)
@@ -258,6 +348,7 @@ async function runRestore() {
   if (!confirmed) return
 
   restoring.value = true
+  restoreProgress.value = { bytes: 0, total: 0, lines: [], done: false, success: false }
   try {
     await invoke('restore_database', {
       connectionId: restoreConnId.value,
@@ -486,5 +577,68 @@ function databasesByConn(connId: string): string[] {
   font-size: var(--text-sm);
   margin: 0;
   align-items: center;
+}
+
+/* 还原进度 */
+.restore-progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.progress-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-hover);
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--brand-500);
+  transition: width 150ms linear;
+}
+
+.progress-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.progress-log {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-default);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: var(--text-xs);
+}
+
+.log-line {
+  display: flex;
+  gap: var(--space-2);
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+.log-line.error {
+  color: var(--color-danger-text, #dc2626);
+}
+
+.log-line.warn {
+  color: var(--color-warning-text, #b45309);
+}
+
+.log-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

@@ -48,13 +48,13 @@ impl ConnectionManager {
         output_path: &str,
     ) -> Result<u64> {
         // 取连接配置与隧道状态
-        let (config, tunnel_port) = {
+        let (config, ssl_config, tunnel_port) = {
             let connections = self.connections.read().await;
             let conn = connections
                 .get(connection_id)
                 .ok_or_else(|| anyhow!("连接 {} 不存在或已断开", connection_id))?;
             let tunnel_port = conn.tunnel.as_ref().map(|t| t.local_port());
-            (conn.config.clone(), tunnel_port)
+            (conn.config.clone(), conn.effective_ssl_config(), tunnel_port)
         };
 
         if config.driver == DriverKind::Postgres {
@@ -85,7 +85,7 @@ impl ConnectionManager {
             database,
             &config.username,
             &config.password,
-            &config.ssl_config,
+            &ssl_config,
             &output_path,
         )
         .await
@@ -103,13 +103,13 @@ impl ConnectionManager {
     ) -> Result<u64> {
         validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败：{}", e))?;
 
-        let (config, tunnel_port) = {
+        let (config, ssl_config, tunnel_port) = {
             let connections = self.connections.read().await;
             let conn = connections
                 .get(connection_id)
                 .ok_or_else(|| anyhow!("连接 {} 不存在或已断开", connection_id))?;
             let tunnel_port = conn.tunnel.as_ref().map(|t| t.local_port());
-            (conn.config.clone(), tunnel_port)
+            (conn.config.clone(), conn.effective_ssl_config(), tunnel_port)
         };
 
         if config.driver == DriverKind::Postgres {
@@ -132,26 +132,29 @@ impl ConnectionManager {
             database,
             &config.username,
             &config.password,
-            &config.ssl_config,
+            &ssl_config,
             &output_path,
         )
         .await
     }
 
     /// 从 dump 文件还原数据库（MySQL 先用 stdin 管道实现）
+    ///
+    /// 传入 `reporter` 时推送字节进度与逐条语句流水，前端据此展示还原进度。
     pub async fn restore_database(
         &self,
         connection_id: &str,
         database: &str,
         dump_path: &str,
+        reporter: Option<ImportReporter>,
     ) -> Result<()> {
-        let (config, tunnel_port) = {
+        let (config, ssl_config, tunnel_port) = {
             let connections = self.connections.read().await;
             let conn = connections
                 .get(connection_id)
                 .ok_or_else(|| anyhow!("连接 {} 不存在或已断开", connection_id))?;
             let tunnel_port = conn.tunnel.as_ref().map(|t| t.local_port());
-            (conn.config.clone(), tunnel_port)
+            (conn.config.clone(), conn.effective_ssl_config(), tunnel_port)
         };
 
         if config.driver == DriverKind::Postgres {
@@ -175,10 +178,10 @@ impl ConnectionManager {
             database,
             &config.username,
             &config.password,
-            &config.ssl_config,
+            &ssl_config,
             &path,
             "还原",
-            None,
+            reporter,
         )
         .await?;
         // 还原脚本可能重建表结构，清空缓存让刷新能拿到最新列表
@@ -200,13 +203,13 @@ impl ConnectionManager {
     ) -> Result<()> {
         validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败：{}", e))?;
 
-        let (config, tunnel_port) = {
+        let (config, ssl_config, tunnel_port) = {
             let connections = self.connections.read().await;
             let conn = connections
                 .get(connection_id)
                 .ok_or_else(|| anyhow!("连接 {} 不存在或已断开", connection_id))?;
             let tunnel_port = conn.tunnel.as_ref().map(|t| t.local_port());
-            (conn.config.clone(), tunnel_port)
+            (conn.config.clone(), conn.effective_ssl_config(), tunnel_port)
         };
 
         if config.driver == DriverKind::Postgres {
@@ -232,7 +235,7 @@ impl ConnectionManager {
             database,
             &config.username,
             &config.password,
-            &config.ssl_config,
+            &ssl_config,
             &path,
             "导入",
             reporter,
@@ -558,7 +561,7 @@ async fn run_mysql_script_file(
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     if streaming {
-        // 还原不需要流水，避免额外输出拖慢大文件
+        // 开启 `-v` 才能拿到逐条语句回显，用于展示实时进度；stderr 也一并收集
         command.arg("-v").stdout(Stdio::piped());
     }
 
