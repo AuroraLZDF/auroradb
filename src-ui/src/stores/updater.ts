@@ -215,6 +215,8 @@ export const useUpdaterStore = defineStore('updater', () => {
     label,
     availableVersion,
     installKind,
+    downloaded,
+    totalBytes,
     checkForUpdate,
     downloadAndInstall,
   }

@@ -185,6 +185,31 @@
       </div>
     </div>
 
+    <!-- 更新包下载进度：菜单会因点击而收起，进度必须常驻在头部，否则用户无感知 -->
+    <div
+      v-if="showUpdateProgress"
+      class="update-progress"
+      :title="updateStore.label"
+      role="progressbar"
+      :aria-valuemin="0"
+      :aria-valuemax="100"
+      :aria-valuenow="updateStore.progress ?? undefined"
+    >
+      <span class="update-progress-label">{{ updateStore.label }}</span>
+      <div
+        class="update-progress-track"
+        :class="{ indeterminate: updateStore.progress === null }"
+      >
+        <div
+          class="update-progress-bar"
+          :style="updateStore.progress === null ? undefined : { width: `${updateStore.progress}%` }"
+        />
+      </div>
+      <span v-if="updateStore.totalBytes" class="update-progress-size u-hidden-mobile">
+        {{ formatBytes(updateStore.downloaded) }} / {{ formatBytes(updateStore.totalBytes) }}
+      </span>
+    </div>
+
     <!-- 面板切换按钮（平板/小屏） -->
     <button
       class="header-btn panel-toggle u-visible-tablet"
@@ -310,6 +335,17 @@ onUnmounted(() => {
 const themeIcon = computed(() => {
   return themeStore.effectiveTheme === 'dark' ? Moon : Sun
 })
+
+/** 仅在真正有产物传输/安装时展示进度，检查阶段用菜单里的转圈即可 */
+const showUpdateProgress = computed(
+  () => updateStore.status === 'downloading' || updateStore.status === 'installing'
+)
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
 
 const themeTooltip = computed(() => {
   return themeStore.effectiveTheme === 'dark' ? t('header.themeDark') : t('header.themeLight')
@@ -499,6 +535,63 @@ async function handleUpdateClick() {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* 更新下载进度：常驻头部，避免菜单收起后进度不可见 */
+.update-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-hover);
+  flex-shrink: 0;
+}
+
+.update-progress-label {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.update-progress-track {
+  position: relative;
+  width: 96px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--border-default);
+  overflow: hidden;
+}
+
+.update-progress-bar {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: var(--brand-500);
+  transition: width 0.2s ease;
+}
+
+/* 总大小未知时用往复滑动表示「正在进行」，避免停在 0% 像卡死 */
+.update-progress-track.indeterminate .update-progress-bar {
+  width: 40%;
+  animation: update-progress-slide 1.1s ease-in-out infinite;
+}
+
+@keyframes update-progress-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(280%);
+  }
+}
+
+.update-progress-size {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .menu-toggle {
