@@ -172,6 +172,8 @@ if [ -d "$OLD_BUNDLE" ]; then
           "$OLD_BUNDLE"/*/*.AppImage \
           "$OLD_BUNDLE"/*/*.sig \
           "$OLD_BUNDLE"/*/latest.json
+    # 清掉 deb 打包留下的中间目录（如 AuroraDB_1.0.4_amd64/），避免越积越多
+    find "$OLD_BUNDLE" -mindepth 2 -maxdepth 2 -type d -name 'AuroraDB_*' -exec rm -rf {} + 2>/dev/null || true
 fi
 
 # 更新包签名：Tauri CLI 只读取 TAURI_SIGNING_PRIVATE_KEY（内容），不读 _PATH

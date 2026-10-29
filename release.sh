@@ -214,7 +214,9 @@ for f in "${FILES[@]}"; do
         echo -e "${YELLOW}  - 已删除同名旧附件 $NAME_ONLY${NC}"
     fi
 
-    HTTP_CODE="$(curl -sS -X POST -o "$TMP" -w '%{http_code}' \
+    HTTP_CODE="$(curl -sS --retry 3 --retry-delay 2 --retry-all-errors \
+        --connect-timeout 30 --max-time 600 \
+        -X POST -o "$TMP" -w '%{http_code}' \
         "$API/releases/$RELEASE_ID/attach_files?access_token=$GITEE_TOKEN" \
         -F "file=@$f")"
     if [[ "$HTTP_CODE" == "201" ]]; then
