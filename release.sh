@@ -6,6 +6,7 @@
 #   GITEE_TOKEN=<令牌> ./release.sh
 #   GITEE_TOKEN=<令牌> ./release.sh --tag v1.0.1 --notes "修复若干问题"
 #   ./release.sh --repo owner/auroradb-releases   # 指定公开分发仓库
+#   ./release.sh --platform windows               # 上传 Windows 产物（默认 linux）
 #
 # 默认发布到 <owner>/auroradb-releases（公开仓库），源码仓库保持私有。
 # 令牌需在 Gitee「设置 → 私人令牌」生成，勾选 projects 权限。
@@ -24,18 +25,25 @@ cd "$SCRIPT_DIR"
 TAG=""
 NOTES=""
 RELEASE_REPO=""
+PLATFORM="linux"
 while [[ $# -gt 0 ]]; do
     case $1 in
         --tag) TAG="$2"; shift 2 ;;
         --notes) NOTES="$2"; shift 2 ;;
         --repo) RELEASE_REPO="$2"; shift 2 ;;
+        --platform) PLATFORM="$2"; shift 2 ;;
         -h|--help)
-            sed -n '3,12p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '3,13p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *) echo -e "${RED}未知参数: $1${NC}"; exit 1 ;;
     esac
 done
+
+if [[ "$PLATFORM" != "linux" && "$PLATFORM" != "windows" ]]; then
+    echo -e "${RED}错误: --platform 只支持 linux 或 windows，当前为 $PLATFORM${NC}"
+    exit 1
+fi
 
 if [[ -z "${GITEE_TOKEN:-}" ]]; then
     echo -e "${RED}错误: 未设置 GITEE_TOKEN 环境变量${NC}"
@@ -83,10 +91,13 @@ fi
 
 echo -e "${YELLOW}发布仓库: $OWNER/$REPO  版本: $TAG${NC}"
 
+# 上线前先自检：产物齐全、签名存在、不超限、更新地址一致，并生成 SHA256SUMS
+bash tools/check-release.sh --platform "$PLATFORM" --repo "$OWNER/$REPO" --bundle-dir "$BUNDLE_DIR"
+
 TMP="$(mktemp)"
 LATEST_TMP="$(mktemp)"
 README_TMP=""
-trap 'rm -f "$TMP" "$LATEST_TMP" "$README_TMP"' EXIT
+trap 'rm -f "$TMP" "$LATEST_TMP" "$LATEST_RESP" "$README_TMP"' EXIT
 
 json_id() {
     # 忽略 JSON 中的换行与空格，取第一个顶层 "id"
@@ -168,7 +179,10 @@ FILES=()
 while IFS= read -r f; do
     FILES+=("$f")
 done < <(find "$BUNDLE_DIR" -maxdepth 2 -type f \
-    \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.sig' -o -name 'latest.json' \) | sort)
+    \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.exe' \
+       -o -name '*.nsis.zip' -o -name '*.sig' -o -name 'latest.json' \
+       -o -name 'SHA256SUMS' \) \
+    ! -name '*.nsis.zip.sig' | sort)
 
 if [[ ${#FILES[@]} -eq 0 ]]; then
     echo -e "${RED}错误: $BUNDLE_DIR 下没有可上传的产物${NC}"
@@ -200,7 +214,7 @@ for f in "${FILES[@]}"; do
     SIZE="$(stat -c %s "$f")"
     if (( SIZE > MAX_SIZE )); then
         echo -e "${RED}  ✗ $NAME_ONLY ($((SIZE / 1024 / 1024))MB) 超过 Gitee 单附件上限${NC}"
-        echo "  AppImage 需先重打包: ./repack-appimage.sh $f"
+        echo "  Linux AppImage 需先重打包: ./repack-appimage.sh $f"
         exit 1
     fi
 
@@ -238,70 +252,77 @@ else
     exit 1
 fi
 
-# 4. 生成 latest.json 并写入分发仓库默认分支，作为 App 内自动更新的固定入口
-APPIMAGE=""
-while IFS= read -r f; do
-    APPIMAGE="$f"
-    break
-done < <(find "$BUNDLE_DIR/appimage" -maxdepth 1 -type f -name '*.AppImage' 2>/dev/null | sort)
-
-if [[ -z "$APPIMAGE" ]]; then
-    echo -e "${RED}错误: 未找到 AppImage，无法生成 latest.json${NC}"
+# 4. 生成/合并 latest.json 并写入分发仓库默认分支，作为 App 内自动更新的固定入口
+#    Linux 与 Windows 分开发布，清单按平台 key 合并，互不覆盖
+ARTIFACT=""
+if [[ "$PLATFORM" == "windows" ]]; then
+    PLATFORM_KEY="windows-x86_64"
+    # 应用内更新只认 NSIS 更新包（*.nsis.zip），安装器 exe 只供手动下载
+    while IFS= read -r f; do
+        ARTIFACT="$f"
+        break
+    done < <(find "$BUNDLE_DIR/nsis" -maxdepth 1 -type f -name '*.nsis.zip' 2>/dev/null | sort)
+    if [[ -z "$ARTIFACT" ]]; then
+        echo -e "${RED}错误: 未找到 NSIS 更新包（*.nsis.zip），无法生成 latest.json${NC}"
+        exit 1
+    fi
+else
+    PLATFORM_KEY="linux-x86_64"
+    while IFS= read -r f; do
+        ARTIFACT="$f"
+        break
+    done < <(find "$BUNDLE_DIR/appimage" -maxdepth 1 -type f -name '*.AppImage' 2>/dev/null | sort)
+    if [[ -z "$ARTIFACT" ]]; then
+        echo -e "${RED}错误: 未找到 AppImage，无法生成 latest.json${NC}"
+        exit 1
+    fi
+fi
+if [[ ! -f "$ARTIFACT.sig" ]]; then
+    echo -e "${RED}错误: 未找到 $(basename "$ARTIFACT").sig，请确认构建时已签名${NC}"
     exit 1
 fi
-if [[ ! -f "$APPIMAGE.sig" ]]; then
-    echo -e "${RED}错误: 未找到 $(basename "$APPIMAGE").sig，请确认构建时已签名${NC}"
-    exit 1
-fi
 
-APPIMAGE_NAME="$(basename "$APPIMAGE")"
-APPIMAGE_URL="https://gitee.com/$OWNER/$REPO/releases/download/$TAG/$APPIMAGE_NAME"
+ARTIFACT_URL="https://gitee.com/$OWNER/$REPO/releases/download/$TAG/$(basename "$ARTIFACT")"
 
 # deb 安装的应用无法用 AppImage 原地升级，清单里额外给出 deb 包地址，
 # 应用会把它下载到下载目录交给用户手动安装
-DEB=""
-while IFS= read -r f; do
-    DEB="$f"
-    break
-done < <(find "$BUNDLE_DIR/deb" -maxdepth 1 -type f -name '*.deb' 2>/dev/null | sort)
-
 DEB_URL=""
 DEB_SIG=""
-if [[ -n "$DEB" ]]; then
-    DEB_URL="https://gitee.com/$OWNER/$REPO/releases/download/$TAG/$(basename "$DEB")"
-    [[ -f "$DEB.sig" ]] && DEB_SIG="$DEB.sig"
-else
-    echo -e "${YELLOW}  注意: 未找到 deb 安装包，deb 安装的用户将无法在应用内下载更新${NC}"
+if [[ "$PLATFORM" == "linux" ]]; then
+    DEB=""
+    while IFS= read -r f; do
+        DEB="$f"
+        break
+    done < <(find "$BUNDLE_DIR/deb" -maxdepth 1 -type f -name '*.deb' 2>/dev/null | sort)
+
+    if [[ -n "$DEB" ]]; then
+        DEB_URL="https://gitee.com/$OWNER/$REPO/releases/download/$TAG/$(basename "$DEB")"
+        [[ -f "$DEB.sig" ]] && DEB_SIG="$DEB.sig"
+    else
+        echo -e "${YELLOW}  注意: 未找到 deb 安装包，deb 安装的用户将无法在应用内下载更新${NC}"
+    fi
 fi
 
-python3 - "$LATEST_TMP" "$VERSION" "$NOTES" "$APPIMAGE.sig" "$APPIMAGE_URL" "$DEB_URL" "$DEB_SIG" <<'PY'
-import datetime
-import json
-import sys
-
-out, version, notes, sig_path, url, deb_url, deb_sig = sys.argv[1:8]
-signature = open(sig_path, encoding='utf-8').read().strip()
-data = {
-    "version": version,
-    "notes": notes,
-    "pub_date": datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-    "platforms": {"linux-x86_64": {"signature": signature, "url": url}},
-}
-if deb_url:
-    data["deb"] = {"url": deb_url}
-    if deb_sig:
-        data["deb"]["signature"] = open(deb_sig, encoding='utf-8').read().strip()
-with open(out, 'w', encoding='utf-8') as f:
-    json.dump(data, f, ensure_ascii=False, indent=2)
-PY
-
-# Gitee contents API：文件已存在时用 PUT + sha，否则 POST
-HTTP_CODE="$(curl -sS -o "$TMP" -w '%{http_code}' \
+# 先读线上清单：合并需要旧内容，PUT 也需要 sha
+LATEST_RESP="$(mktemp)"
+HTTP_CODE="$(curl -sS -o "$LATEST_RESP" -w '%{http_code}' \
     "$API/contents/latest.json?access_token=$GITEE_TOKEN&ref=$TARGET_BRANCH")"
 EXISTING_SHA=""
 if [[ "$HTTP_CODE" == "200" ]]; then
-    EXISTING_SHA="$(json_field sha "$TMP")"
+    EXISTING_SHA="$(json_field sha "$LATEST_RESP")"
+else
+    echo 'null' > "$LATEST_RESP"
 fi
+
+MERGE_ARGS=(--existing "$LATEST_RESP" --output "$LATEST_TMP"
+    --version "$VERSION" --notes "$NOTES" --tag "$TAG"
+    --platform "$PLATFORM_KEY" --artifact-url "$ARTIFACT_URL"
+    --signature-file "$ARTIFACT.sig")
+if [[ -n "$DEB_URL" ]]; then
+    MERGE_ARGS+=(--deb-url "$DEB_URL")
+    [[ -n "$DEB_SIG" ]] && MERGE_ARGS+=(--deb-signature-file "$DEB_SIG")
+fi
+python3 tools/merge-latest.py "${MERGE_ARGS[@]}"
 
 B64_CONTENT="$(base64 -w0 "$LATEST_TMP")"
 if [[ -n "$EXISTING_SHA" ]]; then

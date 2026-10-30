@@ -247,7 +247,11 @@ impl ConnectionManager {
     }
 }
 
-/// 写入 MySQL 凭据临时文件（权限 0600），返回文件路径
+/// 写入 MySQL 凭据临时文件（Unix 权限 0600），返回文件路径
+///
+/// Windows 没有 0600 语义：临时文件位于 `%LOCALAPPDATA%\Temp`，该目录的 ACL 只授权
+/// 当前用户、SYSTEM 与 Administrators，其他用户不可读；且文件在 dump 结束（含失败、
+/// 超时）后立即删除，不再额外收紧 ACL。
 ///
 /// 值统一用双引号包裹并转义，避免密码含 `#`、`;`、空格、引号、反斜杠时被 option file
 /// 解析器截断（这是导致 dump 连接失败、导出文件不完整的常见原因）。

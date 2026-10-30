@@ -1,7 +1,7 @@
-//! Linux 更新包下载
+//! 更新包下载
 //!
-//! Tauri 内置更新器只会用 AppImage 原地替换应用，deb 安装的版本无法走这条路；
-//! deb 安装改为把更新包下载到系统下载目录，由用户手动安装。
+//! Tauri 内置更新器能在 AppImage 上原地替换、在 Windows 上执行 NSIS 静默升级；
+//! deb 安装的版本无法走这条路，改为把更新包下载到系统下载目录，由用户手动安装。
 
 use futures_util::StreamExt;
 use serde::Serialize;
@@ -75,9 +75,21 @@ pub async fn download_update_package(
     }
 
     // 打开下载目录，方便用户直接双击安装
-    let _ = std::process::Command::new("xdg-open").arg(&dir).spawn();
+    open_directory(&dir);
 
     Ok(target.to_string_lossy().into_owned())
+}
+
+/// 在系统文件管理器中打开目录（各平台命令不同，失败不影响下载结果）
+fn open_directory(dir: &Path) {
+    #[cfg(target_os = "linux")]
+    let program = "xdg-open";
+    #[cfg(target_os = "macos")]
+    let program = "open";
+    #[cfg(target_os = "windows")]
+    let program = "explorer";
+
+    let _ = std::process::Command::new(program).arg(dir).spawn();
 }
 
 async fn write_package(app: &AppHandle, url: &str, target: &Path) -> Result<(), String> {

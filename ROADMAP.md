@@ -199,3 +199,10 @@ V2-7 质量门禁随每批并行推进
 - 2026-10-30：V2-0 决策完成 — Windows 暂不签名按内测分发、macOS 移入 v2.1、构建走 Windows+Linux 本地机器、分发 Gitee 主源 + GitHub 镜像；范围随之收缩，实施方案与验收标准同步修订
 - 2026-10-30：V2-3.5 完成 — 新增 `tools/check-version.mjs`，以 `tauri.conf.json` 为基准校验 5 处版本号；接入 build.sh、release-all.sh 与 CI；修复 `package-lock.json` 停留在 1.0.4 的存量不一致
 - 2026-10-30：V2-1.1 就绪待验证 — 新增 `build.ps1`（与 build.sh 六步对齐、共用同一把更新签名私钥）与 `tauri.windows.conf.json`（NSIS / currentUser / 中英双语），待 Windows 实机跑通
+- 2026-10-30：V2-1.2/1.3 完成 — 打开下载目录改为按平台分发命令（xdg-open/open/explorer）；确认 WebKit DMA-BUF、AppImage 原地更新、deb 手动升级分支均已 `cfg` 隔离；Windows 临时凭据文件改由 `%LOCALAPPDATA%\Temp` 的用户级 ACL 保护并即时删除
+- 2026-10-30：V2-3.2 完成 — `latest.json` 改为按平台 key 合并回写（新增 `tools/merge-latest.py`），只保留同 tag 条目、拒绝降级发布、保留 `previous` 供回滚；`release.sh` 新增 `--platform linux|windows`，Windows 走 `*.nsis.zip` 签名包
+- 2026-10-30：V2-3.4 完成 — updater 配置 Gitee 主源 + GitHub 备源，Tauri 按顺序回退
+- 2026-10-30：V2-3.6 完成 — 新增 `tools/check-release.sh`（更新包唯一且带签名、单附件 ≤100MB、更新源与发布仓库一致、生成 SHA256SUMS），`release.sh` 上传前强制调用并把校验文件一并发布
+- 2026-10-30：V2-1.4 代码侧就绪 — 清单已写入 `windows-x86_64`，前端按 `auto` 走内置更新器（NSIS 静默升级），`updater:default` / `process:allow-restart` 权限已覆盖 Windows；待 Windows 实机验证升级
+- 2026-10-30：V2-1.6 文档就绪 — 发布仓 README 增加「Windows 内测版（未签名）」章节：未签名说明、SmartScreen「更多信息 → 仍要运行」指引、企业终端白名单说明、`Get-FileHash` 校验 `SHA256SUMS`
+- 2026-10-30：V2-3.3 待办 — GitHub 公开分发仓与 token 尚未就绪，`release.sh` 目前只上传 Gitee
