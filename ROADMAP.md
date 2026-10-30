@@ -198,3 +198,4 @@ V2-7 质量门禁随每批并行推进
 - 2026-10-30：新增 v2.0 规划 — 主题定为平台扩张（Windows/macOS/三平台发布链路），附带大库性能、SQL 文件关联、单元格查看器、工程质量欠账
 - 2026-10-30：V2-0 决策完成 — Windows 暂不签名按内测分发、macOS 移入 v2.1、构建走 Windows+Linux 本地机器、分发 Gitee 主源 + GitHub 镜像；范围随之收缩，实施方案与验收标准同步修订
 - 2026-10-30：V2-3.5 完成 — 新增 `tools/check-version.mjs`，以 `tauri.conf.json` 为基准校验 5 处版本号；接入 build.sh、release-all.sh 与 CI；修复 `package-lock.json` 停留在 1.0.4 的存量不一致
+- 2026-10-30：V2-1.1 就绪待验证 — 新增 `build.ps1`（与 build.sh 六步对齐、共用同一把更新签名私钥）与 `tauri.windows.conf.json`（NSIS / currentUser / 中英双语），待 Windows 实机跑通
