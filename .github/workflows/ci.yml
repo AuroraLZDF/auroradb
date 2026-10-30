@@ -5,6 +5,19 @@ on:
   pull_request:
 
 jobs:
+  version:
+    name: Version consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Check version single source
+        run: node tools/check-version.mjs
+
   frontend:
     name: Frontend (type-check / lint / test)
     runs-on: ubuntu-latest

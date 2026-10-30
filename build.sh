@@ -80,8 +80,13 @@ echo ""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# 校验版本号单一来源
+echo -e "${YELLOW}[1/6] 校验版本号一致性...${NC}"
+node "$SCRIPT_DIR/tools/check-version.mjs"
+echo -e "${GREEN}  ✓ 版本号一致${NC}"
+
 # 检查前端依赖
-echo -e "${YELLOW}[1/5] 检查前端依赖...${NC}"
+echo -e "${YELLOW}[2/6] 检查前端依赖...${NC}"
 cd src-ui
 if [ ! -d "node_modules" ]; then
     echo "  安装前端依赖..."
@@ -89,13 +94,13 @@ if [ ! -d "node_modules" ]; then
 fi
 
 # 构建前端
-echo -e "${YELLOW}[2/5] 构建前端...${NC}"
+echo -e "${YELLOW}[3/6] 构建前端...${NC}"
 npm run build
 echo -e "${GREEN}  ✓ 前端构建完成${NC}"
 
 # 检查 Rust 环境
 cd "$SCRIPT_DIR"
-echo -e "${YELLOW}[3/5] 检查 Rust 环境...${NC}"
+echo -e "${YELLOW}[4/6] 检查 Rust 环境...${NC}"
 if ! command -v rustc &> /dev/null; then
     echo -e "${RED}错误: 未安装 Rust${NC}"
     echo "请运行以下命令安装 Rust:"
@@ -111,7 +116,7 @@ fi
 echo -e "${GREEN}  ✓ Rust 环境正常${NC}"
 
 # 安装 Tauri CLI（如果没有安装）
-echo -e "${YELLOW}[4/5] 检查 Tauri CLI...${NC}"
+echo -e "${YELLOW}[5/6] 检查 Tauri CLI...${NC}"
 if ! cargo tauri --version &> /dev/null 2>&1; then
     echo "  安装 Tauri CLI..."
     cargo install tauri-cli --locked
@@ -159,7 +164,7 @@ if [[ "$BUNDLE_TYPE" == *"appimage"* ]]; then
 fi
 
 # 构建应用
-echo -e "${YELLOW}[5/5] 构建 Linux 安装包...${NC}"
+echo -e "${YELLOW}[6/6] 构建 Linux 安装包...${NC}"
 echo "  打包格式: $BUNDLE_TYPE"
 cd src-tauri
 

@@ -164,7 +164,7 @@ if [[ $ASSUME_YES -eq 0 ]]; then
 fi
 
 # ---------- 3. 同步版本号 ----------
-log "同步版本号到 4 处配置"
+log "同步版本号到 5 处配置"
 
 python3 - "$VERSION" <<'PY'
 import re
@@ -181,18 +181,24 @@ def bump(path, pattern, flags=re.M):
     with open(path, 'w', encoding='utf-8') as f:
         f.write(new)
 
+def bump_n(path, pattern, count, flags=re.M):
+    with open(path, encoding='utf-8') as f:
+        text = f.read()
+    new, got = re.subn(pattern, lambda m: m.group(1) + version + m.group(3), text, count=count, flags=flags)
+    if got != count:
+        sys.exit(f"未能在 {path} 中定位 {count} 处版本号（实际 {got} 处）")
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(new)
+
 bump('src-tauri/tauri.conf.json', r'("version"\s*:\s*")([^"]*)(")')
 bump('src-ui/package.json', r'("version"\s*:\s*")([^"]*)(")')
+# package-lock.json: 顶层 version 与 packages[""].version 两处，位于文件最前
+bump_n('src-ui/package-lock.json', r'("version"\s*:\s*")([^"]*)(")', 2)
 bump('src-tauri/Cargo.toml', r'^(version\s*=\s*")([^"]*)(")')
 bump('src-tauri/Cargo.lock', r'(name = "auroradb"\nversion = ")([^"]*)(")')
 PY
 
-for f in src-tauri/tauri.conf.json src-ui/package.json; do
-    got="$(grep -m1 '"version"' "$f" | sed 's/.*"version": *"\([^"]*\)".*/\1/')"
-    [[ "$got" == "$VERSION" ]] || die "$f 版本号同步失败（当前 $got）"
-done
-got="$(grep -m1 '^version' src-tauri/Cargo.toml | sed 's/.*"\([^"]*\)".*/\1/')"
-[[ "$got" == "$VERSION" ]] || die "Cargo.toml 版本号同步失败（当前 $got）"
+node tools/check-version.mjs || die "版本号同步后校验失败"
 ok "版本号已更新为 $VERSION"
 
 # ---------- 4. 检查 ----------
@@ -209,7 +215,7 @@ fi
 # ---------- 5. 提交 + 打 tag ----------
 log "提交版本号并打 tag"
 
-git add src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-ui/package.json
+git add src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-ui/package.json src-ui/package-lock.json
 if git diff --cached --quiet; then
     warn "版本号无变化，跳过提交"
 else
