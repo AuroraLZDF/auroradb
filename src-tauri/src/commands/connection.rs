@@ -147,6 +147,15 @@ pub async fn execute_sql(
     execute_with_audit(&state, &audit, &connection_id, &database, &sql).await
 }
 
+/// 按语句切分 SQL（引号、注释、DELIMITER 块内的分号不会被误切）。
+///
+/// 多语句执行时前端据此逐条执行、按语句分栏展示结果，
+/// 避免后端只保留第一个结果集导致其余结果被丢弃。
+#[command]
+pub fn split_sql_statements(sql: String) -> Vec<String> {
+    crate::core::sql::split_sql_statements(&sql)
+}
+
 /// 在单个事务中批量应用表数据变更（任一条失败即整体回滚）
 #[command]
 pub async fn apply_table_changes(

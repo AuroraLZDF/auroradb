@@ -303,7 +303,7 @@ fn parse_delimiter_directive(line: &str) -> Option<String> {
     if !keyword.eq_ignore_ascii_case("DELIMITER") {
         return None;
     }
-    let token = parts.next()?.trim().split_whitespace().next()?;
+    let token = parts.next()?.split_whitespace().next()?;
     Some(token.to_string())
 }
 
@@ -424,7 +424,7 @@ pub fn split_sql_statements(sql: &str) -> Vec<String> {
                     line.push(next);
                 }
                 if let Some(new_delimiter) = parse_delimiter_directive(&line) {
-                    while let Some(next) = chars.next() {
+                    for next in chars.by_ref() {
                         if next == '\n' {
                             break;
                         }

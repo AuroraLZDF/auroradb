@@ -472,6 +472,21 @@ function newSqlQuery() {
   activeTabId.value = tabId
 }
 
+// 用 .sql 文件内容新建查询页（文件关联双击 / 拖拽打开共用）
+function openSqlFile(fileName: string, content: string) {
+  const tabId = `sql-${sqlTabCounter.value++}`
+  const newTab: SqlTab = {
+    id: tabId,
+    type: 'sql',
+    title: fileName || `Query ${sqlTabCounter.value - 1}`,
+  }
+  // 先写入内容再挂 Tab：SqlEditor 以 tab id 为 key 重新挂载时从 store 读取
+  editorTabs.setSql(tabId, content)
+  editorTabs.markClean(tabId)
+  tabs.value.push(newTab)
+  activeTabId.value = tabId
+}
+
 // 新建控制台
 function newConsole() {
   const tabId = `console-${consoleTabCounter.value++}`
@@ -601,6 +616,7 @@ defineExpose({
   dataTableRef,
   openTable,
   newSqlQuery,
+  openSqlFile,
   newConsole,
   openErDiagramTab,
   closeTab,

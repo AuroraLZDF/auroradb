@@ -48,7 +48,16 @@
       }
     },
     "targets": ["deb", "appimage"],
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": true,
+    "fileAssociations": [
+      {
+        "ext": ["sql"],
+        "name": "SQL script",
+        "description": "SQL script file",
+        "mimeType": "application/sql",
+        "role": "Editor"
+      }
+    ]
   },
   "plugins": {
     "updater": {

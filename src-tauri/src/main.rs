@@ -5,9 +5,11 @@ mod core;
 mod password_store;
 
 use commands::connection::ConnectionManagerState;
+use commands::sql_file::PendingSqlFiles;
 use core::audit::AuditLog;
 use core::license::LicenseManager;
 use password_store::PasswordStore;
+use tauri::Manager;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -90,6 +92,20 @@ fn main() {
         .manage(password_store)
         .manage(AuditLog::new())
         .manage(LicenseManager::new())
+        .manage(PendingSqlFiles::default())
+        // 单实例必须最先注册：第二次双击 .sql 时不再新开进程，
+        // 而是把命令行里的文件路径转发给已运行实例并聚焦窗口
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+            let paths = commands::sql_file::sql_paths_from_args(argv);
+            let handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                commands::sql_file::enqueue_sql_paths(&handle, paths).await;
+            });
+        }))
         .plugin(tauri_plugin_dialog::init())
         // 自动更新：更新源与签名公钥在 tauri.conf.json 的 plugins.updater 中配置
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -99,6 +115,7 @@ fn main() {
             commands::connection::disconnect,
             commands::connection::get_connection_status,
             commands::connection::execute_sql,
+            commands::connection::split_sql_statements,
             commands::connection::apply_table_changes,
             commands::connection::query_table_data,
             commands::connection::get_object_tree,
@@ -141,7 +158,20 @@ fn main() {
             commands::license::deactivate_license,
             commands::update::get_update_install_kind,
             commands::update::download_update_package,
+            commands::sql_file::take_pending_sql_files,
+            commands::sql_file::read_sql_file,
         ])
+        // 首次启动就带文件参数（文件关联双击）：先入队，等前端挂载后取走
+        .setup(|app| {
+            let paths = commands::sql_file::sql_paths_from_args(std::env::args());
+            if !paths.is_empty() {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    commands::sql_file::enqueue_sql_paths(&handle, paths).await;
+                });
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

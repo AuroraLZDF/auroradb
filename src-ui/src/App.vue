@@ -346,6 +346,8 @@ import { quoteIdentifier } from '@/utils/sql'
 import { t, toggleLocale } from '@/i18n'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { getCurrentWebview } from '@tauri-apps/api/webview'
+import { isSqlFilePath } from '@/utils/sqlFile'
 import { useConnectionStore, type ConnectionStatus, type SshConfig } from '@/stores/connection'
 import { useSavedConnectionsStore, type SavedConnection } from '@/stores/savedConnections'
 import { useDataBrowserStore, type DatabaseObject } from '@/stores/dataBrowser'
@@ -1747,6 +1749,59 @@ function handleBeforeUnload(e: BeforeUnloadEvent) {
   e.returnValue = ''
 }
 
+// ===== `.sql` 文件打开：文件关联 / 单实例转发 / 拖拽 =====
+interface OpenedSqlFile {
+  path: string
+  name: string
+  content: string
+}
+
+let sqlFileUnlisten: UnlistenFn | null = null
+let dragDropUnlisten: UnlistenFn | null = null
+
+function openSqlFiles(files: OpenedSqlFile[]) {
+  for (const file of files) {
+    // 每个文件各开一个新查询页：不覆盖当前编辑中的内容，天然不触发未保存守卫
+    mainContentRef.value?.openSqlFile(file.name, file.content)
+  }
+}
+
+/** 取走后端排队的文件（启动参数与第二实例转发都入队到这里） */
+async function drainPendingSqlFiles() {
+  try {
+    const files = await invoke<OpenedSqlFile[]>('take_pending_sql_files')
+    if (files.length > 0) openSqlFiles(files)
+  } catch {
+    // 浏览器预览等非 Tauri 环境没有该命令，忽略
+  }
+}
+
+async function setupSqlFileOpeners() {
+  try {
+    // 事件只作唤醒：文件可能早于前端就绪就已入队，统一从队列取，避免重复打开
+    sqlFileUnlisten = await listen('open-sql-file', () => { void drainPendingSqlFiles() })
+    await drainPendingSqlFiles()
+  } catch {
+    // 非 Tauri 环境忽略
+  }
+
+  try {
+    dragDropUnlisten = await getCurrentWebview().onDragDropEvent(async (event) => {
+      if (event.payload.type !== 'drop') return
+      for (const path of event.payload.paths.filter(isSqlFilePath)) {
+        try {
+          const file = await invoke<OpenedSqlFile>('read_sql_file', { path })
+          openSqlFiles([file])
+        } catch (error) {
+          showError(String(error))
+        }
+      }
+    })
+  } catch {
+    // 非 Tauri 环境忽略
+  }
+}
+
 onMounted(() => {
   // 初始化主题
   themeStore.init()
@@ -1761,11 +1816,15 @@ onMounted(() => {
   document.addEventListener('click', handleDocumentClick)
   // 定时拉取后端连接状态：心跳检测出的断线/重连需要主动同步到 UI
   store.startStatusPolling()
+  // .sql 文件关联双击 / 第二实例转发 / 拖拽打开
+  void setupSqlFileOpeners()
 })
 
 onUnmounted(() => {
   store.stopStatusPolling()
   importUnlisten?.()
+  sqlFileUnlisten?.()
+  dragDropUnlisten?.()
   document.removeEventListener('mousemove', onResize)
   document.removeEventListener('mouseup', stopResize)
   window.removeEventListener('keydown', onGlobalKeydown)

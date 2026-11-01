@@ -1,5 +1,5 @@
 <template>
-  <div class="sql-editor">
+  <div class="sql-editor" @click="closeResultCellMenu">
     <!-- 工具栏 -->
     <div class="toolbar">
       <div class="toolbar-left">
@@ -84,6 +84,23 @@
         @mousedown="startResize"
         :title="t('sqlEditor.resizeHint')"
       ></div>
+    </div>
+
+    <!-- 多语句结果分栏：每条语句一个标签，点击切换查看各自结果 -->
+    <div v-if="statementOutcomes.length > 1" class="statement-tabs">
+      <button
+        v-for="(outcome, index) in statementOutcomes"
+        :key="index"
+        :class="[
+          'statement-tab',
+          { active: index === activeStatementIndex, 'has-error': !!outcome.error || !!outcome.cancelled },
+        ]"
+        :title="outcome.sql"
+        @click="selectStatement(index)"
+      >
+        <span class="statement-no">{{ t('sqlEditor.statementTab', { index: index + 1 }) }}</span>
+        <span class="statement-sql">{{ truncateSql(outcome.sql.replace(/\s+/g, ' ').trim()) }}</span>
+      </button>
     </div>
 
     <!-- 执行结果 -->
@@ -191,6 +208,8 @@
                 :class="{ 'is-null': cell === null }"
                 :style="{ width: columnWidths[cellIndex] + 'px', minWidth: columnWidths[cellIndex] + 'px' }"
                 :title="formatCell(cell)"
+                @dblclick="openResultCellViewer(cell, cellIndex)"
+                @contextmenu.prevent="showResultCellMenu($event, cell, cellIndex)"
               >
                 <span class="cell-content">{{ formatCell(cell) }}</span>
               </td>
@@ -290,6 +309,27 @@
         </template>
       </div>
     </div>
+
+    <!-- 查询结果单元格右键菜单 -->
+    <div
+      v-if="resultCellMenu.show"
+      class="context-menu"
+      :style="{ top: resultCellMenu.y + 'px', left: resultCellMenu.x + 'px' }"
+      @click.stop
+    >
+      <div class="menu-item" @click="copyResultCell">{{ t('common.copy') }}</div>
+      <div class="menu-item" @click="viewResultCell">{{ t('dataTable.viewFullContent') }}</div>
+    </div>
+
+    <!-- 单元格查看器（大文本 / JSON / BLOB） -->
+    <CellViewer
+      :open="cellViewer.show"
+      :value="cellViewer.value"
+      :column-name="cellViewer.columnName"
+      :column-type="cellViewer.columnType"
+      :driver="isPostgres ? 'postgres' : 'mysql'"
+      @close="cellViewer.show = false"
+    />
   </div>
 </template>
 
@@ -316,6 +356,7 @@ import {
 } from '@/composables/useSqlCompletion'
 import ExplainTree from './ExplainTree.vue'
 import type { ExplainPlan } from './ExplainTree.vue'
+import CellViewer from '@/components/CellViewer.vue'
 import Select from '@/components/ui/Select.vue'
 
 const connStore = useConnectionStore()
@@ -349,7 +390,7 @@ const showCancel = ref(false)
 let cancelTimer: ReturnType<typeof setTimeout> | undefined
 const error = ref('')
 const cancelled = ref(false)
-const result = ref<{
+interface QueryResultPayload {
   columns: { name: string; data_type: string }[]
   rows: unknown[][]
   execution_time_ms: number
@@ -357,7 +398,31 @@ const result = ref<{
   rows_returned: number
   truncated?: boolean
   warning?: string
-} | null>(null)
+}
+const result = ref<QueryResultPayload | null>(null)
+// 多语句执行：每条语句一份结果，按语句分栏展示
+interface StatementOutcome {
+  sql: string
+  result: QueryResultPayload | null
+  error: string
+  cancelled?: boolean
+}
+const statementOutcomes = ref<StatementOutcome[]>([])
+const activeStatementIndex = ref(0)
+
+// 切换到某条语句的结果分栏，并把该条结果同步到缓存（切换 Tab 后仍能还原）
+function selectStatement(index: number) {
+  const outcome = statementOutcomes.value[index]
+  if (!outcome) return
+  activeStatementIndex.value = index
+  result.value = outcome.result
+  error.value = outcome.error
+  cancelled.value = !!outcome.cancelled
+  if (props.tabId) {
+    browserStore.setQueryResult(props.tabId, outcome.result)
+    browserStore.setQueryError(props.tabId, outcome.error)
+  }
+}
 const explainResult = ref<ExplainPlan | null>(null)
 const explaining = ref(false)
 // 结果视图切换：'result' | 'explain'，默认跟执行走
@@ -622,64 +687,85 @@ async function executeQuery() {
   error.value = ''
   cancelled.value = false
   result.value = null
+  statementOutcomes.value = []
+  activeStatementIndex.value = 0
   // 切回结果视图，避免上次 EXPLAIN 的执行计划残留在面板中
   resultView.value = 'result'
 
+  // 先按语句切分再逐条执行：一次执行多条语句时后端只保留第一个结果集，
+  // 拆开执行才能让每条语句都有自己的结果分栏。
+  let statements: string[]
   try {
-    const dbName = resolveDatabase()
-    const response = await connStore.executeSql(currentConnectionId.value, dbName, sql.value) as {
-      columns: { name: string; data_type: string }[]
-      rows: unknown[][]
-      execution_time_ms: number
-      rows_affected?: number
-      rows_returned: number
-      truncated?: boolean
-      warning?: string
-    }
-    result.value = response
+    statements = await invoke<string[]>('split_sql_statements', { sql: sql.value })
+  } catch (e) {
+    console.error('切分 SQL 语句失败，回退为整段执行:', e)
+    statements = [sql.value]
+  }
+  if (statements.length === 0) statements = [sql.value]
 
-    // 保存到 store 缓存
-    if (props.tabId && result.value) {
-      browserStore.setQueryResult(props.tabId, result.value)
-      browserStore.setQueryError(props.tabId, '')
+  let databaseName = resolveDatabase()
+  let schemaChanged = false
+  let usedDatabase = ''
+
+  try {
+    const outcomes: StatementOutcome[] = []
+    for (const statement of statements) {
+      try {
+        const response = await connStore.executeSql(
+          currentConnectionId.value,
+          databaseName,
+          statement,
+        ) as QueryResultPayload
+        outcomes.push({ sql: statement, result: response, error: '' })
+
+        if (isSchemaChangingStatement(statement)) schemaChanged = true
+        // `USE db2` 生效：后续语句改到新库执行
+        if (!isPostgres.value) {
+          const used = leadingUseDatabase(statement)
+          if (used) {
+            databaseName = used
+            usedDatabase = used
+          }
+        }
+      } catch (e) {
+        const message = String(e)
+        const isCancelled = message.includes('用户取消')
+        outcomes.push({
+          sql: statement,
+          result: null,
+          error: isCancelled ? '' : message,
+          cancelled: isCancelled,
+        })
+        // 遇错即停，避免后续语句在不完整的前提下继续执行
+        break
+      }
+    }
+
+    statementOutcomes.value = outcomes
+    if (props.tabId) browserStore.setQueryStatements(props.tabId, outcomes)
+    // 有失败/取消时定位到那条语句，保证错误不会被前面的成功结果挡住
+    const failureIndex = outcomes.findIndex(outcome => outcome.error || outcome.cancelled)
+    const failure = failureIndex >= 0 ? outcomes[failureIndex] : undefined
+    selectStatement(failureIndex >= 0 ? failureIndex : 0)
+
+    const totalMs = outcomes.reduce((sum, outcome) => sum + (outcome.result?.execution_time_ms ?? 0), 0)
+    recordHistory(!failure, failure?.error, totalMs)
+
+    if (props.tabId && outcomes.some(outcome => outcome.result)) {
       editorTabs.markExecuted(props.tabId)
     }
 
-    // 添加到历史
-    recordHistory(true)
-
     // DDL 后表结构已变化，刷新补全快照
-    if (isSchemaChangingStatement(sql.value)) {
+    if (schemaChanged) {
       invalidateSchemaCache()
       refreshSchema()
     }
 
-    // `USE db2` 已生效：把编辑器与补全的当前库切到 db2，后续语句不再沿用旧库
-    if (!isPostgres.value) {
-      const usedDatabase = leadingUseDatabase(sql.value)
-      if (usedDatabase) {
-        manualSelectedDatabase.value = usedDatabase
-        invalidateSchemaCache()
-        refreshSchema()
-      }
-    }
-  } catch (e) {
-    const message = String(e)
-    if (message.includes('用户取消')) {
-      cancelled.value = true
-      error.value = ''
-      if (props.tabId) {
-        browserStore.setQueryError(props.tabId, '')
-        browserStore.setQueryResult(props.tabId, null)
-      }
-    } else {
-      error.value = message
-      recordHistory(false, message)
-      // 保存错误到 store 缓存
-      if (props.tabId) {
-        browserStore.setQueryError(props.tabId, error.value)
-        browserStore.setQueryResult(props.tabId, null)
-      }
+    // `USE db2` 已生效：把编辑器与补全的当前库切到 db2
+    if (usedDatabase) {
+      manualSelectedDatabase.value = usedDatabase
+      invalidateSchemaCache()
+      refreshSchema()
     }
   } finally {
     setLoading(false)
@@ -741,7 +827,10 @@ function handleFormatSql() {
 function clearEditor() {
   sql.value = ''
   error.value = ''
+  cancelled.value = false
   result.value = null
+  statementOutcomes.value = []
+  activeStatementIndex.value = 0
   if (props.tabId) editorTabs.markClean(props.tabId)
   editorRef.value?.focus()
 }
@@ -819,6 +908,55 @@ function formatCell(cell: unknown): string {
   return String(cell)
 }
 
+// ===== 查询结果单元格查看 / 右键菜单 =====
+const cellViewer = ref({
+  show: false,
+  value: null as unknown,
+  columnName: '',
+  columnType: '',
+})
+
+const resultCellMenu = ref({
+  show: false,
+  x: 0,
+  y: 0,
+  cell: null as unknown,
+  columnIndex: 0,
+})
+
+function closeResultCellMenu() {
+  resultCellMenu.value.show = false
+}
+
+function showResultCellMenu(event: MouseEvent, cell: unknown, columnIndex: number) {
+  resultCellMenu.value = { show: true, x: event.clientX, y: event.clientY, cell, columnIndex }
+}
+
+/** 双击结果单元格：在独立查看器中展示大文本 / JSON / BLOB */
+function openResultCellViewer(cell: unknown, columnIndex: number) {
+  if (cell === null || cell === undefined) return
+  const column = result.value?.columns[columnIndex]
+  cellViewer.value = {
+    show: true,
+    value: cell,
+    columnName: column?.name ?? '',
+    columnType: column?.data_type ?? '',
+  }
+  closeResultCellMenu()
+}
+
+function copyResultCell() {
+  const cell = resultCellMenu.value.cell
+  const text = cell === null || cell === undefined ? 'NULL' : formatCell(cell)
+  navigator.clipboard.writeText(text)
+  closeResultCellMenu()
+  globalToast.success(t('dataTable.copiedToClipboard'))
+}
+
+function viewResultCell() {
+  openResultCellViewer(resultCellMenu.value.cell, resultCellMenu.value.columnIndex)
+}
+
 // ===== 查询历史 / 已保存查询 =====
 const currentHistory = computed(() => queryLibrary.historyFor(currentConnectionId.value))
 
@@ -867,7 +1005,7 @@ function loadSavedQuery(item: SavedQuery) {
 }
 
 /** 记录一次执行结果（成功/失败都留痕，便于回溯） */
-function recordHistory(success: boolean, errorMessage?: string) {
+function recordHistory(success: boolean, errorMessage?: string, durationMs?: number) {
   const connectionId = currentConnectionId.value
   if (!connectionId) return
   queryLibrary.addHistory({
@@ -876,7 +1014,7 @@ function recordHistory(success: boolean, errorMessage?: string) {
     database: selectedDatabase.value,
     success,
     error: errorMessage,
-    durationMs: success ? result.value?.execution_time_ms : undefined,
+    durationMs: success ? durationMs ?? result.value?.execution_time_ms : undefined,
   })
 }
 
@@ -1227,6 +1365,13 @@ onMounted(() => {
   if (props.tabId) {
     const cachedResult = browserStore.getQueryResult(props.tabId)
     const cachedError = browserStore.getQueryError(props.tabId)
+    const cachedStatements = browserStore.getQueryStatements(props.tabId)
+    if (cachedStatements.length > 0) {
+      statementOutcomes.value = cachedStatements
+      // 缓存里只保留当前选中的那条结果，据此还原激活的语句标签
+      const cachedIndex = cachedStatements.findIndex(outcome => outcome.result === cachedResult)
+      activeStatementIndex.value = cachedIndex >= 0 ? cachedIndex : 0
+    }
     if (cachedResult) {
       result.value = cachedResult
     }
@@ -1430,6 +1575,80 @@ onUnmounted(() => {
 
 .sql-textarea::placeholder {
   color: var(--color-text-secondary);
+}
+
+/* 多语句结果分栏 */
+.statement-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  padding: 6px 12px 0;
+  overflow-x: auto;
+  background: var(--color-background-soft);
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.statement-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  max-width: 240px;
+  border: 1px solid var(--color-border);
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.statement-tab:hover {
+  color: var(--color-text);
+}
+
+.statement-tab.active {
+  background: var(--color-background);
+  color: var(--color-text);
+  border-color: var(--color-primary);
+}
+
+.statement-tab.has-error {
+  color: var(--color-danger);
+}
+
+.statement-no {
+  font-weight: 600;
+}
+
+.statement-sql {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}
+
+/* 结果单元格右键菜单 */
+.context-menu {
+  position: fixed;
+  background: var(--color-background);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  box-shadow: 0 2px 8px var(--color-shadow);
+  z-index: 1000;
+  min-width: 120px;
+}
+
+.menu-item {
+  padding: 8px 16px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--color-text);
+}
+
+.menu-item:hover {
+  background: var(--color-background-hover);
 }
 
 /* 结果面板 */
