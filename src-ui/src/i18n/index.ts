@@ -54,4 +54,7 @@ export function t(key: string, params?: Record<string, string | number>): string
   )
 }
 
-document.documentElement.lang = locale.value
+// 单测在 node 环境导入本模块时没有 document，仅在浏览器环境下同步 <html lang>
+if (typeof document !== 'undefined') {
+  document.documentElement.lang = locale.value
+}

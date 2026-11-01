@@ -35,7 +35,8 @@ export function isBinaryType(dataType?: string): boolean {
 function formatStringLiteral(value: string, driver: DriverKind): string {
   if (driver === 'postgres') {
     // PG 默认 standard_conforming_strings=on：反斜杠不是转义符，只需翻倍单引号
-    return `'${value.replace(/\0/g, '').replace(/'/g, "''")}'`
+    // NUL 字符无法出现在 PG 文本中，写入前直接丢弃（不用正则，避免 lint 的控制字符告警）
+    return `'${value.replaceAll('\u0000', '').replace(/'/g, "''")}'`
   }
   return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "''")}'`
 }

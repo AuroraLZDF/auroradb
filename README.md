@@ -71,6 +71,8 @@ cd ../src-tauri
 cargo test --offline
 ```
 
+发版前按 [发版冒烟清单](docs/smoke-checklist.md) 在 Linux 与 Windows 上各跑一遍。
+
 ## 打包
 
 ```bash

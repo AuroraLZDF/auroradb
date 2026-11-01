@@ -16,6 +16,9 @@ const METADATA_CACHE_TTL: Duration = Duration::from_secs(30);
 /// 元数据查询兜底超时：单条 INFORMATION_SCHEMA 查询的上限，防止异常网络/高负载下无限挂起
 const METADATA_QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// INFORMATION_SCHEMA.TABLES 的一行：表名、自增值、最后修改时间、占用空间
+type TableMetaRow = (String, Option<i64>, Option<String>, Option<i64>);
+
 /// 元数据查询兜底：包一层超时，把超时与底层错误统一转为 anyhow 错误（不吞错）
 pub(super) async fn with_metadata_timeout<T, E, F>(fut: F) -> Result<T>
 where
@@ -96,7 +99,7 @@ impl ConnectionManager {
 
         if let Some(db) = database {
             // 获取表 - 按字母顺序排序，顺带取自增值/修改时间/占用空间供中间面板展示
-            let tables: Vec<(String, Option<i64>, Option<String>, Option<i64>)> =
+            let tables: Vec<TableMetaRow> =
                 with_metadata_timeout(sqlx::query_as(
                     "SELECT TABLE_NAME,
                             CAST(AUTO_INCREMENT AS SIGNED),
@@ -405,7 +408,7 @@ impl ConnectionManager {
             conn.metadata_cache.lock().await.get(&cache_key)
         {
             if at.elapsed() < METADATA_CACHE_TTL {
-                return Ok(s.clone());
+                return Ok((**s).clone());
             }
         }
 
@@ -647,7 +650,7 @@ impl ConnectionManager {
 
         conn.metadata_cache.lock().await.insert(
             cache_key,
-            (Instant::now(), MetadataCacheValue::TableStructure(structure.clone())),
+            (Instant::now(), MetadataCacheValue::TableStructure(Box::new(structure.clone()))),
         );
 
         Ok(structure)

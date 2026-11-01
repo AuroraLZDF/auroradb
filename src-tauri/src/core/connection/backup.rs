@@ -337,10 +337,8 @@ async fn check_tool(name: &str, version_arg: &str) -> Result<String> {
             String::from_utf8_lossy(&output.stderr)
         )),
         Ok(Err(e)) => {
-            let hint = if name == "mysqldump" {
-                "请安装 MySQL 客户端工具（Debian/Ubuntu: apt install mysql-client-core / \
-                 macOS: brew install mysql-client / Windows: 安装 MySQL Community Server 后添加到 PATH）"
-            } else if name == "mysql" {
+            // mysqldump 与 mysql 同属 MySQL 客户端工具包，缺失时给同一条安装提示
+            let hint = if name == "mysqldump" || name == "mysql" {
                 "请安装 MySQL 客户端工具（Debian/Ubuntu: apt install mysql-client-core / \
                  macOS: brew install mysql-client / Windows: 安装 MySQL Community Server 后添加到 PATH）"
             } else {
@@ -525,6 +523,8 @@ async fn copy_into_stdin(
 /// 文件内容直接经 stdin 管道传给子进程，全程不做字符串拼接、不经过 IPC，
 /// 因此文件大小不受限制；`mysql` 客户端本身支持 `DELIMITER` 与多语句脚本。
 /// 传入 `reporter` 时额外开启 `-v`，解析客户端回显并实时推送逐条语句流水。
+// 参数多但都是一次性调用所需的连接信息，拆成结构体反而让调用处更繁琐
+#[allow(clippy::too_many_arguments)]
 async fn run_mysql_script_file(
     host: &str,
     port: u16,

@@ -147,7 +147,7 @@ P1-3 备份还原 → P1-8 数据同步（Pro 变现）
 | V2-7.1 | 前端测试 | 核心链路有自动化用例 | Vitest 覆盖 store 与工具函数；Playwright E2E：连接→查询→编辑保存→导出 |
 | V2-7.2 | CI 质量门禁 | PR 不绿不合 | `cargo test` + `clippy` + 前端 `typecheck` / `lint` / 单测 |
 | V2-7.3 | 清理存量告警 | lint 归零 | 清掉遗留 eslint 错误；编译 warning 只减不增 |
-| V2-7.4 | 平台兼容冒烟清单 | 每次发版可照着跑 | Linux/Windows 统一清单：安装、升级、连接、查询、备份、导入导出、激活 |
+| V2-7.4 | 平台兼容冒烟清单 | 每次发版可照着跑 | Linux/Windows 统一清单：安装、升级、连接、查询、备份、导入导出、激活（见 [smoke-checklist.md](docs/smoke-checklist.md)） |
 
 ## v2.0 范围外（明确不做，留给 v2.1+）
 
@@ -206,3 +206,5 @@ V2-7 质量门禁随每批并行推进
 - 2026-10-30：V2-1.4 代码侧就绪 — 清单已写入 `windows-x86_64`，前端按 `auto` 走内置更新器（NSIS 静默升级），`updater:default` / `process:allow-restart` 权限已覆盖 Windows；待 Windows 实机验证升级
 - 2026-10-30：V2-1.6 文档就绪 — 发布仓 README 增加「Windows 内测版（未签名）」章节：未签名说明、SmartScreen「更多信息 → 仍要运行」指引、企业终端白名单说明、`Get-FileHash` 校验 `SHA256SUMS`
 - 2026-10-30：V2-3.3 待办 — GitHub 公开分发仓与 token 尚未就绪，`release.sh` 目前只上传 Gitee
+- 2026-10-30：V2-7 完成（Playwright E2E 除外）— V2-7.1 新增 dataBrowser / editorTabs / queryLibrary 三个 store 单测与 Vitest 内存 localStorage setup，前端用例 89 条；V2-7.2 CI backend 增加 `cargo clippy -- -D warnings`；V2-7.3 修复 14 条 clippy 警告，本项目编译告警归零；V2-7.4 新增 `docs/smoke-checklist.md`，README 与路线图挂上入口。Playwright E2E 需要 Tauri 运行时与真实数据库，暂未落地
+- 2026-10-30：V2-7.1 Playwright E2E 落地 — 新增 `playwright.config.ts` 与 `e2e/`（`support/tauri-mock.ts` 注入伪造 `__TAURI_INTERNALS__`、`support/app.ts` 封装页面操作、`connect-query-edit-export.spec.ts` 覆盖连接→查询→编辑保存→导出），无需 Tauri 运行时与真实数据库；`npm run test:e2e` 3 条用例通过，Vitest 用例收敛到 `src/**/*.test.ts`

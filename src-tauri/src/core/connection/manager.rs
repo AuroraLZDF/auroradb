@@ -88,7 +88,8 @@ const _: () = ();
 #[derive(Clone)]
 pub(crate) enum MetadataCacheValue {
     ObjectTree(Vec<DatabaseObject>),
-    TableStructure(TableStructure),
+    // 表结构比其它变体大得多，装箱避免整个枚举按最大变体分配
+    TableStructure(Box<TableStructure>),
     SchemaSnapshot(SchemaSnapshot),
 }
 

@@ -10,6 +10,20 @@ use super::validation::{escape_string, validate_identifier};
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 
+/// INFORMATION_SCHEMA.COLUMNS 的一行：
+/// 表名、列名、类型、是否可空、默认值、EXTRA、注释、序号、生成表达式
+type ColumnRow = (
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    Option<String>,
+    i64,
+    Option<String>,
+);
+
 impl ConnectionManager {
     /// 对比两个连接上的库结构，返回差异与迁移脚本
     pub async fn compare_schemas(
@@ -83,17 +97,7 @@ impl ConnectionManager {
         )
         .await?;
 
-        let column_rows: Vec<(
-            String,
-            String,
-            String,
-            String,
-            Option<String>,
-            String,
-            Option<String>,
-            i64,
-            Option<String>,
-        )> = with_metadata_timeout(
+        let column_rows: Vec<ColumnRow> = with_metadata_timeout(
             sqlx::query_as(
                 "SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT,
                         EXTRA, COLUMN_COMMENT, CAST(ORDINAL_POSITION AS SIGNED),
@@ -160,17 +164,7 @@ impl ConnectionManager {
 /// 把 INFORMATION_SCHEMA 的三份结果聚合成按表分组的结构
 fn build_tables(
     table_rows: Vec<(String,)>,
-    column_rows: Vec<(
-        String,
-        String,
-        String,
-        String,
-        Option<String>,
-        String,
-        Option<String>,
-        i64,
-        Option<String>,
-    )>,
+    column_rows: Vec<ColumnRow>,
     index_rows: Vec<(String, String, Option<String>, i64, String, i64)>,
 ) -> Vec<SchemaCompareTable> {
     let mut tables: Vec<SchemaCompareTable> = Vec::with_capacity(table_rows.len());

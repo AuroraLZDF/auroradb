@@ -46,7 +46,7 @@ jobs:
         run: npm run test
 
   backend:
-    name: Backend (cargo test)
+    name: Backend (clippy / cargo test)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -67,10 +67,15 @@ jobs:
             pkg-config
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings
 
       - name: Test
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml
