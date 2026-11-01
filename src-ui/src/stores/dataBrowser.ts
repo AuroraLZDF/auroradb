@@ -42,6 +42,8 @@ interface DataQueryResponse {
   page: number
   page_size: number
   execution_time_ms: number
+  /** 下一次游标翻页的主键值；为 null/undefined 表示不支持游标翻页 */
+  next_cursor?: unknown
 }
 
 /** schema 快照：供 SQL 编辑器补全使用的表/列信息 */
@@ -242,6 +244,8 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
   const tableData = ref<DataQueryResponse | null>(null)
   /** 表数据加载中（DataTable 工具栏据此切换「取消查询」按钮） */
   const loading = ref(false)
+  /** 大表触底续页中：与整页加载区分，避免全屏遮罩闪烁 */
+  const loadingMore = ref(false)
   /** 对象树/表列表加载中，与表数据加载严格区分，避免侧栏刷新误触发表格工具栏状态 */
   const objectTreeLoading = ref(false)
   const page = ref(1)
@@ -266,6 +270,14 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
 
   // Query Tab 的错误缓存
   const queryErrors = ref<Record<string, string>>({})
+
+  // Query Tab 的多语句结果缓存：切换 Tab 后仍能还原按语句分栏的结果
+  const queryStatements = ref<Record<string, {
+    sql: string
+    result: typeof queryResults.value[string]
+    error: string
+    cancelled?: boolean
+  }[]>>({})
 
   // 获取特定数据库的表
   function getDatabaseTables(dbName: string): DatabaseObject[] {
@@ -292,10 +304,21 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
     return queryErrors.value[tabId] || ''
   }
 
+  // 保存 Query Tab 的多语句结果
+  function setQueryStatements(tabId: string, data: typeof queryStatements.value[string]) {
+    queryStatements.value[tabId] = data
+  }
+
+  // 获取 Query Tab 的多语句结果
+  function getQueryStatements(tabId: string) {
+    return queryStatements.value[tabId] || []
+  }
+
   // 清除 Query Tab 的结果
   function clearQueryResult(tabId: string) {
     delete queryResults.value[tabId]
     delete queryErrors.value[tabId]
+    delete queryStatements.value[tabId]
   }
 
   async function loadObjectTree(connectionId: string, database?: string): Promise<DatabaseObject[]> {
@@ -338,10 +361,14 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
       sortDirection?: 'asc' | 'desc'
       /** 关键字：后端在所有可比较列上做 LIKE '%keyword%' 匹配 */
       search?: string
+      /** 只查询这些列（宽表按需加载）；为空则由后端 SELECT * */
+      columns?: string[]
     } = {}
   ) {
     const seq = ++tableLoadSeq
     loading.value = true
+    // 整表重新加载会作废进行中的续页，顺带复位续页状态，避免「加载中」卡死
+    loadingMore.value = false
     currentDatabase.value = database
     currentTable.value = table
 
@@ -356,6 +383,7 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
           connection_id: connectionId,
           database,
           table,
+          columns: options.columns && options.columns.length > 0 ? options.columns : undefined,
           page: options.page || page.value,
           page_size: options.pageSize || pageSize.value,
           sort_column: options.sortColumn,
@@ -374,6 +402,65 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
       throw e
     } finally {
       if (seq === tableLoadSeq) loading.value = false
+    }
+  }
+
+  /**
+   * 游标续页：把下一批行追加到当前结果末尾（大表触底加载）。
+   *
+   * 与 `loadTableData` 共用请求序号：期间若发生刷新/排序/搜索，本次结果作废。
+   * 续页不重复统计总数，`total_count` 沿用首页的值。
+   */
+  async function loadMoreTableData(
+    connectionId: string,
+    database: string,
+    table: string,
+    options: {
+      pageSize?: number
+      sortColumn?: string
+      sortDirection?: 'asc' | 'desc'
+      search?: string
+      columns?: string[]
+    } = {}
+  ) {
+    const current = tableData.value
+    if (!current || current.next_cursor == null) return null
+
+    const seq = ++tableLoadSeq
+    loadingMore.value = true
+    try {
+      const sortDirection = options.sortDirection
+        ? options.sortDirection.charAt(0).toUpperCase() + options.sortDirection.slice(1)
+        : undefined
+
+      const result = await tauriInvoke<DataQueryResponse>('query_table_data', {
+        request: {
+          connection_id: connectionId,
+          database,
+          table,
+          columns: options.columns && options.columns.length > 0 ? options.columns : undefined,
+          page: 1,
+          page_size: options.pageSize || pageSize.value,
+          sort_column: options.sortColumn,
+          sort_direction: sortDirection,
+          search: options.search || undefined,
+          after: current.next_cursor,
+        },
+      })
+      if (seq !== tableLoadSeq) return null
+      tableData.value = {
+        ...result,
+        rows: [...current.rows, ...result.rows],
+        total_count: current.total_count || result.total_count,
+        execution_time_ms: current.execution_time_ms + result.execution_time_ms,
+      }
+      return tableData.value
+    } catch (e) {
+      if (seq !== tableLoadSeq) return null
+      console.error('Failed to load more table data:', e)
+      throw e
+    } finally {
+      if (seq === tableLoadSeq) loadingMore.value = false
     }
   }
 
@@ -649,18 +736,23 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
     currentTable,
     tableData,
     loading,
+    loadingMore,
     objectTreeLoading,
     page,
     pageSize,
     queryResults,
     queryErrors,
+    queryStatements,
     setQueryResult,
     getQueryResult,
     setQueryError,
     getQueryError,
+    setQueryStatements,
+    getQueryStatements,
     clearQueryResult,
     loadObjectTree,
     loadTableData,
+    loadMoreTableData,
     setPage,
     setPageSize,
     beginTransaction,

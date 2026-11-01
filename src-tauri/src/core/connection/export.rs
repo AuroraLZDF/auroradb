@@ -22,6 +22,9 @@ pub struct ExportColumn {
 }
 
 /// 一次表导出的完整数据：有序的列定义与类型化行值
+///
+/// 仅用于单测构造「整表数据」后跑流式写出；生产路径已改为边读边写（`TableExportSink`）。
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct TableExportData {
     pub columns: Vec<ExportColumn>,

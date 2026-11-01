@@ -2,9 +2,7 @@
 //! SQL 执行、表数据查询、取消、导入导出等。
 
 use super::driver::{AnyPool, AnyTransaction, DriverKind};
-use super::export::{
-    self, ExportColumn, ExportFormat, TableExportData, TableExportSink,
-};
+use super::export::{self, ExportColumn, ExportFormat, TableExportSink};
 use super::manager::{ConnectionManager, MetadataCacheValue};
 use super::resultset::{
     classify_column, classify_pg_column, convert_pg_value, convert_value, quote_value,
@@ -1259,7 +1257,7 @@ impl ConnectionManager {
         let column_types: HashMap<String, String> = column_meta.iter().cloned().collect();
 
         // 构建查询SQL
-        let mut sql = format!("SELECT ");
+        let mut sql = String::from("SELECT ");
 
         match &selected_columns {
             Some(cols) => sql.push_str(&cols.join(", ")),
@@ -1328,6 +1326,33 @@ impl ConnectionManager {
             }
         }
 
+        // 游标翻页能力：单列主键 + 未指定排序 + 主键类型可比较。
+        // 主键是二进制/空间类型时无法安全回传比较，退回 OFFSET 翻页。
+        let cursor_supported = request
+            .sort_column
+            .as_deref()
+            .map_or(true, |col| col.trim().is_empty())
+            && pk_columns.len() == 1
+            && column_types
+                .get(&pk_columns[0])
+                .map_or(true, |data_type| is_searchable_type(data_type));
+        let cursor_column: Option<String> = if cursor_supported {
+            Some(pk_columns[0].clone())
+        } else {
+            None
+        };
+        // 只有续页请求（带游标）才走 keyset 条件；首页仍按 OFFSET 取，便于前端同时拿到总数
+        let use_cursor = cursor_column.is_some() && request.after.is_some();
+        if use_cursor {
+            if let (Some(pk), Some(cursor)) = (&cursor_column, &request.after) {
+                conditions.push(format!(
+                    "`{}` > {}",
+                    pk,
+                    quote_value(cursor, DriverKind::MySql)?
+                ));
+            }
+        }
+
         let where_clause = if conditions.is_empty() {
             String::new()
         } else {
@@ -1335,25 +1360,36 @@ impl ConnectionManager {
         };
         sql.push_str(&where_clause);
 
+        // 游标翻页必须按主键升序，保证跨批次连续且不重复
+        if let Some(pk) = &cursor_column {
+            sql.push_str(&format!(" ORDER BY `{}` ASC", pk));
+        }
+
         // ORDER BY - 只在排序列有效时添加
-        if let Some(col) = &request.sort_column {
-            // 验证排序列是否存在（非空且不是纯空格）
-            if !col.trim().is_empty() {
-                let direction = request.sort_direction.unwrap_or(SortDirection::Asc);
-                sql.push_str(&format!(
-                    " ORDER BY `{}` {}",
-                    col,
-                    match direction {
-                        SortDirection::Asc => "ASC",
-                        SortDirection::Desc => "DESC",
-                    }
-                ));
+        if cursor_column.is_none() {
+            if let Some(col) = &request.sort_column {
+                // 验证排序列是否存在（非空且不是纯空格）
+                if !col.trim().is_empty() {
+                    let direction = request.sort_direction.unwrap_or(SortDirection::Asc);
+                    sql.push_str(&format!(
+                        " ORDER BY `{}` {}",
+                        col,
+                        match direction {
+                            SortDirection::Asc => "ASC",
+                            SortDirection::Desc => "DESC",
+                        }
+                    ));
+                }
             }
         }
 
-        // LIMIT
-        let offset = (request.page - 1) * request.page_size;
-        sql.push_str(&format!(" LIMIT {} OFFSET {}", request.page_size, offset));
+        // LIMIT：游标翻页不带 OFFSET，页间靠主键游标衔接
+        if use_cursor {
+            sql.push_str(&format!(" LIMIT {}", request.page_size));
+        } else {
+            let offset = (request.page - 1) * request.page_size;
+            sql.push_str(&format!(" LIMIT {} OFFSET {}", request.page_size, offset));
+        }
 
         // 数据与总数放在同一只读事务里：MySQL 默认可重复读，快照在首个读语句建立，
         // 避免两次查询之间数据变化导致「总数」与当前页不一致
@@ -1365,17 +1401,22 @@ impl ConnectionManager {
         )
         .await?;
 
-        // 获取总行数（复用 WHERE 子句，带过滤时分页总数正确）
-        let count_sql = format!(
-            "SELECT COUNT(*) FROM `{}`.`{}`{}",
-            database, table, where_clause
-        );
-        let total_count: i64 = run_query(
-            sqlx::query_scalar(&count_sql).fetch_one(&mut *tx),
-            &query_cancel,
-            &query_notify,
-        )
-        .await?;
+        // 游标翻页不重复执行 COUNT：千万行表的 COUNT 同样昂贵，总数由前端沿用首页结果。
+        // OFFSET 翻页时复用 WHERE 子句统计，保证带过滤时分页总数正确。
+        let total_count: i64 = if use_cursor {
+            0
+        } else {
+            let count_sql = format!(
+                "SELECT COUNT(*) FROM `{}`.`{}`{}",
+                database, table, where_clause
+            );
+            run_query(
+                sqlx::query_scalar(&count_sql).fetch_one(&mut *tx),
+                &query_cancel,
+                &query_notify,
+            )
+            .await?
+        };
         tx.commit().await?;
 
         let execution_time_ms = start.elapsed().as_millis() as u64;
@@ -1431,6 +1472,17 @@ impl ConnectionManager {
             rows.push(row_data);
         }
 
+        // 下一次游标：取本批最后一行的主键值。只有整批取满（可能还有下一批）才给出游标，
+        // 小表最后一批不足一页时返回 None，前端据此回到普通分页/停止加载。
+        let next_cursor = match (&cursor_column, result.last()) {
+            (Some(pk), Some(last_row)) if result.len() == request.page_size => columns
+                .iter()
+                .position(|c| &c.name == pk)
+                .and_then(|index| convert_value(last_row, index, kinds[index]).ok())
+                .and_then(|value| serde_json::to_value(value).ok()),
+            _ => None,
+        };
+
         Ok(DataQueryResponse {
             columns,
             rows,
@@ -1438,6 +1490,7 @@ impl ConnectionManager {
             page: request.page,
             page_size: request.page_size,
             execution_time_ms,
+            next_cursor,
         })
     }
 
@@ -1712,6 +1765,8 @@ impl ConnectionManager {
             page: request.page,
             page_size: request.page_size,
             execution_time_ms,
+            // PG 表浏览暂未接入 keyset 翻页，前端据此走 OFFSET 分页
+            next_cursor: None,
         })
     }
 
@@ -1746,92 +1801,6 @@ impl ConnectionManager {
             false
         };
         Ok(rolled_back)
-    }
-
-    /// 读取表数据并转换为类型化的导出行。
-    ///
-    /// 列类型取自 INFORMATION_SCHEMA，逐单元格经 `convert_value` 读取，
-    /// 保留 NULL / 数字 / 日期 / 二进制的真实语义，供 CSV、JSON 与 Excel 导出复用。
-    pub async fn fetch_table_export(
-        &self,
-        connection_id: &str,
-        database: &str,
-        table: &str,
-    ) -> Result<TableExportData> {
-        validate_identifier(database)
-            .map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
-        validate_identifier(table)
-            .map_err(|e| anyhow!("表名验证失败: {}", e))?;
-
-        let pool = {
-            let connections = self.connections.read().await;
-            let conn = connections.get(connection_id)
-                .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
-            conn.pool.as_ref()
-                .ok_or_else(|| anyhow!("连接尚未建立"))?
-                .as_mysql("导出表数据")?
-                .clone()
-        };
-
-        let mut conn = pool.acquire().await
-            .map_err(|e| anyhow!("获取数据库连接失败: {}", e))?;
-
-        // 整表导出可能很久：给更宽松的超时上限，同时允许前端取消
-        let (query_cancel, query_notify, query_running) = self.exec_handles(connection_id).await?;
-        let _run_guard = QueryRunGuard::start(&query_cancel, &query_running);
-
-        // 列名与类型以 INFORMATION_SCHEMA 为准，顺序与 SELECT * 一致
-        let column_meta: Vec<(String, String)> = sqlx::query_as(
-            "SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS \
-             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION"
-        )
-        .bind(database)
-        .bind(table)
-        .fetch_all(&mut *conn).await
-        .unwrap_or_default();
-
-        let use_db = format!("USE `{}`", database);
-        conn.execute(use_db.as_str()).await
-            .map_err(|e| anyhow!("切换数据库失败: {}", e))?;
-
-        let query = format!("SELECT * FROM `{}`", table);
-        let rows = run_query_within(
-            sqlx::query(&query).fetch_all(&mut *conn),
-            &query_cancel,
-            &query_notify,
-            MAX_EXPORT_DURATION,
-        )
-        .await
-        .map_err(|e| anyhow!("查询失败: {}", e))?;
-
-        // 元数据缺失时退回结果集自身的列信息
-        let columns: Vec<ExportColumn> = if !column_meta.is_empty() {
-            column_meta.into_iter()
-                .map(|(name, data_type)| ExportColumn { name, data_type })
-                .collect()
-        } else {
-            rows.first()
-                .map(|row| row.columns().iter().map(|c| ExportColumn {
-                    name: c.name().to_string(),
-                    data_type: c.type_info().to_string(),
-                }).collect())
-                .unwrap_or_default()
-        };
-
-        let kinds: Vec<ColumnKind> = columns.iter()
-            .map(|col| classify_column(&col.data_type))
-            .collect();
-
-        let mut typed_rows = Vec::with_capacity(rows.len());
-        for row in &rows {
-            let mut values = Vec::with_capacity(kinds.len());
-            for (index, kind) in kinds.iter().enumerate() {
-                values.push(convert_value(row, index, *kind)?);
-            }
-            typed_rows.push(values);
-        }
-
-        Ok(TableExportData { columns, rows: typed_rows })
     }
 
     /// 流式导出表数据到文件（CSV / SQL / JSON）
@@ -1886,25 +1855,7 @@ impl ConnectionManager {
         let file =
             std::fs::File::create(path).map_err(|e| anyhow!("创建导出文件失败: {}", e))?;
         // 获取列类型信息，失败时回退到结果集自带的列信息
-        let column_types: Vec<(String, String)> = match sqlx::query_as(
-            "SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS \
-             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
-        )
-        .bind(table)
-        .fetch_all(&mut *conn)
-        .await
-        {
-            Ok(types) => types,
-            Err(e) => {
-                tracing::warn!("读取列元数据失败，改用结果集列信息: {}", e);
-                Vec::new()
-            }
-        };
-
-        let columns: Vec<ExportColumn> = column_types
-            .into_iter()
-            .map(|(name, data_type)| ExportColumn { name, data_type })
-            .collect();
+        let columns = export_columns(&mut conn, database, table).await;
         let mut sink = TableExportSink::new(
             std::io::BufWriter::with_capacity(256 * 1024, file),
             format,
@@ -1912,36 +1863,92 @@ impl ConnectionManager {
             columns,
         );
 
-        let query = format!("SELECT * FROM `{}`", table);
-        let mut rows = sqlx::query(&query).fetch(&mut *conn);
-        let deadline = Instant::now() + MAX_EXPORT_DURATION;
-
-        loop {
-            if query_cancel.load(Ordering::SeqCst) {
-                return Err(anyhow!("查询已被用户取消"));
-            }
-            if Instant::now() >= deadline {
-                return Err(anyhow!(
-                    "导出超过 {} 分钟，已终止；请缩小数据范围后重试",
-                    MAX_EXPORT_DURATION.as_secs() / 60
-                ));
-            }
-
-            let next = tokio::select! {
-                item = rows.try_next() => item.map_err(|e| anyhow!("查询失败: {}", e))?,
-                // 通知可能早于本轮检查到达，下一轮由 cancel 标志兜住
-                _ = query_notify.notified() => continue,
-                _ = tokio::time::sleep(Duration::from_millis(300)) => continue,
-            };
-
-            match next {
-                Some(row) => sink.write_row(&row)?,
-                None => break,
-            }
-        }
+        stream_table_rows(&mut conn, &query_cancel, &query_notify, table, |row| {
+            sink.write_row(row)
+        })
+        .await?;
 
         sink.finish()?;
         Ok(sink.rows())
+    }
+
+    /// 读取整表的列定义（名称 + DATA_TYPE），顺序与 `SELECT *` 一致。
+    ///
+    /// Excel 导出需要先写表头，因此把列元数据单独暴露出来；
+    /// INFORMATION_SCHEMA 查询失败时返回空列表，由调用方退回结果集列信息。
+    pub async fn table_export_columns(
+        &self,
+        connection_id: &str,
+        database: &str,
+        table: &str,
+    ) -> Result<Vec<ExportColumn>> {
+        validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
+        validate_identifier(table).map_err(|e| anyhow!("表名验证失败: {}", e))?;
+
+        let pool = {
+            let connections = self.connections.read().await;
+            let conn = connections
+                .get(connection_id)
+                .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
+            conn.pool
+                .as_ref()
+                .ok_or_else(|| anyhow!("连接尚未建立"))?
+                .as_mysql("导出表数据")?
+                .clone()
+        };
+
+        let mut conn = pool
+            .acquire()
+            .await
+            .map_err(|e| anyhow!("获取数据库连接失败: {}", e))?;
+        Ok(export_columns(&mut conn, database, table).await)
+    }
+
+    /// 流式遍历整表并逐行回调，内存占用与表大小无关。
+    ///
+    /// 供 Excel 导出使用：调用方在回调里直接写工作簿，不再把整表读进内存；
+    /// 全程受取消标志与 `MAX_EXPORT_DURATION` 约束。
+    pub async fn export_table_stream<F>(
+        &self,
+        connection_id: &str,
+        database: &str,
+        table: &str,
+        mut on_row: F,
+    ) -> Result<u64>
+    where
+        F: FnMut(&sqlx::mysql::MySqlRow) -> Result<()>,
+    {
+        validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
+        validate_identifier(table).map_err(|e| anyhow!("表名验证失败: {}", e))?;
+
+        // 只取池的克隆后释放连接表读锁，导出期间不阻塞其他连接操作
+        let pool = {
+            let connections = self.connections.read().await;
+            let conn = connections
+                .get(connection_id)
+                .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
+            conn.pool
+                .as_ref()
+                .ok_or_else(|| anyhow!("连接尚未建立"))?
+                .as_mysql("导出表数据")?
+                .clone()
+        };
+
+        let mut conn = pool
+            .acquire()
+            .await
+            .map_err(|e| anyhow!("获取数据库连接失败: {}", e))?;
+
+        let use_db = format!("USE `{}`", database);
+        conn.execute(use_db.as_str())
+            .await
+            .map_err(|e| anyhow!("切换数据库失败: {}", e))?;
+
+        let (query_cancel, query_notify, query_running) =
+            self.exec_handles(connection_id).await?;
+        let _run_guard = QueryRunGuard::start(&query_cancel, &query_running);
+
+        stream_table_rows(&mut conn, &query_cancel, &query_notify, table, &mut on_row).await
     }
 
     /// 导入数据
@@ -2025,6 +2032,10 @@ impl ConnectionManager {
                     return Err(anyhow!("CSV 导入行数不能超过 {}", MAX_IMPORT_ROWS));
                 }
 
+                // 二进制列导出时是 Base64 文本，导入必须反向解码，
+                // 否则 BLOB/BINARY 会被当成普通字符串写回，内容不可还原
+                let binary_columns = table_binary_columns(&mut conn, table).await;
+
                 let columns_str: String = headers.iter()
                     .map(|h| format!("`{}`", escape_string(h)))
                     .collect::<Vec<_>>()
@@ -2047,14 +2058,29 @@ impl ConnectionManager {
                         ));
                     }
 
-                    let values_str: String = record.iter().map(|field| {
+                    let mut values: Vec<String> = Vec::with_capacity(record.len());
+                    for (col_index, field) in record.iter().enumerate() {
                         // 未加引号的空字段与 NULL 视为 SQL NULL；带引号的一律按文本处理
                         if !field.quoted && (field.value.is_empty() || field.value == "NULL") {
-                            "NULL".to_string()
+                            values.push("NULL".to_string());
+                        } else if headers
+                            .get(col_index)
+                            .is_some_and(|name| binary_columns.contains(name))
+                        {
+                            let column = headers.get(col_index).map(String::as_str).unwrap_or("");
+                            let literal = decode_base64_to_hex(&field.value).with_context(|| {
+                                format!(
+                                    "CSV 第 {} 行列 '{}' 不是合法的 Base64（二进制列需按导出的 Base64 文本导入）",
+                                    index + 1,
+                                    column
+                                )
+                            })?;
+                            values.push(literal);
                         } else {
-                            format!("'{}'", escape_string(&field.value))
+                            values.push(format!("'{}'", escape_string(&field.value)));
                         }
-                    }).collect::<Vec<_>>().join(", ");
+                    }
+                    let values_str = values.join(", ");
 
                     let query = format!("INSERT INTO `{}` ({}) VALUES ({})", table, columns_str, values_str);
                     sqlx::query(&query).execute(&mut *tx).await
@@ -2171,6 +2197,127 @@ impl ConnectionManager {
     }
 }
 
+/// 读取表的列定义（名称 + DATA_TYPE），顺序与 `SELECT *` 一致。
+///
+/// 元数据查询失败时返回空列表并记一条告警，调用方回退到结果集自带的列信息。
+async fn export_columns(
+    conn: &mut MySqlConnection,
+    database: &str,
+    table: &str,
+) -> Vec<ExportColumn> {
+    let meta: Vec<(String, String)> = match sqlx::query_as(
+        "SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS \
+         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
+    )
+    .bind(database)
+    .bind(table)
+    .fetch_all(&mut *conn)
+    .await
+    {
+        Ok(meta) => meta,
+        Err(e) => {
+            tracing::warn!("读取列元数据失败，改用结果集列信息: {}", e);
+            Vec::new()
+        }
+    };
+
+    meta.into_iter()
+        .map(|(name, data_type)| ExportColumn { name, data_type })
+        .collect()
+}
+
+/// 逐行流式读取整表，每读一行调用一次 `on_row`。
+///
+/// 内存占用与表大小无关；每轮都检查取消标志与导出超时上限，
+/// 以便用户在千万行表上也能及时中断。
+async fn stream_table_rows<F>(
+    conn: &mut MySqlConnection,
+    query_cancel: &AtomicBool,
+    query_notify: &Notify,
+    table: &str,
+    mut on_row: F,
+) -> Result<u64>
+where
+    F: FnMut(&sqlx::mysql::MySqlRow) -> Result<()>,
+{
+    let query = format!("SELECT * FROM `{}`", table);
+    let mut rows = sqlx::query(&query).fetch(&mut *conn);
+    let deadline = Instant::now() + MAX_EXPORT_DURATION;
+    let mut count = 0u64;
+
+    loop {
+        if query_cancel.load(Ordering::SeqCst) {
+            return Err(anyhow!("查询已被用户取消"));
+        }
+        if Instant::now() >= deadline {
+            return Err(anyhow!(
+                "导出超过 {} 分钟，已终止；请缩小数据范围后重试",
+                MAX_EXPORT_DURATION.as_secs() / 60
+            ));
+        }
+
+        let next = tokio::select! {
+            item = rows.try_next() => item.map_err(|e| anyhow!("查询失败: {}", e))?,
+            // 通知可能早于本轮检查到达，下一轮由 cancel 标志兜住
+            _ = query_notify.notified() => continue,
+            _ = tokio::time::sleep(Duration::from_millis(300)) => continue,
+        };
+
+        match next {
+            Some(row) => {
+                on_row(&row)?;
+                count += 1;
+            }
+            None => break,
+        }
+    }
+
+    Ok(count)
+}
+
+/// 查询表中所有二进制列（BLOB / BINARY / VARBINARY 等）的列名。
+///
+/// 元数据查询失败时返回空集合，退回「全部按文本导入」的旧行为。
+async fn table_binary_columns(conn: &mut MySqlConnection, table: &str) -> HashSet<String> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS \
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?",
+    )
+    .bind(table)
+    .fetch_all(&mut *conn)
+    .await
+    .unwrap_or_default();
+
+    rows.into_iter()
+        .filter(|(_, data_type)| matches!(classify_column(data_type), ColumnKind::Binary))
+        .map(|(name, _)| name)
+        .collect()
+}
+
+/// 把导出的 Base64 文本还原成 MySQL 十六进制字面量（`0x…`）。
+///
+/// - 空文本代表零长度二进制，写成 `''` 而不是 NULL；
+/// - 导出时 CSV 公式中和可能给 `+` 开头的 Base64 补了前导单引号，这里先剥掉。
+fn decode_base64_to_hex(value: &str) -> Result<String> {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine as _;
+
+    let compact: String = value
+        .trim_start_matches('\'')
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    if compact.is_empty() {
+        return Ok("''".to_string());
+    }
+
+    let bytes = STANDARD
+        .decode(compact.as_bytes())
+        .map_err(|e| anyhow!("Base64 解码失败: {}", e))?;
+    let hex: String = bytes.iter().map(|b| format!("{:02X}", b)).collect();
+    Ok(format!("0x{}", hex))
+}
+
 /// 计算两个时间点之间的毫秒数（保留小数，用于耗时统计）。
 fn ms(end: Instant, start: Instant) -> f64 {
     end.duration_since(start).as_secs_f64() * 1000.0
@@ -2243,6 +2390,22 @@ mod tests {
         assert!(!is_searchable_type("varbinary(16)"));
         assert!(!is_searchable_type("bit(1)"));
         assert!(!is_searchable_type("geometry"));
+    }
+
+    #[test]
+    fn base64_text_decodes_to_hex_literal() {
+        // "PNG" 的 Base64 为 "UE5H"，导入时落成 0x504E47
+        assert_eq!(decode_base64_to_hex("UE5H").unwrap(), "0x504E47");
+        // 带空白与导出侧公式中和的前导单引号也要能还原
+        assert_eq!(decode_base64_to_hex("'+Gk=").unwrap(), "0xF869");
+        // 空文本是零长度二进制，不是 NULL
+        assert_eq!(decode_base64_to_hex("").unwrap(), "''");
+    }
+
+    #[test]
+    fn invalid_base64_is_rejected_with_reason() {
+        let err = decode_base64_to_hex("not base64!").unwrap_err().to_string();
+        assert!(err.contains("Base64"), "错误信息应说明 Base64 解码失败: {err}");
     }
 
     #[test]
@@ -2369,6 +2532,7 @@ mod tests {
             sort_direction: None,
             page: 2,
             page_size: 3,
+            after: None,
         }
     }
 

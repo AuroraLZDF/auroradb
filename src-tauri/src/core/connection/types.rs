@@ -283,6 +283,12 @@ pub struct DataQueryRequest {
     pub sort_direction: Option<SortDirection>,
     pub page: usize,
     pub page_size: usize,
+    /// 游标翻页：上一批最后一行的主键值（JSON 形式）。
+    ///
+    /// 提供时后端改用 keyset 分页（`WHERE pk > cursor`），避免深翻页的 OFFSET 代价；
+    /// 仅对「单列主键 + 未指定排序」生效，其它情况由前端退回 OFFSET 翻页。
+    #[serde(default)]
+    pub after: Option<serde_json::Value>,
 }
 
 /// 数据查询响应
@@ -290,10 +296,14 @@ pub struct DataQueryRequest {
 pub struct DataQueryResponse {
     pub columns: Vec<ColumnDefinition>,
     pub rows: Vec<Vec<CellValue>>,
+    /// 总行数。游标翻页时不重复执行 COUNT（千万行表的 COUNT 也很贵），此时为 0，
+    /// 前端沿用首页得到的总数。
     pub total_count: u64,
     pub page: usize,
     pub page_size: usize,
     pub execution_time_ms: u64,
+    /// 下一次游标翻页用的主键值；为 None 表示该查询不支持游标翻页
+    pub next_cursor: Option<serde_json::Value>,
 }
 
 /// 表数据变更类型

@@ -4,9 +4,11 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_dialog::FilePath;
 use rust_xlsxwriter::Workbook;
 use serde::{Deserialize, Serialize};
+use sqlx::{Column, Row};
 
 use crate::commands::connection::ConnectionManagerState;
 use crate::core::connection::export::{ExportColumn, ExportFormat};
+use crate::core::connection::resultset::{classify_column, convert_value, ColumnKind};
 use crate::core::connection::CellValue;
 
 /// 列定义
@@ -68,12 +70,12 @@ pub async fn export_to_excel(
                         worksheet.write_number(row_num, col_idx as u16, f)
                             .map_err(|e| format!("写入数据失败: {}", e))?;
                     } else {
-                        worksheet.write_string(row_num, col_idx as u16, &n.to_string())
+                        worksheet.write_string(row_num, col_idx as u16, n.to_string())
                             .map_err(|e| format!("写入数据失败: {}", e))?;
                     }
                 }
                 serde_json::Value::Bool(b) => {
-                    worksheet.write_string(row_num, col_idx as u16, &b.to_string())
+                    worksheet.write_string(row_num, col_idx as u16, b.to_string())
                         .map_err(|e| format!("写入数据失败: {}", e))?;
                 }
                 serde_json::Value::String(s) => {
@@ -81,7 +83,7 @@ pub async fn export_to_excel(
                         .map_err(|e| format!("写入数据失败: {}", e))?;
                 }
                 _ => {
-                    worksheet.write_string(row_num, col_idx as u16, &value.to_string())
+                    worksheet.write_string(row_num, col_idx as u16, value.to_string())
                         .map_err(|e| format!("写入数据失败: {}", e))?;
                 }
             }
@@ -145,7 +147,8 @@ pub async fn export_to_excel(
 
 /// 导出表数据为 Excel 文件
 ///
-/// 全表数据在后端直接读取并写入工作簿，避免大表经 IPC 传输到前端。
+/// 使用常量内存模式（`constant_memory`）逐行写盘：内存占用与表大小无关，
+/// 百万行级别的表也不会把整表读进内存或撑爆 IPC。
 #[command]
 pub async fn export_table_to_excel(
     window: tauri::Window,
@@ -155,43 +158,100 @@ pub async fn export_table_to_excel(
     table: String,
     filename: String,
 ) -> Result<String, String> {
-    let data = {
-        let manager = state.manager.read().await;
-        manager
-            .fetch_table_export(&connection_id, &database, &table)
-            .await
-            .map_err(|e| crate::core::error::user_message(&e))?
-    };
+    // 列宽只采样前若干行，避免为了估算宽度把整表留在内存里
+    const WIDTH_SAMPLE_ROWS: usize = 200;
+
+    let manager = state.manager.read().await;
+
+    // 常量内存模式必须按行顺序写，表头要先于数据行；列元数据同时用于类型转换
+    let mut columns = manager
+        .table_export_columns(&connection_id, &database, &table)
+        .await
+        .map_err(|e| crate::core::error::user_message(&e))?;
+    let mut kinds: Vec<ColumnKind> = columns
+        .iter()
+        .map(|col| classify_column(&col.data_type))
+        .collect();
+    let mut header_written = !columns.is_empty();
+    let mut samples: Vec<Vec<CellValue>> = Vec::new();
+    let header_format = rust_xlsxwriter::Format::new().set_bold();
+    let mut row_num: u32 = 1;
 
     let mut workbook = Workbook::new();
-    let worksheet = workbook.add_worksheet();
-    let header_format = rust_xlsxwriter::Format::new().set_bold();
+    {
+        let worksheet = workbook.add_worksheet_with_constant_memory();
 
-    for (col_idx, col) in data.columns.iter().enumerate() {
-        worksheet
-            .write_string_with_format(0, col_idx as u16, &col.name, &header_format)
-            .map_err(|e| format!("写入表头失败: {}", e))?;
-    }
-
-    for (row_idx, row) in data.rows.iter().enumerate() {
-        let row_num = (row_idx + 1) as u32;
-        for (col_idx, cell) in row.iter().enumerate() {
-            write_excel_cell(worksheet, row_num, col_idx as u16, cell)
-                .map_err(|e| format!("写入数据失败: {}", e))?;
+        if header_written {
+            write_excel_header(worksheet, &columns, &header_format)?;
         }
-    }
 
-    for (col_idx, col) in data.columns.iter().enumerate() {
-        let width = excel_column_width(col_idx, col, &data.rows);
-        worksheet
-            .set_column_width(col_idx as u16, width as f64)
-            .map_err(|e| format!("设置列宽失败: {}", e))?;
+        manager
+            .export_table_stream(&connection_id, &database, &table, |row| {
+                // 元数据查询失败时退回结果集自带的列信息（此时才写表头）
+                if !header_written {
+                    columns = row
+                        .columns()
+                        .iter()
+                        .map(|col| ExportColumn {
+                            name: col.name().to_string(),
+                            data_type: col.type_info().to_string(),
+                        })
+                        .collect();
+                    kinds = columns
+                        .iter()
+                        .map(|col| classify_column(&col.data_type))
+                        .collect();
+                    write_excel_header(worksheet, &columns, &header_format)
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    header_written = true;
+                }
+
+                let mut cells = Vec::with_capacity(kinds.len());
+                for (index, kind) in kinds.iter().enumerate() {
+                    cells.push(convert_value(row, index, *kind)?);
+                }
+                if samples.len() < WIDTH_SAMPLE_ROWS {
+                    samples.push(cells.clone());
+                }
+                for (col_idx, cell) in cells.iter().enumerate() {
+                    write_excel_cell(worksheet, row_num, col_idx as u16, cell)
+                        .map_err(|e| anyhow::anyhow!("写入数据失败: {}", e))?;
+                }
+                row_num += 1;
+                Ok(())
+            })
+            .await
+            .map_err(|e| crate::core::error::user_message(&e))?;
+
+        // 常量内存模式允许在数据写完后设置列宽
+        for (col_idx, col) in columns.iter().enumerate() {
+            let width = excel_column_width(col_idx, col, &samples);
+            worksheet
+                .set_column_width(col_idx as u16, width as f64)
+                .map_err(|e| format!("设置列宽失败: {}", e))?;
+        }
     }
 
     // 用户传入的文件名只允许纯文件名，避免路径穿越
     let safe_name = sanitize_file_name(&filename, &format!("{}.xlsx", table));
+    // 保存对话框可能长时间等待用户操作，先释放连接表的读锁
+    drop(manager);
 
     save_workbook_with_dialog(window, workbook, &safe_name).await
+}
+
+/// 写入 Excel 表头行（第 0 行）
+fn write_excel_header(
+    worksheet: &mut rust_xlsxwriter::Worksheet,
+    columns: &[ExportColumn],
+    format: &rust_xlsxwriter::Format,
+) -> Result<(), String> {
+    for (col_idx, col) in columns.iter().enumerate() {
+        worksheet
+            .write_string_with_format(0, col_idx as u16, &col.name, format)
+            .map_err(|e| format!("写入表头失败: {}", e))?;
+    }
+    Ok(())
 }
 
 /// 导出表数据到文件（CSV / SQL / JSON）
@@ -281,7 +341,7 @@ async fn pick_save_path(
 /// 去掉目录部分与路径分隔符、控制字符，并避免 `.`/`..` 之类的名字。
 fn sanitize_file_name(filename: &str, fallback: &str) -> String {
     let base = filename
-        .rsplit(|c| c == '/' || c == '\\')
+        .rsplit(['/', '\\'])
         .next()
         .unwrap_or("")
         .trim();
@@ -556,7 +616,7 @@ pub async fn read_file_from_dialog(
             match tokio::fs::metadata(&path_buf).await {
                 Ok(metadata) => {
                     if metadata.len() > MAX_FILE_SIZE {
-                        return Err(format!("文件大小超过限制（最大 10MB）"));
+                        return Err("文件大小超过限制（最大 10MB）".to_string());
                     }
                 }
                 Err(e) => return Err(format!("无法读取文件信息: {}", e)),

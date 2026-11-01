@@ -11,7 +11,7 @@ use sqlx::{Column, Row, ValueRef};
 
 /// 列值类型分类。在列级别一次性计算，避免对每个单元格重复做字符串匹配和小写化。
 #[derive(Clone, Copy)]
-pub(super) enum ColumnKind {
+pub(crate) enum ColumnKind {
     BitBool,
     BitBytes,
     Boolean,
@@ -31,7 +31,7 @@ pub(super) enum ColumnKind {
 }
 
 /// 根据列类型字符串分类，供后续逐单元格读取使用。
-pub(super) fn classify_column(data_type: &str) -> ColumnKind {
+pub(crate) fn classify_column(data_type: &str) -> ColumnKind {
     let lower = data_type.to_lowercase();
     if lower.starts_with("bit") {
         if lower == "bit(1)" || lower == "bit" {
@@ -83,7 +83,7 @@ pub(super) fn classify_column(data_type: &str) -> ColumnKind {
 /// 规则：NULL 值返回 `CellValue::Null`；驱动类型映射差异导致的读取失败
 /// 按预置降级路径重试（如 BIT(1) 按布尔读失败则按字节读）；
 /// 所有降级路径都失败时返回带列名/类型的错误，禁止静默吞错返回假 NULL。
-pub(super) fn convert_value(
+pub(crate) fn convert_value(
     row: &sqlx::mysql::MySqlRow,
     index: usize,
     kind: ColumnKind,

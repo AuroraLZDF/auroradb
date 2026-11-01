@@ -28,6 +28,47 @@
           <button @click="autoFitAllColumns" :disabled="loading || !currentTableData" :title="t('dataTable.autoFitAll')">
             <AlignHorizontalDistributeCenter :size="14" />
           </button>
+          <!-- 按需列加载：宽表默认只取前 N 列，勾选后重新查询 -->
+          <div v-if="allColumnsForTab.length > 0" class="column-selector">
+            <button
+              @click.stop="showColumnSelector = !showColumnSelector"
+              :class="{ active: showColumnSelector }"
+              :title="t('dataTable.columnsHint')"
+            >
+              <Columns3 :size="14" />
+              {{ t('dataTable.columnsLabel', { selected: selectedColumnNames.length, total: allColumnsForTab.length }) }}
+            </button>
+            <div v-if="showColumnSelector" class="column-selector-menu" @click.stop>
+              <div class="column-selector-header">
+                <span>{{ t('dataTable.columnsTitle') }}</span>
+                <div class="column-selector-actions">
+                  <button @click="selectAllColumns">{{ t('dataTable.selectAllColumns') }}</button>
+                  <button @click="resetColumnSelection">{{ t('dataTable.resetColumns') }}</button>
+                </div>
+              </div>
+              <div class="column-selector-list">
+                <label v-for="col in allColumnsForTab" :key="col.name" class="column-option">
+                  <input
+                    type="checkbox"
+                    :checked="isColumnSelected(col.name)"
+                    :disabled="col.is_primary"
+                    :title="col.is_primary ? t('dataTable.columnsPrimaryRequired') : col.name"
+                    @change="toggleColumnSelection(col.name)"
+                  />
+                  <span class="column-option-name" :title="col.name">{{ col.name }}</span>
+                  <span class="column-option-type">{{ col.data_type }}</span>
+                </label>
+              </div>
+              <div class="column-selector-footer">
+                <span v-if="colSelectionChanged" class="pending-hint">{{ t('dataTable.columnsPendingHint') }}</span>
+                <button
+                  class="btn-primary"
+                  :disabled="!colSelectionChanged || selectedColumnNames.length === 0"
+                  @click="applyColumns"
+                >{{ t('dataTable.applyColumns') }}</button>
+              </div>
+            </div>
+          </div>
           <span class="toolbar-divider"></span>
           <!-- 事务控制按钮 -->
           <button
@@ -66,8 +107,8 @@
         />
         <span v-if="currentTableData" class="row-info">
           {{ t('dataTable.rowRange', {
-            start: (page - 1) * pageSize + 1,
-            end: Math.min(page * pageSize, currentTableData.total_count),
+            start: cursorMode ? 1 : (page - 1) * pageSize + 1,
+            end: cursorMode ? currentTableData.rows.length : Math.min(page * pageSize, currentTableData.total_count),
             total: currentTableData.total_count
           }) }}
         </span>
@@ -135,7 +176,7 @@
             @click="selectRow(rowIndex, $event)"
           >
             <td class="row-number frozen-row-number" style="left: 0">
-              <span class="row-num">{{ (page - 1) * pageSize + rowIndex + 1 }}</span>
+              <span class="row-num">{{ (cursorMode ? 0 : (page - 1) * pageSize) + rowIndex + 1 }}</span>
             </td>
             <td
               v-for="(cell, cellIndex) in row"
@@ -152,7 +193,8 @@
                 width: columnWidths[cellIndex] + 'px',
                 ...(isColumnFrozen(cellIndex) ? { left: getFrozenLeftOffset(cellIndex) + 'px' } : {})
               }"
-              @click="startEdit(rowIndex, cellIndex, cell)"
+              @click="onCellClick($event, rowIndex, cellIndex, cell)"
+              @dblclick="onCellDblClick(rowIndex, cellIndex, cell)"
               @contextmenu.prevent="showContextMenu($event, rowIndex, cellIndex, cell)"
               :title="getCellTitle(cell)"
             >
@@ -268,9 +310,21 @@
       </table>
     </div>
 
-    <!-- 分页 -->
+    <!-- 分页 / 游标续页 -->
     <div v-if="currentTableData" class="table-footer">
-      <div class="pagination">
+      <!-- 大表使用游标翻页：只追加「加载更多」，不再展示页码 -->
+      <div v-if="cursorMode" class="pagination load-more-bar">
+        <span class="loaded-rows">
+          {{ t('dataTable.loadedRows', { loaded: currentTableData.rows.length, total: currentTableData.total_count }) }}
+        </span>
+        <button
+          v-if="currentTableData.next_cursor != null"
+          @click="loadMore"
+          :disabled="!canLoadMore"
+        >{{ loadingMore ? t('dataTable.loadingMore') : t('dataTable.loadMore') }}</button>
+        <span v-else class="all-loaded">{{ t('dataTable.allLoaded') }}</span>
+      </div>
+      <div v-else class="pagination">
         <button @click="firstPage" :disabled="page <= 1">{{ t('dataTable.firstPage') }}</button>
         <button @click="prevPage" :disabled="page <= 1">{{ t('dataTable.prevPage') }}</button>
         <span>{{ t('dataTable.pageIndicator', { page, total: totalPages }) }}</span>
@@ -325,17 +379,15 @@
       <div class="menu-item" @click="editCell">{{ t('common.edit') }}</div>
     </div>
 
-    <!-- 查看完整内容弹窗 -->
-    <div v-if="fullContent.show" class="modal-overlay" @click.self="fullContent.show = false">
-      <div class="content-dialog">
-        <h3>{{ t('dataTable.fullContent') }}</h3>
-        <textarea v-model="fullContent.text" readonly class="content-textarea"></textarea>
-        <div class="dialog-actions">
-          <button @click="fullContent.show = false" class="btn-primary">{{ t('common.close') }}</button>
-          <button @click="copyFullContent" class="btn-secondary">{{ t('common.copy') }}</button>
-        </div>
-      </div>
-    </div>
+    <!-- 单元格查看器（大文本 / JSON / BLOB） -->
+    <CellViewer
+      :open="cellViewer.show"
+      :value="cellViewer.value"
+      :column-name="cellViewer.columnName"
+      :column-type="cellViewer.columnType"
+      :driver="isPostgresConnection ? 'postgres' : 'mysql'"
+      @close="cellViewer.show = false"
+    />
 
     <!-- 关闭 / 切换确认对话框 -->
     <div v-if="showCloseConfirm" class="modal-overlay">
@@ -456,8 +508,9 @@ import { useDebounce } from '@/composables/useDebounce'
 import { confirmAction } from '@/composables/useConfirm'
 import { useUnsavedGuard } from '@/composables/useUnsavedGuard'
 import { useVirtualRows } from '@/composables/useVirtualRows'
-import { collectTableChanges, isSameValue } from '@/utils/tableChanges'
+import { collectTableChanges, isBinaryType, isSameValue } from '@/utils/tableChanges'
 import { t } from '@/i18n'
+import CellViewer from '@/components/CellViewer.vue'
 import {
   RefreshCw,
   Plus,
@@ -470,7 +523,7 @@ import {
   X,
   AlignHorizontalDistributeCenter
 } from '@/components/icons'
-import { Calendar } from 'lucide-vue-next'
+import { Calendar, Columns3 } from 'lucide-vue-next'
 import Select from '@/components/ui/Select.vue'
 
 interface TableTab {
@@ -617,10 +670,12 @@ const contextMenu = ref({
   cellValue: null as unknown
 })
 
-// 查看完整内容
-const fullContent = ref({
+// 单元格查看器状态（记录列名/类型，数据刷新后仍可正确展示）
+const cellViewer = ref({
   show: false,
-  text: ''
+  value: null as unknown,
+  columnName: '',
+  columnType: ''
 })
 
 // 关闭确认
@@ -684,6 +739,116 @@ const pageSizeOptions = computed(() =>
     value: String(size),
   }))
 )
+
+// ========== 宽表按需列加载 ==========
+interface TableColumnMeta {
+  name: string
+  data_type: string
+  is_primary: boolean
+}
+
+/** 默认展示的列数上限；超过则只取前 N 列 + 主键列，避免宽表一次拉取 200+ 列 */
+const DEFAULT_VISIBLE_COLUMNS = 30
+
+/** 每张表的结构列元数据（按 tab id 缓存，只取一次） */
+const tableColumns = ref<Record<string, TableColumnMeta[]>>({})
+/** 每张表当前勾选要查询的列 */
+const selectedColumns = ref<Record<string, string[]>>({})
+const showColumnSelector = ref(false)
+/** 是否处于游标续页模式（首页返回 next_cursor 时开启） */
+const cursorMode = ref(false)
+const loadingMore = computed(() => browserStore.loadingMore)
+
+const currentTableKey = computed(() => currentTab.value?.id ?? '')
+const allColumnsForTab = computed(() => tableColumns.value[currentTableKey.value] ?? [])
+const selectedColumnNames = computed(() => selectedColumns.value[currentTableKey.value] ?? [])
+const loadedColumnNames = computed(() => currentTableData.value?.columns.map(col => col.name) ?? [])
+
+/** 勾选结果与当前已加载列是否不同（用于「应用」按钮的可用状态） */
+const colSelectionChanged = computed(() => {
+  const selected = selectedColumnNames.value
+  const loaded = loadedColumnNames.value
+  if (selected.length === 0 || loaded.length === 0) return false
+  if (selected.length !== loaded.length) return true
+  const loadedSet = new Set(loaded)
+  return selected.some(name => !loadedSet.has(name))
+})
+
+/** 触底加载更多：仅在游标模式下、还有下一页且没有本地新增行时可用 */
+const canLoadMore = computed(() =>
+  cursorMode.value &&
+  currentTableData.value?.next_cursor != null &&
+  !loadingMore.value &&
+  !loading.value &&
+  newRows.value.length === 0
+)
+
+/** 默认列选择：列数不超过上限时全选，否则取前 N 列并强制保留主键列 */
+function defaultColumnSelection(columns: TableColumnMeta[]): string[] {
+  if (columns.length <= DEFAULT_VISIBLE_COLUMNS) return columns.map(col => col.name)
+  // 保持表结构顺序：前 N 列 + 位置靠后的主键列
+  return columns
+    .filter((col, index) => index < DEFAULT_VISIBLE_COLUMNS || col.is_primary)
+    .map(col => col.name)
+}
+
+/** 首次打开某张表时取列元数据，失败则回退为 SELECT *（不影响数据浏览） */
+async function ensureTableColumns(tab: TableTab) {
+  if (tableColumns.value[tab.id]) return
+  try {
+    const structure = await browserStore.getTableStructure(tab.connectionId, tab.database, tab.tableName)
+    const columns: TableColumnMeta[] = structure.columns.map(col => ({
+      name: col.name,
+      data_type: col.data_type,
+      is_primary: col.is_primary,
+    }))
+    tableColumns.value = { ...tableColumns.value, [tab.id]: columns }
+    selectedColumns.value = { ...selectedColumns.value, [tab.id]: defaultColumnSelection(columns) }
+  } catch (e) {
+    console.error('Failed to load table columns:', e)
+  }
+}
+
+function isColumnSelected(name: string): boolean {
+  return selectedColumnNames.value.includes(name)
+}
+
+function toggleColumnSelection(name: string) {
+  const column = allColumnsForTab.value.find(col => col.name === name)
+  // 主键列用于游标翻页与行定位，不允许取消
+  if (!column || column.is_primary) return
+  const selectedSet = new Set(selectedColumnNames.value)
+  if (selectedSet.has(name)) {
+    selectedSet.delete(name)
+  } else {
+    selectedSet.add(name)
+  }
+  // 按表结构顺序回填，保证查询列顺序稳定
+  const next = allColumnsForTab.value.map(col => col.name).filter(colName => selectedSet.has(colName))
+  selectedColumns.value = { ...selectedColumns.value, [currentTableKey.value]: next }
+}
+
+function selectAllColumns() {
+  selectedColumns.value = {
+    ...selectedColumns.value,
+    [currentTableKey.value]: allColumnsForTab.value.map(col => col.name),
+  }
+}
+
+function resetColumnSelection() {
+  selectedColumns.value = {
+    ...selectedColumns.value,
+    [currentTableKey.value]: defaultColumnSelection(allColumnsForTab.value),
+  }
+}
+
+/** 应用列选择：回到第一页重新查询 */
+function applyColumns() {
+  showColumnSelector.value = false
+  browserStore.setPage(1)
+  cursorMode.value = false
+  loadData()
+}
 
 // 导入 / 导出格式选项
 const importFormatOptions = [
@@ -812,6 +977,7 @@ onUnmounted(() => {
   // 拖拽列宽中卸载时清理全局监听
   document.removeEventListener('mousemove', handleResize)
   document.removeEventListener('mouseup', stopResize)
+  clearPendingEdit()
   if (toastTimer) clearTimeout(toastTimer)
 })
 
@@ -931,7 +1097,15 @@ async function activateTab(tab: TableTab) {
   // 重置排序状态，避免使用之前表的排序列
   sortColumn.value = ''
   sortDirection.value = 'Asc'
+  showColumnSelector.value = false
+  cursorMode.value = false
+  // 切换表从第一页开始，避免沿用上一张表的页码（游标模式依赖首页语义）
+  browserStore.setPage(1)
 
+  // 先取列元数据（宽表按需加载的前提），再查询数据
+  await ensureTableColumns(tab)
+  // 等待期间可能已切换到别的表，过期的激活不再发请求
+  if (currentTab.value?.id !== tab.id) return
   await loadData()
 }
 
@@ -1050,18 +1224,40 @@ async function loadData() {
 
   loadError.value = ''
   try {
-    await browserStore.loadTableData(conn.id, browserStore.currentDatabase, browserStore.currentTable, {
+    const result = await browserStore.loadTableData(conn.id, browserStore.currentDatabase, browserStore.currentTable, {
       page: page.value,
       pageSize: pageSize.value,
       sortColumn: sortColumn.value || undefined,
       sortDirection: sortDirection.value?.toLowerCase() as 'asc' | 'desc' | undefined,
       search: activeSearch.value || undefined,
+      columns: selectedColumnNames.value.length > 0 ? selectedColumnNames.value : undefined,
     })
+    // 首页返回游标说明后续翻页可走 keyset，切换为「加载更多」模式
+    if (result) cursorMode.value = result.next_cursor != null
   } catch (e) {
     const message = String(e)
     loadError.value = message
     console.error('Failed to load table data:', e)
     showToast(t('dataTable.loadFailed', { error: message }), 'error')
+  }
+}
+
+// 触底加载更多（游标续页），追加到当前结果末尾
+async function loadMore() {
+  const conn = connectionStore.currentConnection
+  const tab = currentTab.value
+  if (!conn || !tab || !canLoadMore.value) return
+
+  try {
+    await browserStore.loadMoreTableData(conn.id, tab.database, tab.tableName, {
+      pageSize: pageSize.value,
+      sortColumn: sortColumn.value || undefined,
+      sortDirection: sortDirection.value?.toLowerCase() as 'asc' | 'desc' | undefined,
+      search: activeSearch.value || undefined,
+      columns: selectedColumnNames.value.length > 0 ? selectedColumnNames.value : undefined,
+    })
+  } catch (e) {
+    showToast(t('dataTable.loadMoreFailed', { error: String(e) }), 'error')
   }
 }
 
@@ -1235,6 +1431,11 @@ function getDefaultValue(dataType: string, isNullable: boolean): unknown {
 function addRow() {
   if (!canEdit.value) {
     showToast(editBlockReason.value, 'error')
+    return
+  }
+  // 仅加载部分列时，INSERT 会缺少未加载列，先要求勾选全部列
+  if (allColumnsForTab.value.length > 0 && selectedColumnNames.value.length < allColumnsForTab.value.length) {
+    showToast(t('dataTable.partialColumnsEditHint'), 'error')
     return
   }
   const emptyRow = currentTableData.value?.columns.map(col => {
@@ -1621,6 +1822,8 @@ function showContextMenu(event: MouseEvent, rowIndex: number, colIndex: number, 
 
 function hideContextMenu() {
   contextMenu.value.show = false
+  // 点击表格其他区域时同时收起列选择器
+  showColumnSelector.value = false
 }
 
 function copyCell() {
@@ -1718,9 +1921,7 @@ function setNull() {
 }
 
 function viewFullContent() {
-  fullContent.value.text = String(contextMenu.value.cellValue)
-  fullContent.value.show = true
-  hideContextMenu()
+  openCellViewer(contextMenu.value.rowIndex, contextMenu.value.colIndex, contextMenu.value.cellValue)
 }
 
 function editCell() {
@@ -1729,9 +1930,58 @@ function editCell() {
   hideContextMenu()
 }
 
-function copyFullContent() {
-  navigator.clipboard.writeText(fullContent.value.text)
-  showToast(t('dataTable.copiedToClipboard'))
+/** 大文本 / JSON / BLOB 才有必要进独立查看器 */
+const VIEWER_TEXT_THRESHOLD = 200
+
+function isViewerWorthyCell(cell: unknown, colIndex: number): boolean {
+  if (cell === null || cell === undefined) return false
+  const type = (currentTableData.value?.columns[colIndex]?.data_type ?? '').toLowerCase()
+  if (isBinaryType(type) || type.includes('json')) return true
+  return String(cell).length > VIEWER_TEXT_THRESHOLD
+}
+
+function openCellViewer(rowIndex: number, colIndex: number, cell: unknown) {
+  const column = currentTableData.value?.columns[colIndex]
+  cellViewer.value = {
+    show: true,
+    value: cell,
+    columnName: column?.name ?? '',
+    columnType: column?.data_type ?? ''
+  }
+  hideContextMenu()
+}
+
+// 查看器优先的单元格延迟进入编辑，为双击打开查看器留出判定窗口
+let pendingEditTimer: ReturnType<typeof setTimeout> | null = null
+
+function clearPendingEdit() {
+  if (!pendingEditTimer) return
+  clearTimeout(pendingEditTimer)
+  pendingEditTimer = null
+}
+
+function onCellClick(event: MouseEvent, rowIndex: number, colIndex: number, cell: unknown) {
+  // 双击的第二次点击不再重复进入编辑，避免重置正在编辑的值
+  if (event.detail > 1) return
+  clearPendingEdit()
+  if (!isViewerWorthyCell(cell, colIndex)) {
+    startEdit(rowIndex, colIndex, cell)
+    return
+  }
+  pendingEditTimer = setTimeout(() => {
+    pendingEditTimer = null
+    startEdit(rowIndex, colIndex, cell)
+  }, 250)
+}
+
+function onCellDblClick(rowIndex: number, colIndex: number, cell: unknown) {
+  clearPendingEdit()
+  if (isViewerWorthyCell(cell, colIndex)) {
+    openCellViewer(rowIndex, colIndex, cell)
+    return
+  }
+  // 普通单元格保持原有行为：双击不改变编辑状态
+  if (!isEditing(rowIndex, colIndex)) startEdit(rowIndex, colIndex, cell)
 }
 
 // 汇总当前所有未保存的修改（SQL 由前端生成，后端在同一事务中执行）
@@ -2028,6 +2278,13 @@ function freezeColumnFromMenu() {
 function handleScroll() {
   hideContextMenu()
   handleVirtualScroll()
+
+  // 触底预取：滚动到接近底部时自动续页（距底部 120px 内触发）
+  const el = tableContainer.value
+  if (el && canLoadMore.value) {
+    const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 120
+    if (nearBottom) loadMore()
+  }
 }
 
 // 事务管理
@@ -2995,35 +3252,6 @@ td.editing::before {
   }
 }
 
-.content-dialog {
-  background: var(--color-background);
-  padding: 24px;
-  border-radius: 8px;
-  box-shadow: 0 4px 16px var(--color-shadow);
-  width: 500px;
-  max-width: 90vw;
-}
-
-.content-dialog h3 {
-  margin: 0 0 12px 0;
-  font-size: 16px;
-  color: var(--color-text);
-}
-
-.content-textarea {
-  width: 100%;
-  height: 300px;
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
-  padding: 12px;
-  font-family: monospace;
-  font-size: 13px;
-  resize: none;
-  margin-bottom: 16px;
-  background: var(--color-background);
-  color: var(--color-text);
-}
-
 .dialog-actions {
   display: flex;
   gap: 12px;
@@ -3086,6 +3314,117 @@ td.editing::before {
   background: rgba(25, 118, 210, 0.15);
   border-color: var(--color-primary);
   color: var(--color-primary);
+}
+
+/* 列选择器（宽表按需加载） */
+.column-selector {
+  position: relative;
+}
+
+.column-selector-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 60;
+  width: 280px;
+  max-height: 360px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  cursor: default;
+}
+
+.column-selector-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-default);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.column-selector-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.column-selector-actions button {
+  padding: 2px 6px;
+  border: 1px solid var(--border-default);
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.column-selector-actions button:hover {
+  color: var(--text-primary);
+  border-color: var(--text-tertiary);
+}
+
+.column-selector-list {
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.column-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.column-option:hover {
+  background: var(--bg-secondary);
+}
+
+.column-option-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.column-option-type {
+  color: var(--text-tertiary);
+}
+
+.column-selector-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border-default);
+}
+
+.pending-hint {
+  color: var(--warning-500);
+  font-size: var(--text-xs);
+}
+
+/* 游标续页 */
+.load-more-bar {
+  gap: 12px;
+}
+
+.loaded-rows {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.all-loaded {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
 }
 
 .transaction-indicator {
