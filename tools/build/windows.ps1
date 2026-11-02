@@ -1,29 +1,27 @@
 ﻿# AuroraDB MySQL Client Windows 打包脚本
-# 与 build.sh 的步骤保持一致：版本校验 -> 前端依赖 -> 前端构建 -> Rust 环境 -> Tauri CLI -> NSIS 打包
+# 与 Linux 侧 tools/build/linux.sh 的步骤保持一致：
+# 版本校验 -> 前端依赖 -> 前端构建 -> Rust 环境 -> Tauri CLI -> NSIS 打包
 #
 # 用法:
-#   .\build.ps1                 # 构建 NSIS 安装包
-#   .\build.ps1 -Bundles nsis   # 指定打包格式（Windows 仅支持 nsis/msi）
-#   .\build.ps1 -Publish        # 构建完成后上传到 Gitee 发行版并更新 latest.json
-#   .\build.ps1 -Publish -Notes "修复若干问题"
+#   .\tools\build\windows.ps1                 # 在仓库根目录执行
+#   .\tools\build\windows.ps1 -Bundles nsis   # 指定打包格式（Windows 仅支持 nsis/msi）
+#
+# 发布请使用: .\tools\publish\windows.ps1（构建与发布分离）
 #
 # 前置条件:
 #   1. Node.js 20+、Rust (MSVC toolchain)、VS Build Tools（含 Windows SDK）
 #   2. 更新签名私钥（与 Linux 共用同一把）: %USERPROFILE%\.config\auroradb\updater.key
 #      或设置环境变量 TAURI_SIGNING_PRIVATE_KEY（私钥文件内容）
-#   3. 发布时需 GITEE_TOKEN，或 %USERPROFILE%\.config\auroradb\gitee.token
 
 param(
-    [string]$Bundles = "nsis",
-    [switch]$Publish,
-    [string]$Notes
+    [string]$Bundles = "nsis"
 )
 
 $ErrorActionPreference = "Stop"
-$Root = $PSScriptRoot
+$Root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 Set-Location $Root
 
-$TotalSteps = if ($Publish) { 7 } else { 6 }
+$TotalSteps = 6
 
 function Fail([string]$Message) {
     Write-Host "错误: $Message" -ForegroundColor Red
@@ -219,17 +217,6 @@ if (Test-Path $NsisDir) {
 Write-Host "注意: 当前版本未做代码签名，安装时 SmartScreen 会提示未知发布者，"
 Write-Host "      需点击「更多信息 -> 仍要运行」。企业终端可能被组策略直接拦截。"
 Write-Host ""
-
-# ---------- 7. 发布到 Gitee 发行版 ----------
-if ($Publish) {
-    Write-Host "[7/$TotalSteps] 发布到 Gitee 发行版..." -ForegroundColor Yellow
-    $PublishScript = Join-Path $Root "tools\publish-windows.ps1"
-    $PublishArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $PublishScript)
-    if ($Notes) { $PublishArgs += @("-Notes", $Notes) }
-    & powershell @PublishArgs
-    if ($LASTEXITCODE -ne 0) { Fail "发布失败" }
-    Write-Host "  OK 发布完成" -ForegroundColor Green
-}
-else {
-    Write-Host "提示: 加 -Publish 参数可在构建后自动上传到 Gitee 发行版" -ForegroundColor Yellow
-}
+Write-Host "下一步: 发布到 Gitee 发行版"
+Write-Host "  .\tools\publish\windows.ps1"
+Write-Host ""

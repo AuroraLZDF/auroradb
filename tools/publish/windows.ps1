@@ -1,10 +1,11 @@
 ﻿# 将 Windows 构建产物上传到 Gitee 发行版，并把 windows-x86_64 条目合并进 latest.json
 #
-# 用法:
-#   .\tools\publish-windows.ps1                          # 读 tauri.conf.json 的版本，默认发到 <owner>/auroradb-releases
-#   .\tools\publish-windows.ps1 -Tag v2.0.0 -Notes "..." # 指定 tag 与发行说明
-#   .\tools\publish-windows.ps1 -Repo owner/auroradb-releases
+# 用法（在仓库根目录执行）:
+#   .\tools\publish\windows.ps1                          # 读 tauri.conf.json 的版本，默认发到 <owner>/auroradb-releases
+#   .\tools\publish\windows.ps1 -Tag v2.0.0 -Notes "..." # 指定 tag 与发行说明
+#   .\tools\publish\windows.ps1 -Repo owner/auroradb-releases
 #
+# 前置: 先执行 .\tools\build\windows.ps1 生成并签名 NSIS 安装包
 # 令牌来源: 环境变量 GITEE_TOKEN，或 %USERPROFILE%\.config\auroradb\gitee.token
 # 依赖: curl.exe（Windows 10 1803+ 自带）；PowerShell 5.1 无 Invoke-RestMethod -Form，故用 curl 上传
 
@@ -16,7 +17,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$Root = Split-Path -Parent $PSScriptRoot
+$Root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $Api = "https://gitee.com/api/v5/repos"
 $MaxSize = 100 * 1024 * 1024
 
@@ -39,6 +40,17 @@ function Invoke-Curl([string[]]$CurlArgs) {
 function Read-Utf8([string]$Path) {
     # PS 5.1 的 Get-Content 默认按 ANSI 解码，接口响应里的中文会变成乱码并破坏 JSON
     return [IO.File]::ReadAllText($Path, [Text.Encoding]::UTF8)
+}
+
+function Get-GitOutput([string[]]$GitArgs) {
+    # git 的警告/错误写在 stderr，PS 5.1 在 Stop 策略下会转成 NativeCommandError，这里只依据退出码
+    $Previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $Output = & git -C $Root @GitArgs 2>$null
+    $ExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $Previous
+    if ($ExitCode -ne 0) { return $null }
+    return (($Output | Out-String).Trim())
 }
 
 if (-not (Get-Command "curl.exe" -ErrorAction SilentlyContinue)) {
@@ -80,13 +92,81 @@ $NsisDir = Join-Path $BundleDir "nsis"
 
 $Installers = @(Get-ChildItem -Path $NsisDir -Filter "*-setup.exe" -File -ErrorAction SilentlyContinue)
 if ($Installers.Count -eq 0) {
-    Fail "未找到 NSIS 安装包（$NsisDir\*-setup.exe），请先执行 .\build.ps1"
+    Fail "未找到 NSIS 安装包（$NsisDir\*-setup.exe），请先执行 .\tools\build\windows.ps1"
 }
 $Installer = $Installers[0]
 $SigPath = "$($Installer.FullName).sig"
 if (-not (Test-Path $SigPath)) {
     Fail "未找到 $($Installer.Name).sig，请确认构建时已签名"
 }
+
+# 发布前人工确认：上传后发行版与 latest.json 立即对用户生效，先让发版人核对代码状态
+Write-Host ""
+Write-Host "========================================"
+Write-Host "  发布前确认"
+Write-Host "========================================"
+Write-Host "  版本: $Version"
+Write-Host "  标签: $Tag"
+Write-Host "  平台: windows"
+
+$Branch = Get-GitOutput @("rev-parse", "--abbrev-ref", "HEAD")
+if (-not $Branch) { $Branch = "unknown" }
+$Commit = Get-GitOutput @("log", "-1", "--oneline")
+Write-Host "  分支: $Branch"
+Write-Host "  提交: $Commit"
+
+if (Get-GitOutput @("status", "--porcelain")) {
+    Write-Host "  ! 工作区有未提交的改动，确认这些改动不影响本次发版" -ForegroundColor Yellow
+}
+else {
+    Write-Host "  OK 工作区干净" -ForegroundColor Green
+}
+
+$Upstream = Get-GitOutput @("rev-parse", "--abbrev-ref", "--symbolic-full-name", '@{u}')
+if ($Upstream) {
+    $Ahead = 0
+    [void][int]::TryParse((Get-GitOutput @("rev-list", "--count", "$Upstream..HEAD")), [ref]$Ahead)
+    if ($Ahead -gt 0) {
+        Write-Host "  ! 有 $Ahead 个提交未推送到 $Upstream" -ForegroundColor Yellow
+        Write-Host "    推送: git push origin $Branch"
+    }
+    else {
+        Write-Host "  OK 代码已推送到 $Upstream" -ForegroundColor Green
+    }
+}
+else {
+    Write-Host "  ! 当前分支未设置上游分支，无法判断是否已推送" -ForegroundColor Yellow
+}
+
+$TagCommit = Get-GitOutput @("rev-list", "-n1", $Tag)
+if ($TagCommit) {
+    $HeadCommit = Get-GitOutput @("rev-parse", "HEAD")
+    if ($HeadCommit -and $TagCommit -ne $HeadCommit) {
+        $TagShort = $TagCommit.Substring(0, 7)
+        $HeadShort = $HeadCommit.Substring(0, 7)
+        Write-Host "  ! 本地 tag $Tag 指向 $TagShort，不是当前 HEAD $HeadShort" -ForegroundColor Yellow
+    }
+    if (Get-GitOutput @("ls-remote", "--tags", "origin", "refs/tags/$Tag")) {
+        Write-Host "  OK tag $Tag 已推送到远程" -ForegroundColor Green
+    }
+    else {
+        Write-Host "  ! 本地 tag $Tag 尚未推送到远程" -ForegroundColor Yellow
+        Write-Host "    推送: git push origin $Tag"
+    }
+}
+else {
+    Write-Host "  ! 本地不存在 tag $Tag" -ForegroundColor Yellow
+    Write-Host "    创建并推送: git tag $Tag; git push origin $Tag"
+}
+
+Write-Host ""
+Write-Host "  注意: 继续后将上传安装包并更新 latest.json，对终端用户立即可见。"
+$Confirm = Read-Host "  确认继续？输入 yes 继续，其他任意输入取消"
+if ($Confirm -ne "yes") {
+    Write-Host "已取消发布"
+    exit 0
+}
+Write-Host ""
 
 Write-Host "  发布仓库: $Repo  版本: $Tag"
 

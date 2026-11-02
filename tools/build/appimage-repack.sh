@@ -3,7 +3,7 @@
 # 重新压缩 AppImage，使其不超过 Gitee 100MB 单附件上限
 #
 # 用法:
-#   ./repack-appimage.sh path/to/AuroraDB_1.0.0_amd64.AppImage
+#   ./tools/build/appimage-repack.sh path/to/AuroraDB_1.0.0_amd64.AppImage
 #
 # 原理:
 #   复用原 AppImage 的 runtime（文件前 OFFSET 字节，OFFSET 由 ELF 节头表末尾算出），

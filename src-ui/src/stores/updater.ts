@@ -28,7 +28,7 @@ function isTauri(): boolean {
   return '__TAURI_INTERNALS__' in window
 }
 
-/** 从更新清单里取 deb 安装包地址（由 release.sh 写入顶层 deb 字段） */
+/** 从更新清单里取 deb 安装包地址（由 tools/publish/linux.sh 写入顶层 deb 字段） */
 function debPackageUrl(raw: Record<string, unknown>): string {
   const deb = raw.deb as { url?: unknown } | undefined
   return typeof deb?.url === 'string' ? deb.url : ''

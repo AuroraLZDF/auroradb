@@ -42,8 +42,8 @@
 
 | 项 | 说明 | 优先级 |
 |----|------|--------|
-| **AppImage 101MB 超限** | ✅ 已解决：`repack-appimage.sh` 复用原 runtime，strip 符号后用 xz 重压包（101MB → 83MB），构建脚本自动调用并重新签名 | 已解决 |
-| **Linux 应用内更新** | ✅ 已解决：updater endpoint 指向 `https://gitee.com/auroraLZDF/auroradb-releases/raw/main/latest.json`，`release.sh` 上传 AppImage 后自动生成并提交 latest.json；deb 不支持更新，仅 AppImage 生效 | 已解决 |
+| **AppImage 101MB 超限** | ✅ 已解决：`tools/build/appimage-repack.sh` 复用原 runtime，strip 符号后用 zstd 重压包（101MB → 83MB），构建脚本自动调用并重新签名 | 已解决 |
+| **Linux 应用内更新** | ✅ 已解决：updater endpoint 指向 `https://gitee.com/auroraLZDF/auroradb-releases/raw/main/latest.json`，`tools/publish/linux.sh` 上传 AppImage 后自动生成并提交 latest.json；deb 不支持更新，仅 AppImage 生效 | 已解决 |
 | **免费版 / Pro 边界细化** | 免费版：多连接 + 查询 + 导入导出 + 表设计器；Pro：结构同步 + 定时备份 + 审计 + SSH 多跳 + 跨库搜索 | 产品 |
 | **试用期** | 14 天全功能；实现：激活码带 trial 标记，或首次启动开始倒计时 | 变现 |
 
@@ -75,7 +75,7 @@ P1-3 备份还原 → P1-8 数据同步（Pro 变现）
 | D1 | **Windows 代码签名** | **暂不签名，v2.0 按内测版分发** | 发布页与安装向导需注明「未签名内测版」、提供 SHA256 校验值、给出「更多信息 → 仍要运行」指引；企业终端受组策略拦截属已知限制。v2.1 再评估 Azure Trusted Signing（要求组织成立约 3 年）或 OV/EV 云端签名 |
 | D2 | **macOS 支持** | **v2.0 不做，移入 v2.1+** | 无 Apple Developer 账号、无 macOS 构建机，即使出包也无法完成签名、公证与 Gatekeeper 验证，属于「发了也装不上」 |
 | D3 | **构建环境** | **Windows + Linux 本地构建**（现有两台机器）；CI 仅保留现有 Linux 质量门禁 | Tauri 不能交叉编译，Windows 包必须在 Windows 机器产出。风险：发布依赖本地环境，必须把 Windows 构建步骤脚本化，并保证两台机器步骤一致 |
-| D4 | **分发渠道** | **Gitee 主源 + GitHub Releases 镜像**（公开分发仓，源码仍留 Gitee 私有库） | 需新建 GitHub 公开分发仓与 token；`release.sh` 改为双通道上传；更新清单 endpoint 配置 Gitee 主 + GitHub 备；README 同时给出两个下载入口 |
+| D4 | **分发渠道** | **Gitee 主源 + GitHub Releases 镜像**（公开分发仓，源码仍留 Gitee 私有库） | 需新建 GitHub 公开分发仓与 token；`tools/publish/` 下两个脚本改为双通道上传；更新清单 endpoint 配置 Gitee 主 + GitHub 备；README 同时给出两个下载入口 |
 | D5 | **更新清单结构** | **按平台 key 合并回写，保留上一版本** | v2.0 清单平台：`linux-x86_64` + `windows-x86_64`；`darwin-*` 待 v2.1 启用。合并逻辑见 V2-3.2 |
 
 > 结论带来的范围变化：**v2.0 = Linux（存量）+ Windows（内测）+ 双通道发布 + 三项体验补齐**，工作量比原方案减少约 30%。
@@ -108,9 +108,9 @@ P1-3 备份还原 → P1-8 数据同步（Pro 变现）
 
 | # | 任务 | 验收标准 | 技术要点 |
 |---|------|----------|----------|
-| V2-3.1 | 构建与发布解耦 | Linux、Windows 各自构建，产物汇总到一处发布 | `build.sh`/`release.sh` 拆成 build（平台本地）与 publish（聚合上传）两步；Windows 构建步骤脚本化为 `build.ps1`，与 Linux 步骤逐项对齐 |
-| V2-3.2 | 清单合并 | 发布 Windows 不影响 Linux 已有版本，反之亦然 | `latest.json` 按平台读旧值→合并→回写；保留上一版本信息用于回滚；v2.0 平台 key：`linux-x86_64`、`windows-x86_64`（[release.sh](file:///home/code/sqlcustomer/mysql-client/release.sh#L277-L296) 当前硬编码单平台） |
-| V2-3.3 | 双通道上传 | Gitee 与 GitHub Releases 同版本可下载 | `release.sh` 增加 GitHub 通道（`gh release` 或 API + token）；两处文件名、校验值一致；任一通道失败不中断另一通道，但最终报错退出 |
+| V2-3.1 | 构建与发布解耦 | Linux、Windows 各自构建，产物汇总到一处发布 | 构建与发布分别收敛到 `tools/build/`、`tools/publish/`，Linux 用 `.sh`、Windows 用 `.ps1`，入口不再做跨平台分发 |
+| V2-3.2 | 清单合并 | 发布 Windows 不影响 Linux 已有版本，反之亦然 | `latest.json` 按平台读旧值→合并→回写；保留上一版本信息用于回滚；v2.0 平台 key：`linux-x86_64`、`windows-x86_64`（[linux.sh](file:///home/code/sqlcustomer/mysql-client/tools/publish/linux.sh) 只写 Linux 条目，Windows 条目由 `windows.ps1` 写入） |
+| V2-3.3 | 双通道上传 | Gitee 与 GitHub Releases 同版本可下载 | `tools/publish/` 下两个脚本各增加 GitHub 通道（`gh release` 或 API + token）；两处文件名、校验值一致；任一通道失败不中断另一通道，但最终报错退出 |
 | V2-3.4 | 更新源主备 | Gitee 不可达时能自动回退 GitHub | [tauri.conf.json](file:///home/code/sqlcustomer/mysql-client/src-tauri/tauri.conf.json#L54-L59) `endpoints` 配置 Gitee 主 + GitHub 备（Tauri 按顺序尝试） |
 | V2-3.5 | 版本单一来源 | 三处版本号一致 | `tauri.conf.json` 为准，构建时校验 `Cargo.toml` / `package.json` 一致，不一致直接失败 |
 | V2-3.6 | 发布前检查 | 防止漏发或发错 | 校验各平台 `.sig` 存在、单附件 < 100MB、更新地址与配置一致、`SHA256SUMS` 已生成 |
@@ -208,3 +208,4 @@ V2-7 质量门禁随每批并行推进
 - 2026-10-30：V2-3.3 待办 — GitHub 公开分发仓与 token 尚未就绪，`release.sh` 目前只上传 Gitee
 - 2026-10-30：V2-7 完成（Playwright E2E 除外）— V2-7.1 新增 dataBrowser / editorTabs / queryLibrary 三个 store 单测与 Vitest 内存 localStorage setup，前端用例 89 条；V2-7.2 CI backend 增加 `cargo clippy -- -D warnings`；V2-7.3 修复 14 条 clippy 警告，本项目编译告警归零；V2-7.4 新增 `docs/smoke-checklist.md`，README 与路线图挂上入口。Playwright E2E 需要 Tauri 运行时与真实数据库，暂未落地
 - 2026-10-30：V2-7.1 Playwright E2E 落地 — 新增 `playwright.config.ts` 与 `e2e/`（`support/tauri-mock.ts` 注入伪造 `__TAURI_INTERNALS__`、`support/app.ts` 封装页面操作、`connect-query-edit-export.spec.ts` 覆盖连接→查询→编辑保存→导出），无需 Tauri 运行时与真实数据库；`npm run test:e2e` 3 条用例通过，Vitest 用例收敛到 `src/**/*.test.ts`
+- 2026-11-02：构建/发布脚本收敛 — 入口只剩 `build.sh`（按平台分发，`--windows` 转 PowerShell）与 `release.sh`（`--platform linux|windows`）；平台实现下沉 `tools/build/`（`linux.sh`、`windows.ps1`、`appimage-repack.sh`、`appimage-offline.sh`）与 `tools/publish/windows.ps1`；`build-appimage-offline.sh` 内联吸收 `download-offline.sh`（已删除），Windows 构建不再内置发布步骤；删除只发 Linux 的 `release-all.sh`，版本号同步改为手工流程并写入 README

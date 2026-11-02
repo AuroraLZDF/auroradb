@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 
-# 将构建产物上传到 Gitee 发行版（Releases）
+# 将 Linux 构建产物上传到 Gitee 发行版（Releases）
 #
-# 用法:
-#   GITEE_TOKEN=<令牌> ./release.sh
-#   GITEE_TOKEN=<令牌> ./release.sh --tag v1.0.1 --notes "修复若干问题"
-#   ./release.sh --repo owner/auroradb-releases   # 指定公开分发仓库
-#   ./release.sh --platform windows               # 上传 Windows 产物（默认 linux）
+# 用法（在仓库根目录执行）:
+#   GITEE_TOKEN=<令牌> ./tools/publish/linux.sh
+#   GITEE_TOKEN=<令牌> ./tools/publish/linux.sh --tag v1.0.1 --notes "修复若干问题"
+#   ./tools/publish/linux.sh --repo owner/auroradb-releases   # 指定公开分发仓库
 #
 # 默认发布到 <owner>/auroradb-releases（公开仓库），源码仓库保持私有。
 # 令牌需在 Gitee「设置 → 私人令牌」生成，勾选 projects 权限。
 # 令牌只从环境变量读取，不会写入仓库。
+# Windows 产物由 tools/publish/windows.ps1 发布。
 
 set -euo pipefail
 
@@ -19,19 +19,17 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$ROOT"
 
 TAG=""
 NOTES=""
 RELEASE_REPO=""
-PLATFORM="linux"
 while [[ $# -gt 0 ]]; do
     case $1 in
         --tag) TAG="$2"; shift 2 ;;
         --notes) NOTES="$2"; shift 2 ;;
         --repo) RELEASE_REPO="$2"; shift 2 ;;
-        --platform) PLATFORM="$2"; shift 2 ;;
         -h|--help)
             sed -n '3,13p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
@@ -39,11 +37,6 @@ while [[ $# -gt 0 ]]; do
         *) echo -e "${RED}未知参数: $1${NC}"; exit 1 ;;
     esac
 done
-
-if [[ "$PLATFORM" != "linux" && "$PLATFORM" != "windows" ]]; then
-    echo -e "${RED}错误: --platform 只支持 linux 或 windows，当前为 $PLATFORM${NC}"
-    exit 1
-fi
 
 if [[ -z "${GITEE_TOKEN:-}" ]]; then
     echo -e "${RED}错误: 未设置 GITEE_TOKEN 环境变量${NC}"
@@ -85,14 +78,72 @@ BUNDLE_DIR="src-tauri/target/release/bundle"
 MAX_SIZE=$((100 * 1024 * 1024))
 
 if [[ ! -d "$BUNDLE_DIR" ]]; then
-    echo -e "${RED}错误: 未找到构建产物目录 $BUNDLE_DIR，请先执行 ./build.sh${NC}"
+    echo -e "${RED}错误: 未找到构建产物目录 $BUNDLE_DIR，请先执行 ./tools/build/linux.sh${NC}"
     exit 1
 fi
+
+# 发布前人工确认：上传后发行版与 latest.json 立即对用户生效，先让发版人核对代码状态
+echo ""
+echo "========================================"
+echo "  发布前确认"
+echo "========================================"
+echo "  版本: $VERSION"
+echo "  标签: $TAG"
+echo "  平台: linux"
+
+BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'unknown')"
+echo "  分支: $BRANCH"
+echo "  提交: $(git log -1 --oneline 2>/dev/null || echo 'unknown')"
+
+if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then
+    echo -e "${YELLOW}  ! 工作区有未提交的改动，确认这些改动不影响本次发版${NC}"
+else
+    echo -e "${GREEN}  ✓ 工作区干净${NC}"
+fi
+
+UPSTREAM="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+if [[ -n "$UPSTREAM" ]]; then
+    AHEAD="$(git rev-list --count "$UPSTREAM..HEAD" 2>/dev/null || echo 0)"
+    if (( AHEAD > 0 )); then
+        echo -e "${YELLOW}  ! 有 $AHEAD 个提交未推送到 $UPSTREAM${NC}"
+        echo "    推送: git push origin $BRANCH"
+    else
+        echo -e "${GREEN}  ✓ 代码已推送到 $UPSTREAM${NC}"
+    fi
+else
+    echo -e "${YELLOW}  ! 当前分支未设置上游分支，无法判断是否已推送${NC}"
+fi
+
+if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+    TAG_COMMIT="$(git rev-list -n1 "$TAG")"
+    HEAD_COMMIT="$(git rev-parse HEAD)"
+    if [[ "$TAG_COMMIT" != "$HEAD_COMMIT" ]]; then
+        echo -e "${YELLOW}  ! 本地 tag $TAG 指向 ${TAG_COMMIT:0:7}，不是当前 HEAD ${HEAD_COMMIT:0:7}${NC}"
+    fi
+    if git ls-remote --tags origin "refs/tags/$TAG" 2>/dev/null | grep -q "refs/tags/$TAG"; then
+        echo -e "${GREEN}  ✓ tag $TAG 已推送到远程${NC}"
+    else
+        echo -e "${YELLOW}  ! 本地 tag $TAG 尚未推送到远程${NC}"
+        echo "    推送: git push origin $TAG"
+    fi
+else
+    echo -e "${YELLOW}  ! 本地不存在 tag $TAG${NC}"
+    echo "    创建并推送: git tag $TAG && git push origin $TAG"
+fi
+
+echo ""
+echo "  注意: 继续后将上传安装包并更新 latest.json，对终端用户立即可见。"
+read -r -p "  确认继续？输入 yes 继续，其他任意输入取消: " CONFIRM || CONFIRM=""
+if [[ "$CONFIRM" != "yes" ]]; then
+    echo "已取消发布"
+    exit 0
+fi
+echo ""
 
 echo -e "${YELLOW}发布仓库: $OWNER/$REPO  版本: $TAG${NC}"
 
 # 上线前先自检：产物齐全、签名存在、不超限、更新地址一致，并生成 SHA256SUMS
-bash tools/check-release.sh --platform "$PLATFORM" --repo "$OWNER/$REPO" --bundle-dir "$BUNDLE_DIR"
+bash tools/check-release.sh --platform linux --repo "$OWNER/$REPO" --bundle-dir "$BUNDLE_DIR"
 
 TMP="$(mktemp)"
 LATEST_TMP="$(mktemp)"
@@ -179,10 +230,8 @@ FILES=()
 while IFS= read -r f; do
     FILES+=("$f")
 done < <(find "$BUNDLE_DIR" -maxdepth 2 -type f \
-    \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.exe' \
-       -o -name '*.nsis.zip' -o -name '*.sig' -o -name 'latest.json' \
-       -o -name 'SHA256SUMS' \) \
-    ! -name '*.nsis.zip.sig' | sort)
+    \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \
+       -o -name '*.sig' -o -name 'latest.json' -o -name 'SHA256SUMS' \) | sort)
 
 if [[ ${#FILES[@]} -eq 0 ]]; then
     echo -e "${RED}错误: $BUNDLE_DIR 下没有可上传的产物${NC}"
@@ -208,13 +257,12 @@ PY
 )
 fi
 
-UPLOADED=0
 for f in "${FILES[@]}"; do
     NAME_ONLY="$(basename "$f")"
     SIZE="$(stat -c %s "$f")"
     if (( SIZE > MAX_SIZE )); then
         echo -e "${RED}  ✗ $NAME_ONLY ($((SIZE / 1024 / 1024))MB) 超过 Gitee 单附件上限${NC}"
-        echo "  Linux AppImage 需先重打包: ./repack-appimage.sh $f"
+        echo "  Linux AppImage 需先重打包: ./tools/build/appimage-repack.sh $f"
         exit 1
     fi
 
@@ -237,45 +285,56 @@ for f in "${FILES[@]}"; do
     if [[ "$HTTP_CODE" == "201" ]]; then
         echo -e "${GREEN}  ✓ $NAME_ONLY ($((SIZE / 1024 / 1024))MB)${NC}"
         echo "    https://gitee.com/$OWNER/$REPO/releases/download/$TAG/$NAME_ONLY"
-        UPLOADED=$((UPLOADED + 1))
     else
+        # 任一附件失败都必须中止：继续写 latest.json 会让应用更新到不存在的地址
         echo -e "${RED}  ✗ $NAME_ONLY 上传失败 (HTTP $HTTP_CODE)${NC}"
         cat "$TMP"
+        if grep -q '配额' "$TMP"; then
+            echo -e "${YELLOW}  Gitee 仓库附件总配额（1GB）已用尽：请删除旧发行版的安装包附件后重试${NC}"
+        fi
+        exit 1
     fi
 done
 
+# 上传成功不代表附件可用：写清单前核对远端附件列表，避免出现「有 sig 无安装包」
 echo ""
-if (( UPLOADED > 0 )); then
-    echo -e "${GREEN}完成: $UPLOADED 个文件已发布到 $TAG${NC}"
-else
-    echo -e "${RED}没有任何文件上传成功${NC}"
+echo -e "${YELLOW}[3/7] 核对远端附件...${NC}"
+HTTP_CODE="$(curl -sS -o "$TMP" -w '%{http_code}' \
+    "$API/releases/$RELEASE_ID/attach_files?access_token=$GITEE_TOKEN")"
+if [[ "$HTTP_CODE" != "200" ]]; then
+    echo -e "${RED}  ✗ 无法读取发行版附件列表 (HTTP $HTTP_CODE)${NC}"
+    cat "$TMP"
     exit 1
 fi
+MISSING="$(python3 - "$TMP" "${FILES[@]}" <<'PY'
+import json
+import os
+import sys
+
+with open(sys.argv[1], encoding='utf-8') as f:
+    have = {a.get('name') for a in json.load(f) or []}
+missing = [os.path.basename(p) for p in sys.argv[2:] if os.path.basename(p) not in have]
+print('\n'.join(missing))
+PY
+)"
+if [[ -n "$MISSING" ]]; then
+    echo -e "${RED}  ✗ 以下产物不在发行版附件中，已中止发布:${NC}"
+    echo "$MISSING" | sed 's/^/    /'
+    exit 1
+fi
+echo -e "${GREEN}  ✓ ${#FILES[@]} 个附件均已就绪${NC}"
 
 # 4. 生成/合并 latest.json 并写入分发仓库默认分支，作为 App 内自动更新的固定入口
 #    Linux 与 Windows 分开发布，清单按平台 key 合并，互不覆盖
 ARTIFACT=""
-if [[ "$PLATFORM" == "windows" ]]; then
-    PLATFORM_KEY="windows-x86_64"
-    # 应用内更新只认 NSIS 更新包（*.nsis.zip），安装器 exe 只供手动下载
-    while IFS= read -r f; do
-        ARTIFACT="$f"
-        break
-    done < <(find "$BUNDLE_DIR/nsis" -maxdepth 1 -type f -name '*.nsis.zip' 2>/dev/null | sort)
-    if [[ -z "$ARTIFACT" ]]; then
-        echo -e "${RED}错误: 未找到 NSIS 更新包（*.nsis.zip），无法生成 latest.json${NC}"
-        exit 1
-    fi
-else
-    PLATFORM_KEY="linux-x86_64"
-    while IFS= read -r f; do
-        ARTIFACT="$f"
-        break
-    done < <(find "$BUNDLE_DIR/appimage" -maxdepth 1 -type f -name '*.AppImage' 2>/dev/null | sort)
-    if [[ -z "$ARTIFACT" ]]; then
-        echo -e "${RED}错误: 未找到 AppImage，无法生成 latest.json${NC}"
-        exit 1
-    fi
+PLATFORM_KEY="linux-x86_64"
+while IFS= read -r f; do
+    ARTIFACT="$f"
+    break
+done < <(find "$BUNDLE_DIR/appimage" -maxdepth 1 -type f -name '*.AppImage' 2>/dev/null | sort)
+if [[ -z "$ARTIFACT" ]]; then
+    echo -e "${RED}错误: 未找到 AppImage，无法生成 latest.json${NC}"
+    exit 1
 fi
 if [[ ! -f "$ARTIFACT.sig" ]]; then
     echo -e "${RED}错误: 未找到 $(basename "$ARTIFACT").sig，请确认构建时已签名${NC}"
@@ -288,19 +347,17 @@ ARTIFACT_URL="https://gitee.com/$OWNER/$REPO/releases/download/$TAG/$(basename "
 # 应用会把它下载到下载目录交给用户手动安装
 DEB_URL=""
 DEB_SIG=""
-if [[ "$PLATFORM" == "linux" ]]; then
-    DEB=""
-    while IFS= read -r f; do
-        DEB="$f"
-        break
-    done < <(find "$BUNDLE_DIR/deb" -maxdepth 1 -type f -name '*.deb' 2>/dev/null | sort)
+DEB=""
+while IFS= read -r f; do
+    DEB="$f"
+    break
+done < <(find "$BUNDLE_DIR/deb" -maxdepth 1 -type f -name '*.deb' 2>/dev/null | sort)
 
-    if [[ -n "$DEB" ]]; then
-        DEB_URL="https://gitee.com/$OWNER/$REPO/releases/download/$TAG/$(basename "$DEB")"
-        [[ -f "$DEB.sig" ]] && DEB_SIG="$DEB.sig"
-    else
-        echo -e "${YELLOW}  注意: 未找到 deb 安装包，deb 安装的用户将无法在应用内下载更新${NC}"
-    fi
+if [[ -n "$DEB" ]]; then
+    DEB_URL="https://gitee.com/$OWNER/$REPO/releases/download/$TAG/$(basename "$DEB")"
+    [[ -f "$DEB.sig" ]] && DEB_SIG="$DEB.sig"
+else
+    echo -e "${YELLOW}  注意: 未找到 deb 安装包，deb 安装的用户将无法在应用内下载更新${NC}"
 fi
 
 # 先读线上清单：合并需要旧内容，PUT 也需要 sha

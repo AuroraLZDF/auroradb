@@ -86,7 +86,7 @@ for (const { label, version, error } of targets) {
 
 if (failed) {
   console.error('')
-  console.error('版本号不一致：请以 src-tauri/tauri.conf.json 为准统一，')
-  console.error('或使用 ./release-all.sh --version <新版本> 自动同步所有文件。')
+  console.error('版本号不一致：请以 src-tauri/tauri.conf.json 为准，手工同步以下文件：')
+  console.error('  src-ui/package.json、src-ui/package-lock.json、src-tauri/Cargo.toml、src-tauri/Cargo.lock')
   process.exit(1)
 }

@@ -1,6 +1,6 @@
 # AuroraDB
 
-基于 Tauri 2 + Vue 3 + Rust 的桌面数据库客户端，支持 MySQL 与 PostgreSQL，当前打包目标为 Linux（deb / AppImage / rpm）。
+基于 Tauri 2 + Vue 3 + Rust 的桌面数据库客户端，支持 MySQL 与 PostgreSQL，打包目标为 Linux（deb / AppImage / rpm）与 Windows（NSIS）。
 
 ## 功能
 
@@ -38,8 +38,13 @@
 │   ├── src/commands/       # Tauri 命令（连接、文件、审计、授权）
 │   ├── src/core/           # 连接驱动、执行器、导出、结构对比、监控、授权校验
 │   └── src/password_store.rs
-├── tools/license-gen/      # 激活码签发工具（仅发行方使用）
-├── build.sh                # Linux 安装包打包脚本
+├── tools/
+│   ├── build/              # 构建实现（linux.sh / windows.ps1 / appimage-*.sh）
+│   ├── publish/            # 发布实现（linux.sh / windows.ps1）
+│   ├── check-version.mjs   # 版本号一致性校验
+│   ├── check-release.sh    # 发布前产物检查
+│   ├── merge-latest.py     # latest.json 合并
+│   └── license-gen/        # 激活码签发工具（仅发行方使用）
 └── start.sh                # 启动 Tauri 开发模式（需前端 dev server 已运行）
 ```
 
@@ -75,12 +80,34 @@ cargo test --offline
 
 ## 打包
 
+构建与发布脚本都放在 `tools/` 下，按平台区分：Linux 用 `.sh`，Windows 用 `.ps1`。
+
+### Linux（在 Linux 机器上构建）
+
 ```bash
-./build.sh --deb        # 只打 .deb（推荐）
-./build.sh --appimage   # 只打 AppImage（需要联网下载工具）
-./build.sh --rpm        # 只打 .rpm
-./build.sh --all        # 全部格式
+./tools/build/linux.sh --deb        # 只打 .deb（推荐）
+./tools/build/linux.sh --appimage   # 只打 AppImage（自动重压缩并重新签名）
+./tools/build/linux.sh --rpm        # 只打 .rpm
+./tools/build/linux.sh --all        # 全部格式
 ```
+
+### Windows（在 Windows 机器上构建）
+
+```powershell
+.\tools\build\windows.ps1                  # NSIS 安装包
+.\tools\build\windows.ps1 -Bundles nsis    # 指定打包格式
+```
+
+Tauri 不支持交叉编译：Linux 包必须在 Linux 构建，Windows 包必须在 Windows 构建，脚本本身也只接受本平台执行。
+
+AppImage 备用方案（`cargo tauri build` 下载 bundler 工具失败时）：
+
+```bash
+./tools/build/appimage-offline.sh          # 复用已有前端产物与 release 二进制
+./tools/build/appimage-offline.sh --build  # 强制重新构建
+```
+
+### 签名密钥
 
 构建前需要更新包签名私钥（不入库），默认读取 `~/.config/auroradb/updater.key`，也可通过环境变量 `TAURI_SIGNING_PRIVATE_KEY` 提供。首次生成：
 
@@ -97,14 +124,36 @@ npm run tauri signer generate -- -w ~/.config/auroradb/updater.key
 
 ```bash
 export GITEE_TOKEN=<Gitee 私人令牌>   # 需勾选 projects 权限
-./release.sh                          # 发布到 <owner>/auroradb-releases
-./release.sh --tag v1.0.1 --notes "修复若干问题"
-./release.sh --repo owner/other-repo   # 指定其他公开发布仓库
+
+./tools/publish/linux.sh              # 发布 Linux 产物
+./tools/publish/linux.sh --tag v1.0.1 --notes "修复若干问题"
+./tools/publish/linux.sh --repo owner/other-repo  # 指定其他公开发布仓库
 ```
+
+```powershell
+$env:GITEE_TOKEN = "<Gitee 私人令牌>"
+.\tools\publish\windows.ps1
+.\tools\publish\windows.ps1 -Tag v1.0.1 -Notes "修复若干问题"
+```
+
+两个平台的发布脚本都会在发布前（`./tools/publish/linux.sh` 与 `.\tools\publish\windows.ps1` 行为一致）显示当前分支、提交、工作区状态、tag 是否已创建并推送，需输入 `yes` 确认后才会上传；缺少 tag 或代码未推送时会给出对应命令提示，可先取消发布处理完再重跑。
 
 首次使用需先在 Gitee 创建公开仓库 `auroradb-releases` 并初始化 README，否则脚本会提示仓库不可访问。
 
-脚本会校验发布仓库、读取其默认分支、创建发行版并上传安装包与 `.sig` 签名文件；单个超过 100MB 的产物会被跳过。令牌只从环境变量读取，不要写入仓库。
+脚本会先调用 `tools/check-release.sh` 校验产物齐全、`.sig` 签名存在、单附件不超过 100MB、更新源指向发布仓库，再创建发行版并上传。两个平台的 `latest.json` 条目按平台 key 合并，先后发布互不覆盖。令牌只从环境变量读取，不要写入仓库。
+
+Gitee 单个仓库的发行版附件总量上限为 **1GB**，历史版本会持续占用配额。任一附件上传失败（包括配额用尽）脚本都会立即中止，不会写入 `latest.json`，避免用户更新到不存在的地址；此时需先在 Gitee 删除旧版本的安装包附件再重发。Tauri 只为 AppImage 生成更新签名，构建脚本会额外为 deb 补签 `.sig`。
+
+### 手工发版步骤
+
+版本号以 `src-tauri/tauri.conf.json` 为准，需同步 `src-ui/package.json`、`src-ui/package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`，然后：
+
+```bash
+node tools/check-version.mjs
+git add -A && git commit -m "chore(release): v2.1.0"
+git tag v2.1.0
+git push origin main --tags
+```
 
 ## 授权
 

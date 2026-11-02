@@ -16,7 +16,7 @@ NC='\033[0m' # No Color
 show_help() {
     echo "AuroraDB MySQL Client 打包脚本"
     echo ""
-    echo "用法: ./build.sh [选项]"
+    echo "用法: ./tools/build/linux.sh [选项]"
     echo ""
     echo "选项:"
     echo "  --deb         只打包 .deb 格式 (Debian/Ubuntu，推荐)"
@@ -76,13 +76,13 @@ echo "  AuroraDB MySQL Client 打包脚本"
 echo "========================================"
 echo ""
 
-# 获取脚本所在目录
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+# 仓库根目录（本脚本位于 tools/build/）
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$ROOT"
 
 # 校验版本号单一来源
 echo -e "${YELLOW}[1/6] 校验版本号一致性...${NC}"
-node "$SCRIPT_DIR/tools/check-version.mjs"
+node "$ROOT/tools/check-version.mjs"
 echo -e "${GREEN}  ✓ 版本号一致${NC}"
 
 # 检查前端依赖
@@ -99,7 +99,7 @@ npm run build
 echo -e "${GREEN}  ✓ 前端构建完成${NC}"
 
 # 检查 Rust 环境
-cd "$SCRIPT_DIR"
+cd "$ROOT"
 echo -e "${YELLOW}[4/6] 检查 Rust 环境...${NC}"
 if ! command -v rustc &> /dev/null; then
     echo -e "${RED}错误: 未安装 Rust${NC}"
@@ -140,13 +140,13 @@ if [[ "$BUNDLE_TYPE" == *"appimage"* ]]; then
         if command -v wget &> /dev/null; then
             wget --timeout=60 --tries=3 -O "$APPRUN_FILE" "$APPRUN_URL" || {
                 echo -e "${RED}  ✗ 下载 AppRun 失败${NC}"
-                echo "  建议只打包 deb: ./build.sh --deb"
+                echo "  建议只打包 deb: ./tools/build/linux.sh --deb"
                 exit 1
             }
         elif command -v curl &> /dev/null; then
             curl --max-time 60 --retry 3 -L -o "$APPRUN_FILE" "$APPRUN_URL" || {
                 echo -e "${RED}  ✗ 下载 AppRun 失败${NC}"
-                echo "  建议只打包 deb: ./build.sh --deb"
+                echo "  建议只打包 deb: ./tools/build/linux.sh --deb"
                 exit 1
             }
         else
@@ -168,7 +168,7 @@ echo -e "${YELLOW}[6/6] 构建 Linux 安装包...${NC}"
 echo "  打包格式: $BUNDLE_TYPE"
 cd src-tauri
 
-# 清掉上一次构建的产物：否则 release.sh 会把旧版本安装包一并上传到新版本发行版
+# 清掉上一次构建的产物：否则发布脚本会把旧版本安装包一并上传到新版本发行版
 echo "  清理旧安装包..."
 OLD_BUNDLE="target/release/bundle"
 if [ -d "$OLD_BUNDLE" ]; then
@@ -215,7 +215,7 @@ if command -v timeout &> /dev/null; then
         echo -e "${RED}  ✗ 打包超时或失败${NC}"
         echo ""
         echo "如果卡在网络下载，建议:"
-        echo "  1. 只打包 deb:  ./build.sh --deb"
+        echo "  1. 只打包 deb:  ./tools/build/linux.sh --deb"
         echo "  2. 配置代理后重试"
         exit 1
     }
@@ -234,7 +234,20 @@ if [[ "$BUNDLE_TYPE" == *"appimage"* ]]; then
         exit 1
     fi
     for img in "${IMAGES[@]}"; do
-        "$SCRIPT_DIR/repack-appimage.sh" "$img"
+        "$ROOT/tools/build/appimage-repack.sh" "$img"
+    done
+fi
+
+# Tauri 只为 AppImage 生成更新签名；deb 的 .sig 需单独补签，
+# 否则发布清单里的 deb.signature 为空，与历史版本不一致
+if [[ "$BUNDLE_TYPE" == *"deb"* ]]; then
+    shopt -s nullglob
+    DEBS=(target/release/bundle/deb/*.deb)
+    shopt -u nullglob
+    for deb in "${DEBS[@]}"; do
+        [[ -f "$deb.sig" ]] && continue
+        cargo tauri signer sign -p "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" "$deb" >/dev/null
+        echo -e "${GREEN}  ✓ 已签名 $(basename "$deb").sig${NC}"
     done
 fi
 
@@ -297,7 +310,7 @@ if [ -d "$BUNDLE_DIR/appimage" ] && [ -n "$(ls -A "$BUNDLE_DIR/appimage"/*.AppIm
 fi
 
 echo "重新打包:"
-echo "  ./build.sh --deb        # 只打包 deb"
-echo "  ./build.sh --appimage   # 只打包 AppImage"
-echo "  ./build.sh --all        # 打包所有格式"
+echo "  ./tools/build/linux.sh --deb        # 只打包 deb"
+echo "  ./tools/build/linux.sh --appimage   # 只打包 AppImage"
+echo "  ./tools/build/linux.sh --all        # 打包所有格式"
 echo ""

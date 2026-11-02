@@ -51,7 +51,7 @@ warn() { echo -e "${YELLOW}  ! $*${NC}"; }
 command -v python3 >/dev/null || fail "未找到 python3"
 [[ -d "$BUNDLE_DIR" ]] || fail "未找到产物目录 $BUNDLE_DIR，请先构建"
 
-# 发布仓库：默认与 release.sh 相同的 <owner>/auroradb-releases
+# 发布仓库：默认与 tools/publish/ 下的发布脚本相同，为 <owner>/auroradb-releases
 if [[ -z "$RELEASE_REPO" ]]; then
     REMOTE_URL="$(git remote get-url origin 2>/dev/null || true)"
     [[ -n "$REMOTE_URL" ]] || fail "未配置 origin 远程仓库，请用 --repo 指定发布仓库"
