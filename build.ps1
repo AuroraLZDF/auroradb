@@ -83,11 +83,34 @@ Write-Host "  OK Rust 环境正常" -ForegroundColor Green
 
 # ---------- 5. 检查 Tauri CLI ----------
 Write-Host "[5/$TotalSteps] 检查 Tauri CLI..." -ForegroundColor Yellow
-& cargo tauri --version *> $null
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "  安装 Tauri CLI..."
-    & cargo install tauri-cli --locked
-    if ($LASTEXITCODE -ne 0) { Fail "Tauri CLI 安装失败" }
+# 优先使用项目内的 @tauri-apps/cli（第 2 步已随前端依赖安装，版本与 package.json 一致），
+# 避免在受限环境（如开启 Smart App Control 的机器）因 cargo install 被策略拦截而无法打包。
+$LocalTauriJs = Join-Path $Root "src-ui\node_modules\@tauri-apps\cli\tauri.js"
+if (Test-Path $LocalTauriJs) {
+    $TauriCmd = "node"
+    $TauriPrefixArgs = @($LocalTauriJs)
+    Write-Host "  使用项目内 Tauri CLI: $LocalTauriJs"
+}
+else {
+    # `cargo tauri` 未安装时会把错误写到 stderr，PS 5.1 在 $ErrorActionPreference="Stop" 下
+    # 会将其转成 NativeCommandError 直接终止脚本，因此这里临时放宽策略，只依据退出码判断。
+    $ErrorActionPreference = "Continue"
+    & cargo tauri --version *> $null
+    $HasGlobalTauri = ($LASTEXITCODE -eq 0)
+    $ErrorActionPreference = "Stop"
+
+    if ($HasGlobalTauri) {
+        $TauriCmd = "cargo"
+        $TauriPrefixArgs = @("tauri")
+        Write-Host "  使用全局 Tauri CLI"
+    }
+    else {
+        Write-Host "  安装 Tauri CLI..."
+        & cargo install tauri-cli --locked
+        if ($LASTEXITCODE -ne 0) { Fail "Tauri CLI 安装失败" }
+        $TauriCmd = "cargo"
+        $TauriPrefixArgs = @("tauri")
+    }
 }
 Write-Host "  OK Tauri CLI 就绪" -ForegroundColor Green
 
@@ -125,8 +148,14 @@ if (Test-Path $NsisDir) {
 
 Push-Location "$Root\src-tauri"
 try {
-    & cargo tauri build --bundles $Bundles
-    if ($LASTEXITCODE -ne 0) { Fail "打包失败" }
+    # Tauri CLI 会把 Info/Warn/Running/Finished 等日志写到 stderr，PS 5.1 在
+    # $ErrorActionPreference="Stop" 下会将其转成 NativeCommandError 终止脚本，
+    # 因此这里临时放宽策略，改由退出码判断成败。
+    $ErrorActionPreference = "Continue"
+    & $TauriCmd @TauriPrefixArgs build --bundles $Bundles
+    $TauriExitCode = $LASTEXITCODE
+    $ErrorActionPreference = "Stop"
+    if ($TauriExitCode -ne 0) { Fail "打包失败" }
 }
 finally {
     Pop-Location
