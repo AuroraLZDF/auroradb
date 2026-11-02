@@ -4,21 +4,26 @@
 # 用法:
 #   .\build.ps1                 # 构建 NSIS 安装包
 #   .\build.ps1 -Bundles nsis   # 指定打包格式（Windows 仅支持 nsis/msi）
+#   .\build.ps1 -Publish        # 构建完成后上传到 Gitee 发行版并更新 latest.json
+#   .\build.ps1 -Publish -Notes "修复若干问题"
 #
 # 前置条件:
 #   1. Node.js 20+、Rust (MSVC toolchain)、VS Build Tools（含 Windows SDK）
 #   2. 更新签名私钥（与 Linux 共用同一把）: %USERPROFILE%\.config\auroradb\updater.key
 #      或设置环境变量 TAURI_SIGNING_PRIVATE_KEY（私钥文件内容）
+#   3. 发布时需 GITEE_TOKEN，或 %USERPROFILE%\.config\auroradb\gitee.token
 
 param(
-    [string]$Bundles = "nsis"
+    [string]$Bundles = "nsis",
+    [switch]$Publish,
+    [string]$Notes
 )
 
 $ErrorActionPreference = "Stop"
 $Root = $PSScriptRoot
 Set-Location $Root
 
-$TotalSteps = 6
+$TotalSteps = if ($Publish) { 7 } else { 6 }
 
 function Fail([string]$Message) {
     Write-Host "错误: $Message" -ForegroundColor Red
@@ -67,8 +72,13 @@ Write-Host "  OK 前端依赖就绪" -ForegroundColor Green
 Write-Host "[3/$TotalSteps] 构建前端..." -ForegroundColor Yellow
 Push-Location "$Root\src-ui"
 try {
+    # vite/vue-tsc 会把警告写到 stderr，PS 5.1 在 $ErrorActionPreference="Stop" 下
+    # 会将其转成 NativeCommandError 终止脚本，因此这里临时放宽策略，改由退出码判断。
+    $ErrorActionPreference = "Continue"
     & npm run build
-    if ($LASTEXITCODE -ne 0) { Fail "前端构建失败" }
+    $BuildExitCode = $LASTEXITCODE
+    $ErrorActionPreference = "Stop"
+    if ($BuildExitCode -ne 0) { Fail "前端构建失败" }
 }
 finally {
     Pop-Location
@@ -130,11 +140,35 @@ if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
     }
 }
 
-if (-not $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) {
+$SignPassword = $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+if (-not $SignPassword) {
     $PassPath = Join-Path $env:USERPROFILE ".config\auroradb\updater.password"
     if (Test-Path $PassPath) {
-        $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = (Get-Content $PassPath -Raw).Trim()
-        Write-Host "  更新签名密码: $PassPath"
+        $Password = (Get-Content $PassPath -Raw)
+        # 空文件表示私钥未设密码；Windows 环境变量无法表示「已设置但为空」，
+        # 此时不设置变量，交由下方的加密检测给出交互提示。
+        if ($null -ne $Password -and $Password.Trim() -ne "") {
+            $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $Password.Trim()
+            $SignPassword = $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+            Write-Host "  更新签名密码: $PassPath"
+        }
+    }
+}
+
+# 私钥经 minisign 加密时，未提供密码会让 Tauri CLI 交互式索要，一键构建会停在这里
+if (-not $SignPassword) {
+    $KeyComment = ""
+    try {
+        $KeyComment = [Text.Encoding]::UTF8.GetString(
+            [Convert]::FromBase64String($env:TAURI_SIGNING_PRIVATE_KEY))
+    }
+    catch {
+        # 私钥格式无法解码时交给 Tauri CLI 报错，这里不做判断
+    }
+    if ($KeyComment -match "encrypted secret key") {
+        Write-Host "  私钥已加密但未提供密码（$PassPath 不存在或为空文件）" -ForegroundColor Yellow
+        Write-Host "  构建时会出现 Password: 提示，密码为空则直接按回车；" -ForegroundColor Yellow
+        Write-Host "  也可把密码写入 $PassPath 或设置环境变量 TAURI_SIGNING_PRIVATE_KEY_PASSWORD 免交互" -ForegroundColor Yellow
     }
 }
 
@@ -184,3 +218,18 @@ if (Test-Path $NsisDir) {
 
 Write-Host "注意: 当前版本未做代码签名，安装时 SmartScreen 会提示未知发布者，"
 Write-Host "      需点击「更多信息 -> 仍要运行」。企业终端可能被组策略直接拦截。"
+Write-Host ""
+
+# ---------- 7. 发布到 Gitee 发行版 ----------
+if ($Publish) {
+    Write-Host "[7/$TotalSteps] 发布到 Gitee 发行版..." -ForegroundColor Yellow
+    $PublishScript = Join-Path $Root "tools\publish-windows.ps1"
+    $PublishArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $PublishScript)
+    if ($Notes) { $PublishArgs += @("-Notes", $Notes) }
+    & powershell @PublishArgs
+    if ($LASTEXITCODE -ne 0) { Fail "发布失败" }
+    Write-Host "  OK 发布完成" -ForegroundColor Green
+}
+else {
+    Write-Host "提示: 加 -Publish 参数可在构建后自动上传到 Gitee 发行版" -ForegroundColor Yellow
+}
