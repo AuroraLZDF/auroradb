@@ -99,6 +99,12 @@ $SigPath = "$($Installer.FullName).sig"
 if (-not (Test-Path $SigPath)) {
     Fail "未找到 $($Installer.Name).sig，请确认构建时已签名"
 }
+# 记录安装包 SHA-256：写入 latest.json 的 windows-x86_64 条目，供人工与工具核对下载完整性
+# （Tauri 更新器只读 url/signature，多出的字段会被忽略，不影响旧客户端）
+$InstallerSha256 = (Get-FileHash -Path $Installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+if (-not $InstallerSha256 -or $InstallerSha256.Length -ne 64) {
+    Fail "计算 $($Installer.Name) 的 SHA-256 失败"
+}
 
 # 发布前人工确认：上传后发行版与 latest.json 立即对用户生效，先让发版人核对代码状态
 Write-Host ""
@@ -274,6 +280,7 @@ if ($ExistingDoc -and $ExistingDoc.platforms) {
 $Platforms["windows-x86_64"] = [ordered]@{
     signature = (Read-Utf8 $SigPath).Trim()
     url = "https://gitee.com/$Repo/releases/download/$Tag/$($Installer.Name)"
+    sha256 = $InstallerSha256
 }
 
 $Doc = [ordered]@{

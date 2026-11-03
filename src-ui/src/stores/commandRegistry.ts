@@ -8,7 +8,12 @@ export interface Command {
   title: string
   /** 分组/分类（可选） */
   category?: string
-  /** 快捷键显示文本（可选），仅供 UI 展示，真正的监听由各组件自己处理 */
+  /**
+   * 快捷键显示文本（可选）。
+   *
+   * 只放「确实已绑定」的键：全局键由 App.vue 的 onGlobalKeydown 处理，
+   * 组件内键由对应组件处理。没有绑定就不要填，否则会误导用户。
+   */
   shortcut?: string
   /** 是否在当前上下文可用；不传则始终可用 */
   available?: () => boolean
@@ -86,6 +91,18 @@ export const useCommandRegistryStore = defineStore('commandRegistry', () => {
     if (cmd) runCommand(cmd)
   }
 
+  /**
+   * 按 id 执行命令，供全局快捷键复用同一套「可用性判断 + 执行」逻辑。
+   * 返回 false 表示命令不存在或当前不可用（调用方据此决定是否 preventDefault）。
+   */
+  function execute(id: string): boolean {
+    const cmd = commands.value.find(c => c.id === id)
+    if (!cmd) return false
+    if (cmd.available && !cmd.available()) return false
+    runCommand(cmd)
+    return true
+  }
+
   function moveActive(dir: -1 | 1) {
     const len = filtered.value.length
     if (len === 0) return
@@ -106,6 +123,7 @@ export const useCommandRegistryStore = defineStore('commandRegistry', () => {
     closePalette,
     runCommand,
     runActive,
+    execute,
     moveActive,
   }
 })

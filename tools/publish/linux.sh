@@ -46,6 +46,8 @@ fi
 
 command -v curl >/dev/null || { echo -e "${RED}错误: 未找到 curl${NC}"; exit 1; }
 command -v python3 >/dev/null || { echo -e "${RED}错误: 未找到 python3${NC}"; exit 1; }
+command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 \
+    || { echo -e "${RED}错误: 未找到 sha256sum/shasum，无法计算安装包校验值${NC}"; exit 1; }
 
 # 从 origin 解析 owner/repo，兼容 SSH 与 HTTPS 两种地址
 REMOTE_URL="$(git remote get-url origin)"
@@ -148,7 +150,18 @@ bash tools/check-release.sh --platform linux --repo "$OWNER/$REPO" --bundle-dir 
 TMP="$(mktemp)"
 LATEST_TMP="$(mktemp)"
 README_TMP=""
+# trap 在 EXIT 时展开这些变量，set -u 下必须先初始化，否则早期失败会报 unbound
+LATEST_RESP=""
 trap 'rm -f "$TMP" "$LATEST_TMP" "$LATEST_RESP" "$README_TMP"' EXIT
+
+# 计算文件 SHA-256（小写十六进制）：写入 latest.json 供应用内下载的安装包校验完整性
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    else
+        shasum -a 256 "$1" | awk '{print $1}'
+    fi
+}
 
 json_id() {
     # 忽略 JSON 中的换行与空格，取第一个顶层 "id"
@@ -342,11 +355,14 @@ if [[ ! -f "$ARTIFACT.sig" ]]; then
 fi
 
 ARTIFACT_URL="https://gitee.com/$OWNER/$REPO/releases/download/$TAG/$(basename "$ARTIFACT")"
+# 清单里带上校验值：用户手动下载 AppImage/deb 时也能核对完整性
+ARTIFACT_SHA256="$(sha256_of "$ARTIFACT")"
 
 # deb 安装的应用无法用 AppImage 原地升级，清单里额外给出 deb 包地址，
 # 应用会把它下载到下载目录交给用户手动安装
 DEB_URL=""
 DEB_SIG=""
+DEB_SHA256=""
 DEB=""
 while IFS= read -r f; do
     DEB="$f"
@@ -355,6 +371,7 @@ done < <(find "$BUNDLE_DIR/deb" -maxdepth 1 -type f -name '*.deb' 2>/dev/null | 
 
 if [[ -n "$DEB" ]]; then
     DEB_URL="https://gitee.com/$OWNER/$REPO/releases/download/$TAG/$(basename "$DEB")"
+    DEB_SHA256="$(sha256_of "$DEB")"
     [[ -f "$DEB.sig" ]] && DEB_SIG="$DEB.sig"
 else
     echo -e "${YELLOW}  注意: 未找到 deb 安装包，deb 安装的用户将无法在应用内下载更新${NC}"
@@ -374,9 +391,10 @@ fi
 MERGE_ARGS=(--existing "$LATEST_RESP" --output "$LATEST_TMP"
     --version "$VERSION" --notes "$NOTES" --tag "$TAG"
     --platform "$PLATFORM_KEY" --artifact-url "$ARTIFACT_URL"
+    --artifact-sha256 "$ARTIFACT_SHA256"
     --signature-file "$ARTIFACT.sig")
 if [[ -n "$DEB_URL" ]]; then
-    MERGE_ARGS+=(--deb-url "$DEB_URL")
+    MERGE_ARGS+=(--deb-url "$DEB_URL" --deb-sha256 "$DEB_SHA256")
     [[ -n "$DEB_SIG" ]] && MERGE_ARGS+=(--deb-signature-file "$DEB_SIG")
 fi
 python3 tools/merge-latest.py "${MERGE_ARGS[@]}"

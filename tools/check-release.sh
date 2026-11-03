@@ -67,8 +67,9 @@ echo "发布前检查: $PLATFORM -> $RELEASE_REPO"
 shopt -s nullglob
 if [[ "$PLATFORM" == "windows" ]]; then
     PLATFORM_KEY="windows-x86_64"
-    UPDATER=( "$BUNDLE_DIR"/nsis/*.nsis.zip )
-    INSTALLERS=( "$BUNDLE_DIR"/nsis/*.exe )
+    # Tauri 2 的 NSIS 更新包就是 *-setup.exe 本身（tools/publish/windows.ps1 也按此口径上传与签名）
+    UPDATER=( "$BUNDLE_DIR"/nsis/*-setup.exe )
+    INSTALLERS=( "${UPDATER[@]}" )
 else
     PLATFORM_KEY="linux-x86_64"
     UPDATER=( "$BUNDLE_DIR"/appimage/*.AppImage )
@@ -119,7 +120,8 @@ import sys
 
 out, files = sys.argv[1], sys.argv[2:]
 lines = []
-for path in sorted(files):
+# Windows 上更新包与安装包是同一个 *-setup.exe，去重避免 SHA256SUMS 出现重复行
+for path in sorted(set(files)):
     digest = hashlib.sha256()
     with open(path, 'rb') as f:
         for chunk in iter(lambda: f.read(1 << 20), b''):

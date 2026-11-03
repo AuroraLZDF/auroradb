@@ -129,12 +129,12 @@
           <!-- SQL 编辑器视图 -->
           <div v-else-if="activeTab?.type === 'sql'" class="sql-view">
             <!-- 用 tab id 作为 key：切换 SQL Tab 时重新初始化编辑器，避免上一个 Tab 的 SQL/结果串到新 Tab -->
-            <SqlEditor :key="activeTab.id" :tabId="activeTab.id" />
+            <SqlEditor :key="activeTab.id" :tabId="activeTab.id" :connection-id="(activeTab as SqlTab).connectionId" />
           </div>
 
           <!-- 控制台视图 -->
           <div v-else-if="activeTab?.type === 'console'" class="console-view">
-            <Console :tabId="activeTab.id" />
+            <Console :tabId="activeTab.id" :connection-id="(activeTab as ConsoleTab).connectionId" />
           </div>
 
           <!-- ER 图视图 -->
@@ -177,8 +177,9 @@ import { useEditorTabsStore } from '@/stores/editorTabs'
 import { confirmDanger } from '@/composables/useConfirm'
 import { globalToast } from '@/composables/useToast'
 import { t } from '@/i18n'
-import type { ConnectionStatus } from '@/stores/connection'
+import { useConnectionStore, type ConnectionStatus } from '@/stores/connection'
 import type { DatabaseObject } from '@/stores/dataBrowser'
+import { nextSqlTabId, nextTabCounter, resolveTabConnectionId } from '@/utils/tabConnection'
 
 // Tab 类型定义
 interface ObjectsTab {
@@ -198,12 +199,16 @@ interface SqlTab {
   id: string
   type: 'sql'
   title: string
+  /** 该 Tab 打开时绑定的连接 id（空串表示未绑定，回退全局当前连接） */
+  connectionId: string
 }
 
 interface ConsoleTab {
   id: string
   type: 'console'
   title: string
+  /** 该 Tab 打开时绑定的连接 id（空串表示未绑定，回退全局当前连接） */
+  connectionId: string
 }
 
 interface ErTab {
@@ -359,7 +364,8 @@ function onObjectContextMenu(event: MouseEvent, tableName: string) {
 
 // 方法
 function switchTab(tabId: string) {
-  activeTabId.value = tabId
+  // 激活 Tab 时同步全局连接（表/查询/控制台 Tab 各自绑定连接）
+  setActiveTab(tabId)
 
   // 如果是表 Tab，通知 DataTable 切换
   const tab = tabs.value.find(t => t.id === tabId)
@@ -371,6 +377,30 @@ function switchTab(tabId: string) {
 
 const browserStore = useDataBrowserStore()
 const editorTabs = useEditorTabsStore()
+const connStore = useConnectionStore()
+
+// 激活 Tab 时同步全局连接：Tab 绑定了连接就切回它自己的连接，
+// 否则（对象 Tab / 旧数据无绑定）保持当前连接不动
+function syncTabConnection(tab: Tab | null | undefined) {
+  if (!tab || !('connectionId' in tab)) return
+  const connectionId = resolveTabConnectionId(tab, props.currentConnection?.id)
+  if (connectionId) connStore.switchConnection(connectionId)
+}
+
+// 统一的 Tab 激活入口：设置激活 id 并同步该 Tab 绑定的连接
+function setActiveTab(tabId: string) {
+  activeTabId.value = tabId
+  syncTabConnection(tabs.value.find(t => t.id === tabId))
+}
+
+// 分配下一个 SQL Tab id：按现有 Tab（含启动时恢复的草稿）已用最大序号 +1，
+// 避免新建 Tab 与恢复的 id 撞号；同时把计数器推进到下一个可用序号
+function allocateSqlTabId(): { id: string; index: number } {
+  const existingIds = tabs.value.map(t => t.id)
+  const index = nextTabCounter('sql-', existingIds)
+  sqlTabCounter.value = index + 1
+  return { id: nextSqlTabId('sql-', existingIds), index }
+}
 
 function closeTab(tabId: string) {
   const tab = tabs.value.find(t => t.id === tabId)
@@ -426,7 +456,7 @@ function removeTab(tabId: string) {
   // 如果关闭的是当前激活的 tab，切换到前一个 tab
   if (activeTabId.value === tabId) {
     const newIndex = Math.max(0, index - 1)
-    activeTabId.value = tabs.value[newIndex]?.id || 'objects'
+    setActiveTab(tabs.value[newIndex]?.id || 'objects')
   }
 }
 
@@ -441,7 +471,7 @@ async function openTable(connectionId: string, database: string, tableName: stri
   // 检查是否已打开
   const existingTab = tabs.value.find(t => t.id === tabId)
   if (existingTab) {
-    activeTabId.value = tabId
+    setActiveTab(tabId)
     // 通知 DataTable 切换到这个表
     await nextTick()
     dataTableRef.value?.openTable(connectionId, database, tableName)
@@ -457,7 +487,7 @@ async function openTable(connectionId: string, database: string, tableName: stri
     tableName
   }
   tabs.value.push(newTab)
-  activeTabId.value = tabId
+  setActiveTab(tabId)
 
   // 通知 DataTable 打开这个表（等待DOM更新）
   await nextTick()
@@ -466,29 +496,32 @@ async function openTable(connectionId: string, database: string, tableName: stri
 
 // 新建 SQL 查询
 function newSqlQuery() {
-  const tabId = `sql-${sqlTabCounter.value++}`
+  const { id: tabId, index } = allocateSqlTabId()
   const newTab: SqlTab = {
     id: tabId,
     type: 'sql',
-    title: `Query ${sqlTabCounter.value - 1}`
+    title: `Query ${index}`,
+    // 记录创建时的连接，之后切到其它连接也不影响本 Tab 的执行目标
+    connectionId: props.currentConnection?.id ?? '',
   }
   tabs.value.push(newTab)
-  activeTabId.value = tabId
+  setActiveTab(tabId)
 }
 
 // 用 .sql 文件内容新建查询页（文件关联双击 / 拖拽打开共用）
 function openSqlFile(fileName: string, content: string) {
-  const tabId = `sql-${sqlTabCounter.value++}`
+  const { id: tabId, index } = allocateSqlTabId()
   const newTab: SqlTab = {
     id: tabId,
     type: 'sql',
-    title: fileName || `Query ${sqlTabCounter.value - 1}`,
+    title: fileName || `Query ${index}`,
+    connectionId: props.currentConnection?.id ?? '',
   }
   // 先写入内容再挂 Tab：SqlEditor 以 tab id 为 key 重新挂载时从 store 读取
   editorTabs.setSql(tabId, content)
   editorTabs.markClean(tabId)
   tabs.value.push(newTab)
-  activeTabId.value = tabId
+  setActiveTab(tabId)
 }
 
 // 新建控制台
@@ -497,10 +530,11 @@ function newConsole() {
   const newTab: ConsoleTab = {
     id: tabId,
     type: 'console',
-    title: `Console ${consoleTabCounter.value - 1}`
+    title: `Console ${consoleTabCounter.value - 1}`,
+    connectionId: props.currentConnection?.id ?? '',
   }
   tabs.value.push(newTab)
-  activeTabId.value = tabId
+  setActiveTab(tabId)
 }
 
 // 打开 ER 图 tab（用当前选中的数据库）
@@ -517,12 +551,12 @@ function openErDiagramTab(database: string) {
   const tabId = `er-${database}`
   const existingTab = tabs.value.find(t => t.id === tabId)
   if (existingTab) {
-    activeTabId.value = tabId
+    setActiveTab(tabId)
     return
   }
   const newTab: ErTab = { id: tabId, type: 'er', database }
   tabs.value.push(newTab)
-  activeTabId.value = tabId
+  setActiveTab(tabId)
 }
 
 // 启动时从 localStorage 恢复上次未关闭的 SQL tab（P0-3 草稿自动保存）
@@ -532,18 +566,22 @@ function restoreDrafts() {
   const savedIds = editorTabs.restoredTabIds()
   if (savedIds.length === 0) return
 
+  // 草稿里没有历史连接信息，恢复时统一绑定当前连接
+  const connectionId = props.currentConnection?.id ?? ''
   // 避免重复恢复：tab 已存在就跳过
   const existingIds = new Set(tabs.value.map(t => t.id))
   let activated = false
   for (const id of savedIds) {
     if (existingIds.has(id)) continue
-    const newTab: SqlTab = { id, type: 'sql', title: 'Query' }
+    const newTab: SqlTab = { id, type: 'sql', title: 'Query', connectionId }
     tabs.value.push(newTab)
     if (!activated) {
-      activeTabId.value = id
+      setActiveTab(id)
       activated = true
     }
   }
+  // 恢复的 id 可能带较大的数字后缀（如上个会话开过 sql-9），推进计数器避免新建时撞号
+  sqlTabCounter.value = nextTabCounter('sql-', tabs.value.map(t => t.id))
 }
 
 // 仅在连接刚建立时恢复一次（反复切换连接不会重复恢复，草稿是跨连接的）
@@ -586,7 +624,7 @@ function closeDatabaseTabs(connectionId: string, database: string) {
   
   // 如果当前激活的tab被关闭了，切换到对象tab
   if (tabsToClose.some(t => t.id === activeTabId.value)) {
-    activeTabId.value = 'objects'
+    setActiveTab('objects')
   }
 }
 
@@ -611,7 +649,7 @@ function closeConnectionTabs(connectionId: string) {
   
   // 如果当前激活的tab被关闭了，切换到对象tab
   if (tabsToClose.some(t => t.id === activeTabId.value)) {
-    activeTabId.value = 'objects'
+    setActiveTab('objects')
   }
 }
 

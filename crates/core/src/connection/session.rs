@@ -256,7 +256,7 @@ impl ConnectionManager {
         );
 
         // 保存连接
-        let managed = ManagedConnection {
+        let mut managed = ManagedConnection {
             config: request.config,
             pool: Some(pool),
             current_database,
@@ -274,7 +274,25 @@ impl ConnectionManager {
             tls_disabled,
         };
 
-        self.connections.write().await.insert(id.clone(), managed);
+        // 建池期间可能有同 id 的并发 connect 先完成插入（TOCTOU），必须在写锁内复查：
+        // 重复时停止本连接的心跳、丢弃隧道，并在锁外关闭连接池，
+        // 避免持锁关闭阻塞其他连接，同时保证池/心跳/隧道都不泄漏。
+        {
+            let mut connections = self.connections.write().await;
+            if connections.contains_key(&id) {
+                if let Some(handle) = managed.heartbeat_handle.take() {
+                    handle.abort();
+                }
+                let pool = managed.pool.take();
+                managed.tunnel = None;
+                drop(connections);
+                if let Some(pool) = pool {
+                    pool.close().await;
+                }
+                return Err(anyhow!("连接 {} 已存在", id));
+            }
+            connections.insert(id.clone(), managed);
+        }
 
         Ok(id)
     }

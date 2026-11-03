@@ -98,6 +98,14 @@ import { findDangerousStatements } from '@/utils/sql'
 import { globalToast } from '@/composables/useToast'
 import { confirmDanger } from '@/composables/useConfirm'
 import { t } from '@/i18n'
+import { resolveTabConnectionId } from '@/utils/tabConnection'
+
+// Props
+const props = defineProps<{
+  tabId?: string
+  /** 本 Tab 绑定的连接 id；为空时回退全局当前连接 */
+  connectionId?: string
+}>()
 
 interface ColumnInfo {
   name: string
@@ -202,7 +210,17 @@ const historyIndex = ref(-1)
 const multiLineBuffer = ref('')
 const isInMultiLine = ref(false)
 
-const currentConnection = computed(() => connectionStore.currentConnection)
+// 本 Tab 实际使用的连接 id：Tab 绑定的连接优先（prop），未绑定时回退全局当前连接
+const effectiveConnectionId = computed(() =>
+  resolveTabConnectionId({ connectionId: props.connectionId }, connectionStore.currentConnection?.id)
+)
+
+// 连接对象：优先按 id 从活跃连接中查找，连接已断开时回退全局当前连接
+const effectiveConnection = computed(
+  () =>
+    connectionStore.activeConnections.find(conn => conn.id === effectiveConnectionId.value) ??
+    connectionStore.currentConnection,
+)
 
 // 用户通过 USE 手动切换的库（优先于侧栏正在浏览的库）
 const manualDb = ref('')
@@ -214,23 +232,20 @@ const currentDb = computed(
   () =>
     manualDb.value ||
     browserStore.currentDatabase ||
-    currentConnection.value?.database ||
+    effectiveConnection.value?.database ||
     ''
 )
 
 // 切换连接时清空手动切换的库，避免沿用上一条连接的库名
-watch(
-  () => connectionStore.currentConnection?.id,
-  () => {
-    manualDb.value = ''
-  }
-)
+watch(effectiveConnectionId, () => {
+  manualDb.value = ''
+})
 
 // 补全所需的库名列表与 schema 快照
 const databaseNames = computed(() => browserStore.objectTree.map(db => db.name))
 
 watch(
-  [() => connectionStore.currentConnection?.id, currentDb],
+  [effectiveConnectionId, currentDb],
   ([connectionId, database]) => {
     if (connectionId && database) {
       completionEngine.loadSchema(connectionId, database)
@@ -453,7 +468,7 @@ async function executeCommand() {
   }
 
   // 安全模式下对高风险语句二次确认（无 WHERE 的 UPDATE/DELETE 由后端直接拦截）
-  if (currentConnection.value?.safety_mode === 'safe') {
+  if (effectiveConnection.value?.safety_mode === 'safe') {
     const dangerous = findDangerousStatements(fullCommand)
     if (
       dangerous.length > 0 &&
@@ -472,7 +487,7 @@ async function executeCommand() {
   if (useMatch && useMatch[1]) {
     const newDb = useMatch[1].trim().replace(/^`|`$/g, '') // 去除首尾的反引号
 
-    if (!currentConnection.value) {
+    if (!effectiveConnection.value) {
       entries.value.push({
         type: 'error',
         database: db,
@@ -485,7 +500,7 @@ async function executeCommand() {
 
     // 先发送到后端执行 USE 语句
     try {
-      await connectionStore.executeSql(currentConnection.value.id, newDb, fullCommand)
+      await connectionStore.executeSql(effectiveConnection.value.id, newDb, fullCommand)
       // 后端执行成功后，更新前端当前数据库
       manualDb.value = newDb
       recordHistory(fullCommand, newDb, true)
@@ -510,7 +525,7 @@ async function executeCommand() {
   }
 
   // 执行 SQL
-  if (!currentConnection.value) {
+  if (!effectiveConnection.value) {
     entries.value.push({
       type: 'error',
       database: db,
@@ -522,7 +537,7 @@ async function executeCommand() {
   }
 
   // 没有可用的库时不要擅自回落到系统库（MySQL 必须显式指定库）
-  if (!db && currentConnection.value.driver !== 'postgres') {
+  if (!db && effectiveConnection.value.driver !== 'postgres') {
     entries.value.push({
       type: 'error',
       database: db,
@@ -537,7 +552,7 @@ async function executeCommand() {
   running.value = true
 
   try {
-    const response = await connectionStore.executeSql(currentConnection.value.id, db, fullCommand) as {
+    const response = await connectionStore.executeSql(effectiveConnection.value.id, db, fullCommand) as {
       columns: { name: string; data_type: string }[]
       rows: unknown[][]
       execution_time_ms: number
@@ -552,7 +567,7 @@ async function executeCommand() {
     // DDL 后补全快照失效
     if (/^\s*(create|alter|drop|rename|truncate)\b/i.test(fullCommand)) {
       invalidateSchemaCache()
-      completionEngine.loadSchema(currentConnection.value.id, currentDb.value)
+      completionEngine.loadSchema(effectiveConnectionId.value, currentDb.value)
     }
 
     if (response.rows && response.rows.length > 0) {
@@ -616,9 +631,9 @@ async function executeCommand() {
 
 // 取消执行
 async function cancelQuery() {
-  if (!currentConnection.value) return
+  if (!effectiveConnection.value) return
   try {
-    const rolledBack = await connectionStore.cancelQuery(currentConnection.value.id)
+    const rolledBack = await connectionStore.cancelQuery(effectiveConnection.value.id)
     // 取消会把事务连接一并丢弃（后端自动回滚），必须提示用户
     if (rolledBack) {
       globalToast.warning(t('console.transactionRolledBack'))
@@ -676,7 +691,7 @@ function recordHistory(
   durationMs?: number,
   error?: string
 ) {
-  const connectionId = connectionStore.currentConnection?.id
+  const connectionId = effectiveConnectionId.value
   if (!connectionId) return
   queryLibrary.addHistory({ sql: command, connectionId, database, success, durationMs, error })
 }

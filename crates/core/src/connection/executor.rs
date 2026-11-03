@@ -613,30 +613,19 @@ impl ConnectionManager {
         let (modified_sql, parsed) = rewrite_table_names(&effective_db, sql, DriverKind::MySql);
         let t_rewrite = Instant::now();
 
-        // 判断是否为不支持预处理协议的语句（DDL 类）
-        let upper_sql = modified_sql.trim().to_uppercase();
+        // 按去注释后的真实语句分类：避免 `/* c */ DELETE` 这类前缀注释与
+        // `WITH ... INSERT` 的 CTE 前缀被 starts_with 误判。
+        let kind = crate::sql::classify_sql(&modified_sql);
         // 会话级语句：必须固定在一条物理连接上执行并保持到连接关闭，否则会话语义丢失
-        let is_session_stmt = upper_sql.starts_with("USE ")
-            || upper_sql.starts_with("SET ")
-            || upper_sql.starts_with("RESET ");
-        let is_ddl = upper_sql.starts_with("ALTER DATABASE")
-            || upper_sql.starts_with("CREATE DATABASE")
-            || upper_sql.starts_with("DROP DATABASE")
-            || upper_sql.starts_with("ALTER USER")
-            || upper_sql.starts_with("CREATE USER")
-            || upper_sql.starts_with("DROP USER")
-            || upper_sql.starts_with("GRANT")
-            || upper_sql.starts_with("REVOKE")
-            || is_session_stmt;
+        let is_session_stmt = kind == crate::sql::SqlKind::Session;
+        // 判断是否为不支持预处理协议的语句（DDL 类）；会话语句同样走文本协议执行
+        let is_ddl = matches!(kind, crate::sql::SqlKind::Ddl | crate::sql::SqlKind::Session);
 
         // 判断是否为 SHOW/DESC 语句（需要数据库上下文）
-        let needs_db_context = upper_sql.starts_with("SHOW ") || upper_sql.starts_with("DESCRIBE ") || upper_sql.starts_with("DESC ");
+        let needs_db_context = kind == crate::sql::SqlKind::NeedsDbContext;
 
         // 判断是否为 DML 语句：走 execute 拿真实影响行数（此前走 fetch_all 恒返回 0）
-        let is_dml = upper_sql.starts_with("INSERT")
-            || upper_sql.starts_with("UPDATE")
-            || upper_sql.starts_with("DELETE")
-            || upper_sql.starts_with("REPLACE");
+        let is_dml = kind == crate::sql::SqlKind::Dml;
 
         // 选择执行目标，保证「USE 与查询在同一物理连接」：
         // - 事务进行中：钉扎在事务连接上执行；

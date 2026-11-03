@@ -62,6 +62,8 @@ export default {
     'app.deleteSelectedTables': '删除选中的 {count} 张表',
     'app.deleteTablesConfirm': '确定要删除选中的 {count} 张表吗？{names}',
     'app.deleteTablesSuccess': '已删除 {count} 张表',
+    // 全局错误兜底（main.ts）
+    'app.unexpectedError': '发生意外错误：{message}',
   },
   'en-US': {
     'app.emptyPanelHint': 'Click a connection, database, or table to view details',
@@ -126,5 +128,7 @@ export default {
     'app.deleteSelectedTables': 'Delete {count} selected tables',
     'app.deleteTablesConfirm': 'Delete {count} selected tables? {names}',
     'app.deleteTablesSuccess': 'Deleted {count} tables',
+    // 全局错误兜底（main.ts）
+    'app.unexpectedError': 'Unexpected error: {message}',
   },
 }

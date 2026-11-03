@@ -22,18 +22,45 @@ for (const mod of Object.values(modules)) {
   }
 }
 
+/** 读取已保存语言；存储被禁用/不可用时返回 null，不影响启动 */
+function readStoredLocale(): Locale | null {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY)
+    return saved === 'zh-CN' || saved === 'en-US' ? saved : null
+  } catch {
+    // 隐私模式或沙箱环境里 localStorage 可能直接抛错
+    return null
+  }
+}
+
+/** 已保存语言优先，其次按系统语言推断（中文环境 zh-CN，其余 en-US） */
 function detectLocale(): Locale {
-  const saved = localStorage.getItem(STORAGE_KEY)
-  if (saved === 'zh-CN' || saved === 'en-US') return saved
-  return navigator.language.toLowerCase().startsWith('zh') ? 'zh-CN' : 'en-US'
+  const saved = readStoredLocale()
+  if (saved) return saved
+  try {
+    return navigator.language.toLowerCase().startsWith('zh') ? 'zh-CN' : 'en-US'
+  } catch {
+    return 'zh-CN'
+  }
+}
+
+/** 把当前语言同步到 `<html lang>`；单测的 node 环境没有 document */
+function applyDocumentLang() {
+  if (typeof document !== 'undefined') {
+    document.documentElement.lang = locale.value
+  }
 }
 
 export const locale = ref<Locale>(detectLocale())
 
-function setLocale(next: Locale) {
+export function setLocale(next: Locale) {
   locale.value = next
-  localStorage.setItem(STORAGE_KEY, next)
-  document.documentElement.lang = next
+  try {
+    localStorage.setItem(STORAGE_KEY, next)
+  } catch {
+    // 写失败（配额/禁用）时本次切换仍生效，只是不持久化
+  }
+  applyDocumentLang()
 }
 
 /** 切换语言：`zh-CN` ⇄ `en-US` */
@@ -54,7 +81,5 @@ export function t(key: string, params?: Record<string, string | number>): string
   )
 }
 
-// 单测在 node 环境导入本模块时没有 document，仅在浏览器环境下同步 <html lang>
-if (typeof document !== 'undefined') {
-  document.documentElement.lang = locale.value
-}
+// 模块加载即把初始语言落到 `<html lang>`，避免首屏 lang 与词典不一致
+applyDocumentLang()

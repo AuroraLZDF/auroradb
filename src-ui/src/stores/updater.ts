@@ -28,10 +28,21 @@ function isTauri(): boolean {
   return '__TAURI_INTERNALS__' in window
 }
 
-/** 从更新清单里取 deb 安装包地址（由 tools/publish/linux.sh 写入顶层 deb 字段） */
-function debPackageUrl(raw: Record<string, unknown>): string {
-  const deb = raw.deb as { url?: unknown } | undefined
-  return typeof deb?.url === 'string' ? deb.url : ''
+/** deb 安装包信息：地址与期望的 SHA-256（由 tools/publish/linux.sh 写入顶层 deb 字段） */
+interface DebPackage {
+  url: string
+  /** 清单未提供时为 undefined，下载命令会告警但不阻断（兼容旧清单） */
+  sha256?: string
+}
+
+/** 从更新清单里取 deb 安装包地址与校验值 */
+function debPackage(raw: Record<string, unknown>): DebPackage {
+  const deb = raw.deb as { url?: unknown; sha256?: unknown } | undefined
+  const sha256 = typeof deb?.sha256 === 'string' ? deb.sha256.trim() : ''
+  return {
+    url: typeof deb?.url === 'string' ? deb.url : '',
+    sha256: sha256 || undefined,
+  }
 }
 
 /** 从下载地址里取文件名，兼作落盘名 */
@@ -55,6 +66,8 @@ export const useUpdaterStore = defineStore('updater', () => {
   const installKind = ref<InstallKind>('auto')
   /** deb 更新包地址，仅 installKind 为 deb 时使用 */
   const packageUrl = ref('')
+  /** deb 更新包期望的 SHA-256（清单未提供时为空串，下载时不校验） */
+  const packageSha256 = ref('')
 
   const busy = computed(() => status.value !== 'idle')
 
@@ -102,18 +115,20 @@ export const useUpdaterStore = defineStore('updater', () => {
       pending = update
       availableVersion.value = update.version
       packageUrl.value = ''
+      packageSha256.value = ''
 
       if (installKind.value === 'deb') {
-        const url = debPackageUrl(update.rawJson)
+        const pkg = debPackage(update.rawJson)
         // deb 走手动安装，不保留内置更新器的资源
         await update.close()
         pending = null
-        if (!url) {
+        if (!pkg.url) {
           availableVersion.value = ''
           globalToast.warning(t('store.debPackageMissing'))
           return null
         }
-        packageUrl.value = url
+        packageUrl.value = pkg.url
+        packageSha256.value = pkg.sha256 ?? ''
       }
 
       globalToast.info(t('store.updateAvailable', { version: update.version }))
@@ -189,11 +204,14 @@ export const useUpdaterStore = defineStore('updater', () => {
       const path = await invoke<string>('download_update_package', {
         url: packageUrl.value,
         fileName: packageFileName(packageUrl.value),
+        // 清单未提供校验值时不传，Rust 侧会记录告警但不阻断
+        sha256: packageSha256.value || undefined,
       })
       globalToast.success(t('store.updatePackageDownloaded', { path }))
       // 安装包已落盘，清空待更新状态，下次点击重新检查版本
       availableVersion.value = ''
       packageUrl.value = ''
+      packageSha256.value = ''
       return true
     } catch (error) {
       globalToast.error(

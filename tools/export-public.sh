@@ -12,8 +12,12 @@
 #
 # 导出内容：crates/core、免费的 src-tauri 命令层、免费前端与构建发布脚本
 # 排除：crates/pro、src-ui/src/pro、src-tauri/src/commands/pro.rs、
-#       tools/license-gen（激活码签发）以及全部构建产物
+#       tools/license-gen（激活码签发）、docs/EULA.md 以及全部构建产物
+# 保留目标目录自有内容：README.md、ROADMAP.md 与 .github/（公开仓独立维护，
+#       不会被私有仓版本覆盖；目标目录必须先准备好这三项）。
 # 导出后自动移除专业版 workspace 成员与 Cargo feature，并重新生成 Cargo.lock。
+# 导出后做公开内容检查：README/ROADMAP/docs 不得出现内部词，Markdown 相对链接
+#       指向的文件必须存在，且必须保留公开仓自己的 .github/workflows/ci.yml；任一失败即中止。
 # 加 --push 时会在导出后自动 init git、提交并推送到给定远端地址的 main 分支。
 
 set -euo pipefail
@@ -23,7 +27,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
 fail() { echo -e "${RED}  ✗ $*${NC}"; exit 1; }
 ok()   { echo -e "${GREEN}  ✓ $*${NC}"; }
@@ -48,7 +52,7 @@ while [[ $# -gt 0 ]]; do
             PUSH_BRANCH="$2"; shift 2
             ;;
         -h|--help)
-            sed -n '3,18p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '3,21p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         -*) fail "未知参数: $1" ;;
@@ -63,15 +67,24 @@ done
 [[ -n "$TARGET" ]] || fail "请指定目标目录，例如 ./tools/export-public.sh ../auroradb-public"
 command -v rsync >/dev/null || fail "未找到 rsync"
 command -v python3 >/dev/null || fail "未找到 python3"
+command -v realpath >/dev/null || fail "未找到 realpath"
 if [[ -n "$PUSH_REMOTE" ]]; then
     command -v git >/dev/null || fail "未找到 git，无法 --push"
 fi
 
-# 目标目录不能与当前仓库互相包含，避免 --delete 误删源码
-TARGET_PARENT="$(dirname "$TARGET")"
-[[ -d "$TARGET_PARENT" ]] || fail "目标目录的上级目录不存在：$TARGET_PARENT"
-TARGET="$(cd "$TARGET_PARENT" && pwd)/$(basename "$TARGET")"
+# 目标目录不能与当前仓库互相包含，避免 --delete 误删源码。
+# 先规范化为绝对路径（realpath -m 允许目标尚不存在），再做四类守卫：
+#   1. 拒绝 / 与 $HOME；2. 拒绝目标 == 仓库根；
+#   3. 拒绝目标是仓库根的祖先（rsync --delete 会清空其下所有内容）；
+#   4. 拒绝目标位于仓库根内部。
+TARGET="$(realpath -m -- "$TARGET")" \
+    || fail "无法解析目标目录路径：$TARGET"
+ROOT="$(realpath -m -- "$ROOT")"
 [[ "$TARGET" != "/" && "$TARGET" != "$HOME" ]] || fail "拒绝导出到 $TARGET"
+[[ "$TARGET" != "$ROOT" ]] || fail "目标目录不能是当前仓库本身：$TARGET"
+case "$ROOT/" in
+    "$TARGET/"*) fail "目标目录不能是当前仓库的上级目录（--delete 会误删源码）：$TARGET" ;;
+esac
 case "$TARGET/" in
     "$ROOT/"*) fail "目标目录不能位于当前仓库内：$TARGET" ;;
 esac
@@ -80,8 +93,21 @@ if [[ -d "$TARGET" ]] && [[ -n "$(ls -A "$TARGET")" ]]; then
     [[ $FORCE -eq 1 ]] || fail "目标目录非空：$TARGET（确认覆盖请加 --force）"
 fi
 
+# 公开仓自有文件：导出时从 rsync 中排除、原地保留，绝不用私有仓版本覆盖。
+# 这些文件（尤其 .github/workflows/ci.yml）与私有仓内容不同，首次导出前必须先准备好。
+PUBLIC_OWNED=(
+    README.md
+    ROADMAP.md
+    .github/workflows/ci.yml
+)
+for owned in "${PUBLIC_OWNED[@]}"; do
+    [[ -e "$TARGET/$owned" ]] || fail "目标目录缺少公开仓自有文件：$owned
+公开仓的 README.md / ROADMAP.md / .github/workflows/ci.yml 独立维护，导出时不会被覆盖。
+首次导出请先克隆或复制现有公开仓到 $TARGET，再重新执行本脚本。"
+done
+
 EXCLUDES=(
-    --exclude=/.git/
+    --exclude=/.git/                 # 保留目标目录已有的 git 历史/远端
     --exclude=/.trae/
     --exclude=/.tauri-tools/
     --exclude=/target/
@@ -96,9 +122,13 @@ EXCLUDES=(
     --exclude=/src-tauri/src/commands/pro.rs
     --exclude=/tools/export-public.sh
     --exclude=/docs/EULA.md          # 专业版最终用户协议，公开仓不含
-    --exclude=/.github/workflows/    # CI 平台私有主仓用不到，公开仓独立维护
+    --exclude=/.github/              # 公开仓 CI 独立维护，与私有仓不同，整体不覆盖
+    --exclude=/README.md             # 公开仓 README 独立维护，不复制私有版本
+    --exclude=/ROADMAP.md            # 公开仓 ROADMAP 独立维护，不复制私有版本
     --exclude=.DS_Store
     --exclude='*.log'
+    --exclude=__pycache__/          # python 脚本运行产物
+    --exclude='*.pyc'
 )
 
 if [[ $DRY_RUN -eq 1 ]]; then
@@ -106,6 +136,12 @@ if [[ $DRY_RUN -eq 1 ]]; then
     echo "导出到: $TARGET"
     echo "排除项:"
     printf '  %s\n' "${EXCLUDES[@]#--exclude=}"
+    echo ""
+    echo "保留目标目录自有（不复制、不删除）："
+    printf '  %s\n' "${PUBLIC_OWNED[@]}"
+    echo ""
+    echo "导出后将执行：README/ROADMAP/docs 内部词与相对链接检查；"
+    echo "                校验 $TARGET/.github/workflows/ci.yml 仍存在。"
     if [[ -n "$PUSH_REMOTE" ]]; then
         echo ""
         echo "将在导出后推送到: $PUSH_REMOTE"
@@ -116,7 +152,8 @@ fi
 
 echo "导出到 $TARGET"
 mkdir -p "$TARGET"
-# 不加 --delete-excluded：目标目录若已 init 过 git，其 .git 会被保留
+# 不加 --delete-excluded：被 exclude 的路径（目标 .git、公开仓自有 README/ROADMAP/.github）
+# 既不参与复制，也不会被 --delete 删除。
 rsync -a --delete "${EXCLUDES[@]}" "$ROOT/" "$TARGET/"
 
 # 目标目录中历史导出残留的专业版文件（被 exclude 后 rsync 不会删除）
@@ -126,7 +163,6 @@ rm -rf "$TARGET/crates/pro" \
        "$TARGET/tools/license-gen"
 rm -f "$TARGET/tools/export-public.sh" \
       "$TARGET/docs/EULA.md"
-rm -rf "$TARGET/.github/workflows"
 
 # 移除专业版依赖、feature 与 workspace 成员，失败即中止（结构变更时需同步本脚本）
 python3 - "$TARGET" <<'PY'
@@ -165,113 +201,55 @@ def tauri_manifest(text):
 
 edit("Cargo.toml", root_members)
 edit("src-tauri/Cargo.toml", tauri_manifest)
-
-
-# README 清理：把私有仓特有的内部信息和目录条目替换掉，
-# 输出一个适合公开仓读者（开源贡献者和用户）的版本。
-# 未匹配到某条规则时静默跳过（可能是私有 README 措辞改了，不致命）。
-def clean_readme(text):
-    import re as _re
-
-    def _sub(pattern, repl, **kw):
-        nonlocal text
-        text = _re.sub(pattern, repl, text, **kw)
-
-    def _replace_section(header, repl_body):
-        """整块替换从 ## header 到下一个 ## 或文件结尾的内容。"""
-        nonlocal text
-        pat = r"(?ms)^## " + _re.escape(header) + r"\n.*?(?=^## \S|\Z)"
-        text = _re.sub(pat, f"## {header}\n\n{repl_body}\n\n", text)
-
-    # 1. 开头定位句 + 仓库身份声明
-    _sub(
-        r"基于 Tauri 2 \+ Vue 3 \+ Rust 的桌面数据库客户端，支持 MySQL 与 PostgreSQL，"
-        r"打包目标为 Linux（deb / AppImage / rpm）与 Windows（NSIS）。",
-        "基于 Tauri 2 + Vue 3 + Rust 的开源桌面数据库客户端，支持 MySQL 与 PostgreSQL。\n\n"
-        "本仓库是 AuroraDB 的**开源核心**，以 [AGPL-3.0](LICENSE) 授权发布。"
-        "完整功能版本与安装包见 [项目官网](https://gitee.com/auroraLZDF/auroradb-releases)。",
-    )
-
-    # 2. 删除功能列表后的专业版段落
-    _sub(r"\n专业版需激活码解锁，另含：[^。]*。\n", "\n")
-
-    # 3. 从技术栈表格删除"授权"行（内部实现细节）
-    _sub(r"^\| 授权 \|[^\n]*\n", "", flags=_re.M)
-
-    # 4. 整个"目录结构"章节——私有版包含 pro / license-gen / export-public.sh 等私有条目，
-    #    清理后缩进会乱，直接整块替换成公开仓版本最可靠
-    _replace_section(
-        "目录结构",
-        "```\n"
-        ".\n"
-        "├── crates/core/            # 核心库 auroradb-core（连接、执行、导入导出、授权校验）\n"
-        "├── src-ui/                 # Vue 3 前端\n"
-        "│   ├── src/components/     # 业务组件与基础 UI 组件\n"
-        "│   ├── src/stores/         # Pinia 状态（连接、数据浏览、授权、更新等）\n"
-        "│   ├── src/i18n/           # 轻量 i18n（中/英）\n"
-        "│   └── src/utils/          # SQL、表格变更、执行计划类型与 Pro 界面占位注册表\n"
-        "├── src-tauri/              # Tauri 应用（命令注册、窗口与更新）\n"
-        "│   └── src/commands/       # Tauri 命令层\n"
-        "├── tools/\n"
-        "│   ├── build/              # 构建实现（linux.sh / windows.ps1 / appimage-*.sh）\n"
-        "│   ├── publish/            # 发布实现（linux.sh / windows.ps1）\n"
-        "│   ├── check-version.mjs   # 版本号一致性校验\n"
-        "│   ├── check-release.sh    # 发布前产物检查\n"
-        "│   └── merge-latest.py     # latest.json 合并\n"
-        "├── docs/\n"
-        "│   └── smoke-checklist.md  # 发版冒烟清单\n"
-        "├── LICENSE                 # AGPL-3.0\n"
-        "├── CLA.md                  # 贡献者许可协议\n"
-        "├── NOTICE                  # 第三方组件许可声明\n"
-        "└── start.sh                # 一键启动 Tauri 开发模式（首次运行需先装前端依赖）\n"
-        "```\n",
-    )
-
-    # 5. 开发检查里的免费版构建注释与多余空行
-    _sub(
-        r"(\n)?# 校验免费版构建（不启用 pro feature，对应公开仓）\ncargo check --offline --no-default-features\n",
-        "\n",
-    )
-    # 开发检查代码块结尾多出的空行
-    _sub(r"^cargo test --offline\n\n```", "cargo test --offline\n```", flags=_re.M)
-
-    # 6. 发布到 Gitee 章节开头的"源码仓库保持私有"
-    _sub(r"源码仓库保持私有，安装包发布到独立的\*\*公开\*\*仓库[^。]*。",
-         "安装包发布到独立渠道。")
-
-    # 7. 手工发版步骤里的 crates/pro 与"自动跳过"说明（注意：带反引号！）
-    _sub(
-        r"需同步 `src-ui/package\.json`、`src-ui/package-lock\.json`、"
-        r"`src-tauri/Cargo\.toml`、`crates/core/Cargo\.toml`、`crates/pro/Cargo\.toml`"
-        r" 与根目录 `Cargo\.lock`（公开仓没有 `crates/pro`，`check-version\.mjs` 会自动跳过）",
-        "需同步 `src-ui/package.json`、`src-ui/package-lock.json`、"
-        "`src-tauri/Cargo.toml`、`crates/core/Cargo.toml` 与根目录 `Cargo.lock`",
-    )
-
-    # 8. 整个"授权与许可"章节
-    _replace_section(
-        "授权与许可",
-        "本仓库全部代码依据 [GNU AGPL-3.0](LICENSE) 授权。您可以自由使用、修改和分发，"
-        "但在分发修改后的版本或通过网络提供服务时，需按 AGPL 第 6/13 条提供完整对应源码。\n\n"
-        "- 第三方组件及许可证见 [NOTICE](NOTICE)\n"
-        "- 提交贡献前请阅读 [CLA.md](CLA.md)，首次提交需在 Pull Request 中签署\n"
-        "- 完整功能版本包含额外的商业许可组件，安装包与商业许可请通过 [项目官网](https://gitee.com/auroraLZDF/auroradb-releases) 获取",
-    )
-
-    # 9. 删除结尾单独的激活码签发工具段落
-    _sub(r"^激活码签发工具位于私有主仓的 [^\n]*\n?", "", flags=_re.M)
-
-    # 10. 功能列表与下一章节之间可能有多余空行
-    _sub(r"\n{3,}", "\n\n")
-
-    return text
-
-
-(root / "README.md").write_text(clean_readme((root / "README.md").read_text(encoding="utf-8")),
-                                 encoding="utf-8")
 PY
-ok "已清理 README 中的私有发行细节"
 ok "已移除专业版 workspace 成员与 Cargo feature"
+
+# 公开内容检查：内部词 + Markdown 相对链接。
+# 目标目录的 README/ROADMAP/docs 由公开仓独立维护，必须保证不含内部信息；
+# 任一检查失败都中止导出（此时尚未 push，可修复后重跑）。
+python3 - "$TARGET" <<'PY'
+import pathlib
+import re
+import sys
+
+root = pathlib.Path(sys.argv[1])
+INTERNAL_WORDS = ["私有", "主仓", "export-public", "license-gen", "Gitee 私有"]
+
+files = [root / "README.md", root / "ROADMAP.md"]
+files += sorted((root / "docs").glob("*.md"))
+
+failures = []
+for file in files:
+    if not file.is_file():
+        failures.append(f"缺少公开文档：{file.relative_to(root)}")
+        continue
+    text = file.read_text(encoding="utf-8")
+    for word in INTERNAL_WORDS:
+        if word in text:
+            failures.append(f"{file.relative_to(root)} 含内部词「{word}」")
+    for match in re.finditer(r"\[[^\]]*\]\(([^)]+)\)", text):
+        link = match.group(1).strip().split(" ", 1)[0]
+        if link.startswith("<") and link.endswith(">"):
+            link = link[1:-1]
+        # 跳过 URL、锚点、mailto 等非仓库内链接
+        if re.match(r"^[a-z][a-z0-9+.-]*:", link, re.I) or link.startswith("#"):
+            continue
+        path = link.split("#", 1)[0]
+        if not path:
+            continue
+        target = (file.parent / path).resolve()
+        if not target.exists():
+            failures.append(f"{file.relative_to(root)} 相对链接不存在：{link}")
+
+if failures:
+    print("\n".join(f"  ✗ {item}" for item in failures), file=sys.stderr)
+    sys.exit(1)
+PY
+ok "公开文档检查通过（无内部词、相对链接均存在）"
+
+[[ -f "$TARGET/.github/workflows/ci.yml" ]] \
+    || fail "导出后缺少公开仓 CI：$TARGET/.github/workflows/ci.yml（该文件不应被导出覆盖，请检查）"
+ok "已保留公开仓 CI（.github/workflows/ci.yml）"
 
 # 重新解析依赖：移除 auroradb-pro 及其独占的传递依赖
 rm -f "$TARGET/Cargo.lock"

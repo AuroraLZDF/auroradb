@@ -31,6 +31,19 @@ pub fn enforce(mode: SafetyMode, sql: &str) -> Result<()> {
         return Ok(());
     }
 
+    enforce_statement(mode, sql)?;
+
+    // MySQL 可执行注释（`/*!...*/`、`/*!50000 ...*/`）会被服务端当作真实 SQL 执行，
+    // 但普通切分/解析会把整段当作注释丢弃；这里逐个取出注释体，按普通语句同样校验，
+    // 否则 `/*!50000 DROP TABLE t*/` 可以绕过只读/安全模式。
+    for body in executable_comment_bodies(sql) {
+        enforce_statement(mode, &body)?;
+    }
+    Ok(())
+}
+
+/// 对一段普通 SQL 文本执行模式校验（不含可执行注释的展开）
+fn enforce_statement(mode: SafetyMode, sql: &str) -> Result<()> {
     // 破坏性语句用文本级判定，解析成功与否都要拦（`TRUNCATE`/`DROP` 等
     // 在 sqlparser 里没有统一的"危险"标记，逐变体匹配容易漏）
     if has_destructive_statement(sql) {
@@ -44,6 +57,98 @@ pub fn enforce(mode: SafetyMode, sql: &str) -> Result<()> {
         Ok(statements) => check_statements(mode, &statements),
         Err(_) => check_by_keyword(mode, sql),
     }
+}
+
+/// 提取 MySQL 可执行注释（`/*! ... */`，版本号可选）中的语句体。
+///
+/// 扫描时尊重字符串/反引号与行注释，避免把字符串或普通注释里的 `/*!` 误判成可执行注释。
+fn executable_comment_bodies(sql: &str) -> Vec<String> {
+    let mut bodies = Vec::new();
+    let mut quote: Option<char> = None;
+    let mut chars = sql.char_indices().peekable();
+
+    while let Some((_, c)) = chars.next() {
+        if let Some(q) = quote {
+            if c == '\\' && q != '`' {
+                // 字符串里的转义字符：连同下一个字符一起跳过（MySQL 默认开启反斜杠转义）
+                chars.next();
+            } else if c == q {
+                // 连续两个引号是转义后的引号本身，不结束字符串
+                if chars.peek().map(|&(_, next)| next) == Some(q) {
+                    chars.next();
+                } else {
+                    quote = None;
+                }
+            }
+            continue;
+        }
+
+        match c {
+            '\'' | '"' | '`' => quote = Some(c),
+            '-' => {
+                let Some(&(_, next)) = chars.peek() else {
+                    continue;
+                };
+                if next != '-' {
+                    continue;
+                }
+                chars.next();
+                // MySQL 的 `--` 注释要求后随空白；`1--2` 不是注释，不能把后文当成注释跳过
+                let comment_start = chars.peek().map_or(true, |&(_, next)| next.is_whitespace());
+                if comment_start {
+                    for (_, next) in chars.by_ref() {
+                        if next == '\n' {
+                            break;
+                        }
+                    }
+                }
+            }
+            '#' => {
+                for (_, next) in chars.by_ref() {
+                    if next == '\n' {
+                        break;
+                    }
+                }
+            }
+            '/' => {
+                if chars.peek().map(|&(_, next)| next) != Some('*') {
+                    continue;
+                }
+                chars.next();
+                if chars.peek().map(|&(_, next)| next) == Some('!') {
+                    // 可执行注释：跳过 `!` 与可选版本号，记录到 `*/` 为止的语句体
+                    chars.next();
+                    while chars.peek().is_some_and(|&(_, next)| next.is_ascii_digit()) {
+                        chars.next();
+                    }
+                    let body_start = chars.peek().map_or(sql.len(), |&(index, _)| index);
+                    let mut body_end = sql.len();
+                    while let Some((index, next)) = chars.next() {
+                        if next == '*'
+                            && chars.peek().map(|&(_, after)| after) == Some('/')
+                        {
+                            chars.next();
+                            body_end = index;
+                            break;
+                        }
+                    }
+                    bodies.push(sql[body_start..body_end].to_string());
+                } else {
+                    // 普通块注释：整段跳过（其中的 `/*!` 不会被服务端执行）
+                    let mut prev = '\0';
+                    for (_, next) in chars.by_ref() {
+                        if prev == '*' && next == '/' {
+                            break;
+                        }
+                        prev = next;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    bodies
 }
 
 /// 安全模式下额外拦截的破坏性语句：
@@ -478,5 +583,54 @@ mod tests {
     fn leading_keyword_skips_comments() {
         assert_eq!(leading_keyword("  -- note\n DELETE FROM t"), "DELETE");
         assert_eq!(leading_keyword("/* c */ update t set a = 1"), "UPDATE");
+    }
+
+    #[test]
+    fn executable_comments_are_validated_like_statements() {
+        // 服务端会执行 `/*!...*/` 里的内容，只读/安全模式必须同样拦截
+        for sql in [
+            "/*!50000 DROP TABLE t*/",
+            "/*!50000 TRUNCATE TABLE t*/",
+            "/*! DROP DATABASE demo */",
+            "SELECT 1; /*!50000 DROP TABLE t*/",
+        ] {
+            let err = enforce(SafetyMode::ReadOnly, sql).unwrap_err().to_string();
+            assert_eq!(err, READ_ONLY_MESSAGE, "read-only should block: {sql}");
+        }
+
+        for sql in [
+            "/*!50000 TRUNCATE TABLE t*/",
+            "/*!50000 DROP TABLE t*/",
+            "/*!50000 DELETE FROM t*/",
+        ] {
+            let err = enforce(SafetyMode::Safe, sql).unwrap_err().to_string();
+            assert_eq!(err, SAFE_MODE_MESSAGE, "safe should block: {sql}");
+        }
+    }
+
+    #[test]
+    fn executable_comments_allow_safe_statements() {
+        for sql in [
+            "/*!40101 SET NAMES utf8 */",
+            "/*!40101 SET NAMES utf8 */; SELECT 1",
+            "SELECT 1; /*!40101 SET NAMES utf8 */",
+        ] {
+            assert!(enforce(SafetyMode::ReadOnly, sql).is_ok(), "should allow: {sql}");
+            assert!(enforce(SafetyMode::Safe, sql).is_ok(), "should allow: {sql}");
+        }
+    }
+
+    #[test]
+    fn executable_comment_markers_inside_literals_and_comments_are_ignored() {
+        for sql in [
+            "SELECT '/*! DROP TABLE t */'",
+            "SELECT \"/*!50000 TRUNCATE TABLE t*/\"",
+            "SELECT 1 -- /*! DROP TABLE t */",
+            "/* 普通注释里的 /*! DROP TABLE t */ SELECT 1",
+            "SELECT `/*! DROP TABLE t */` FROM t",
+        ] {
+            assert!(enforce(SafetyMode::ReadOnly, sql).is_ok(), "should allow: {sql}");
+            assert!(enforce(SafetyMode::Safe, sql).is_ok(), "should allow: {sql}");
+        }
     }
 }

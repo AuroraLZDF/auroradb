@@ -8,7 +8,8 @@
 //!
 //! ## 一码一机
 //! payload 中的 `fingerprint` 必须与当前机器指纹一致，把激活码复制到其他机器无效。
-//! 指纹由 `/etc/machine-id`、DMI `product_uuid` 派生（极简系统回退到主机名）。
+//! 指纹由 `/etc/machine-id`、DMI `product_uuid` 派生（Windows 用注册表 MachineGuid，
+//! 极简系统回退到主机名 + 用户名）。
 //!
 //! ## 免费版限制
 //! 未激活时 `edition = "free"`，`ensure()` 会拒绝专业版功能；基础查询不受影响。
@@ -237,9 +238,27 @@ impl Default for LicenseManager {
 
 /// 机器指纹：`XXXX-XXXX-XXXX-XXXX`，由机器标识做 SHA-256 后取前 8 字节
 pub fn machine_fingerprint() -> String {
-    let mut hasher = Sha256::new();
-    let mut found = false;
+    fingerprint_from_parts(&machine_identity_parts())
+}
 
+/// 采集当前平台的机器标识片段。
+///
+/// 优先使用不可伪造的唯一标识（Linux 的 machine-id/DMI UUID、Windows 的注册表 MachineGuid）；
+/// 极简环境读不到时退回主机名/用户名等组合，避免所有机器得到同一指纹。
+fn machine_identity_parts() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        windows_identity_parts()
+    }
+    #[cfg(not(windows))]
+    {
+        unix_identity_parts()
+    }
+}
+
+#[cfg(not(windows))]
+fn unix_identity_parts() -> Vec<String> {
+    let mut parts = Vec::new();
     // 依次纳入可用的机器标识：Linux machine-id 与主板 UUID 组合后换机可感知
     for path in [
         "/etc/machine-id",
@@ -249,21 +268,94 @@ pub fn machine_fingerprint() -> String {
         if let Ok(raw) = std::fs::read_to_string(path) {
             let value = raw.trim();
             if !value.is_empty() {
-                hasher.update(value.as_bytes());
-                hasher.update(b"|");
-                found = true;
+                parts.push(value.to_string());
             }
         }
     }
 
     // 兜底：极简系统上没有任何机器标识时，用主机名 + 用户名避免所有机器得到同一指纹
-    if !found {
+    if parts.is_empty() {
         let host = std::env::var("HOSTNAME")
             .ok()
             .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
             .unwrap_or_default();
         let user = std::env::var("USER").unwrap_or_default();
-        hasher.update(format!("{}|{}|auroradb", host.trim(), user).as_bytes());
+        parts.push(format!("{}|{}|auroradb", host.trim(), user));
+    }
+    parts
+}
+
+/// Windows 机器标识：优先注册表 `MachineGuid`，读不到再退回计算机名/用户名/CPU 标识。
+#[cfg(windows)]
+fn windows_identity_parts() -> Vec<String> {
+    // MachineGuid 在系统安装时生成，重装系统才会变化，是 Windows 上最稳定的机器标识
+    if let Some(guid) = windows_machine_guid() {
+        return vec![guid];
+    }
+    // Windows 没有 HOSTNAME/USER，改用系统自带的环境变量
+    ["COMPUTERNAME", "USERNAME", "PROCESSOR_IDENTIFIER"]
+        .iter()
+        .map(|key| std::env::var(key).unwrap_or_default())
+        .filter(|value| !value.trim().is_empty())
+        .collect()
+}
+
+#[cfg(windows)]
+fn windows_machine_guid() -> Option<String> {
+    use std::os::windows::process::CommandExt;
+
+    // CREATE_NO_WINDOW：reg.exe 是控制台程序，不加该标志会闪出黑窗口
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let output = std::process::Command::new("reg")
+        .args([
+            "query",
+            r"HKLM\SOFTWARE\Microsoft\Cryptography",
+            "/v",
+            "MachineGuid",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_reg_sz(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// 从 `reg query` 输出中解析 `REG_SZ` 值（单独拆出便于跨平台单测）。
+#[cfg(any(windows, test))]
+fn parse_reg_sz(output: &str) -> Option<String> {
+    // 输出形如：`    MachineGuid    REG_SZ    1234abcd-...`
+    output.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        if fields.next()? != "MachineGuid" {
+            return None;
+        }
+        if fields.next()? != "REG_SZ" {
+            return None;
+        }
+        fields.next().map(str::to_string)
+    })
+}
+
+/// 由机器标识片段派生指纹：同一组片段总是得到同一指纹。
+///
+/// 空白片段会被忽略；空输入也有确定性兜底，保证指纹稳定且不会 panic。
+fn fingerprint_from_parts(parts: &[String]) -> String {
+    let mut hasher = Sha256::new();
+    let mut hashed_any = false;
+    for part in parts {
+        let value = part.trim();
+        if value.is_empty() {
+            continue;
+        }
+        hasher.update(value.as_bytes());
+        hasher.update(b"|");
+        hashed_any = true;
+    }
+    if !hashed_any {
+        // 兜底：极简系统连主机名/用户名都读不到时，仍然给出确定性指纹
+        hasher.update(b"auroradb-empty");
     }
 
     let digest = hasher.finalize();
@@ -485,6 +577,53 @@ mod tests {
         assert_eq!(fingerprint.len(), 19, "got: {fingerprint}");
         assert_eq!(fingerprint.matches('-').count(), 3, "got: {fingerprint}");
         assert_eq!(fingerprint, machine_fingerprint());
+    }
+
+    #[test]
+    fn fingerprint_from_parts_is_stable_and_formatted() {
+        let parts = vec!["machine-a".to_string(), "board-b".to_string()];
+        let fingerprint = fingerprint_from_parts(&parts);
+        assert_eq!(fingerprint, fingerprint_from_parts(&parts));
+        assert_eq!(fingerprint.len(), 19, "got: {fingerprint}");
+        assert_eq!(fingerprint.matches('-').count(), 3, "got: {fingerprint}");
+        assert!(
+            fingerprint
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() || c == '-'),
+            "got: {fingerprint}"
+        );
+    }
+
+    #[test]
+    fn fingerprint_from_parts_differs_by_identity() {
+        let a = fingerprint_from_parts(&["machine-a".to_string()]);
+        let b = fingerprint_from_parts(&["machine-b".to_string()]);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn fingerprint_from_parts_empty_is_deterministic() {
+        let empty = fingerprint_from_parts(&[]);
+        assert_eq!(empty, fingerprint_from_parts(&[]));
+        assert_eq!(empty.len(), 19, "got: {empty}");
+        // 空白片段与空输入等价，避免环境变量为空时指纹抖动
+        assert_eq!(
+            empty,
+            fingerprint_from_parts(&[" ".to_string(), "\t".to_string()])
+        );
+        // 空输入兜底不能与真实机器标识得到同一个指纹
+        assert_ne!(empty, fingerprint_from_parts(&["machine-a".to_string()]));
+    }
+
+    #[test]
+    fn parse_reg_sz_reads_machine_guid() {
+        let output = "\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Cryptography\r\n    MachineGuid    REG_SZ    3f2a1b4c-5d6e-7f80-9a1b-2c3d4e5f6a7b\r\n\r\n";
+        assert_eq!(
+            parse_reg_sz(output).as_deref(),
+            Some("3f2a1b4c-5d6e-7f80-9a1b-2c3d4e5f6a7b")
+        );
+        assert_eq!(parse_reg_sz("MachineGuid    REG_DWORD    0x1"), None);
+        assert_eq!(parse_reg_sz(""), None);
     }
 
     fn temp_path() -> PathBuf {

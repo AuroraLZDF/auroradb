@@ -1,7 +1,7 @@
 [package]
 name = "auroradb"
 version = "2.0.0"
-description = "A MySQL database client with connection stability"
+description = "A MySQL / PostgreSQL database client with connection stability"
 authors = ["Developer"]
 edition = "2021"
 rust-version = "1.77.2"

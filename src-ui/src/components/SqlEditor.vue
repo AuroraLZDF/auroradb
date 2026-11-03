@@ -281,7 +281,7 @@
         <button
           v-if="currentHistory.length > 0"
           class="btn-clear-history block"
-          @click="queryLibrary.clearHistory(currentConnectionId)"
+          @click="queryLibrary.clearHistory(effectiveConnectionId)"
         >
           {{ t('sqlEditor.clearConnectionHistory') }}
         </button>
@@ -336,6 +336,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick, reactive, watch } from 'vue'
 import { useConnectionStore } from '@/stores/connection'
+import { resolveTabConnectionId } from '@/utils/tabConnection'
 import { useDataBrowserStore } from '@/stores/dataBrowser'
 import { useEditorTabsStore } from '@/stores/editorTabs'
 import { useLicenseStore } from '@/stores/license'
@@ -369,6 +370,8 @@ const completionEngine = useSqlCompletion()
 // Props
 const props = defineProps<{
   tabId?: string
+  /** 本 Tab 绑定的连接 id；为空时回退全局当前连接 */
+  connectionId?: string
 }>()
 
 // 确保 store 中存在这个 tab 的内容记录
@@ -492,11 +495,20 @@ const databaseOptions = computed(() =>
   databases.value.map(db => ({ label: db.name, value: db.name }))
 )
 
-// 获取当前连接的连接ID
-const currentConnectionId = computed(() => connStore.currentConnection?.id || '')
+// 本 Tab 实际使用的连接 id：Tab 绑定的连接优先（prop），未绑定时回退全局当前连接
+const effectiveConnectionId = computed(() =>
+  resolveTabConnectionId({ connectionId: props.connectionId }, connStore.currentConnection?.id)
+)
+
+// 连接对象：优先按 id 从活跃连接中查找，连接已断开时回退全局当前连接
+const effectiveConnection = computed(
+  () =>
+    connStore.activeConnections.find(conn => conn.id === effectiveConnectionId.value) ??
+    connStore.currentConnection,
+)
 
 // 当前连接是否为 PostgreSQL（PG 的「库」在连接时固定，下拉里这一层应为 schema）
-const isPostgres = computed(() => connStore.currentConnection?.driver === 'postgres')
+const isPostgres = computed(() => effectiveConnection.value?.driver === 'postgres')
 
 // 默认选中当前正在浏览的数据库
 const selectedDatabase = computed(() => {
@@ -530,13 +542,13 @@ function resolveDatabase(): string {
   return (
     selectedDatabase.value ||
     browserStore.currentDatabase ||
-    connStore.currentConnection?.database ||
+    effectiveConnection.value?.database ||
     ''
   )
 }
 
 watch(
-  [currentConnectionId, currentDatabaseName],
+  [effectiveConnectionId, currentDatabaseName],
   ([connectionId, database]) => {
     // PostgreSQL 尚未提供 schema 快照，补全器只在 MySQL 下加载
     if (isPostgres.value) return
@@ -548,7 +560,7 @@ watch(
 )
 
 // 切换连接时清空手动选择，避免沿用上一条连接的库/schema 名
-watch(currentConnectionId, () => {
+watch(effectiveConnectionId, () => {
   manualSelectedDatabase.value = ''
 })
 
@@ -656,7 +668,7 @@ function setLoading(value: boolean) {
 
 // 执行 SQL
 async function executeQuery() {
-  if (!sql.value.trim() || !currentConnectionId.value) return
+  if (!sql.value.trim() || !effectiveConnectionId.value) return
   // 上一次查询还没结束时再次触发（F5 连按、按钮重复点击）会并发发出请求，
   // 后返回的旧结果可能覆盖新结果，这里直接忽略
   if (loading.value) return
@@ -670,7 +682,7 @@ async function executeQuery() {
   }
 
   // 安全模式下对高风险语句二次确认（无 WHERE 的 UPDATE/DELETE 由后端直接拦截）
-  if (connStore.currentConnection?.safety_mode === 'safe') {
+  if (effectiveConnection.value?.safety_mode === 'safe') {
     const dangerous = findDangerousStatements(sql.value)
     if (
       dangerous.length > 0 &&
@@ -712,7 +724,7 @@ async function executeQuery() {
     for (const statement of statements) {
       try {
         const response = await connStore.executeSql(
-          currentConnectionId.value,
+          effectiveConnectionId.value,
           databaseName,
           statement,
         ) as QueryResultPayload
@@ -774,9 +786,9 @@ async function executeQuery() {
 
 // 取消执行
 async function cancelQuery() {
-  if (!currentConnectionId.value) return
+  if (!effectiveConnectionId.value) return
   try {
-    const rolledBack = await connStore.cancelQuery(currentConnectionId.value)
+    const rolledBack = await connStore.cancelQuery(effectiveConnectionId.value)
     // 取消会丢弃被取消的事务连接（自动回滚），必须显式提示，避免用户以为事务还在
     if (rolledBack) {
       globalToast.warning(t('sqlEditor.transactionRolledBack'))
@@ -788,7 +800,7 @@ async function cancelQuery() {
 
 // EXPLAIN 执行计划（Pro 功能）
 async function explainSql() {
-  if (!sql.value.trim() || !currentConnectionId.value) return
+  if (!sql.value.trim() || !effectiveConnectionId.value) return
   if (!hasProUi) {
     globalToast.warning(t('license.proUnavailable'))
     return
@@ -804,7 +816,7 @@ async function explainSql() {
   try {
     const dbName = resolveDatabase()
     const response = await invoke<ExplainPlan>('explain_sql', {
-      connectionId: currentConnectionId.value,
+      connectionId: effectiveConnectionId.value,
       database: dbName,
       sql: sql.value,
     })
@@ -962,7 +974,7 @@ function viewResultCell() {
 }
 
 // ===== 查询历史 / 已保存查询 =====
-const currentHistory = computed(() => queryLibrary.historyFor(currentConnectionId.value))
+const currentHistory = computed(() => queryLibrary.historyFor(effectiveConnectionId.value))
 
 const filteredHistory = computed(() => {
   const keyword = librarySearch.value.trim().toLowerCase()
@@ -1010,7 +1022,7 @@ function loadSavedQuery(item: SavedQuery) {
 
 /** 记录一次执行结果（成功/失败都留痕，便于回溯） */
 function recordHistory(success: boolean, errorMessage?: string, durationMs?: number) {
-  const connectionId = currentConnectionId.value
+  const connectionId = effectiveConnectionId.value
   if (!connectionId) return
   queryLibrary.addHistory({
     sql: sql.value,
@@ -1051,7 +1063,7 @@ function leadingUseDatabase(text: string): string {
 }
 
 function refreshSchema() {
-  const connectionId = currentConnectionId.value
+  const connectionId = effectiveConnectionId.value
   const database = currentDatabaseName.value
   // PostgreSQL 尚未提供 schema 快照
   if (!isPostgres.value && connectionId && database) {
@@ -1317,7 +1329,7 @@ function exportToSQL(
 ) {
   const tableName = 'exported_data'
   // MySQL 与 PG 的标识符引用、字符串转义、二进制字面量都不同，统一交给 formatSqlValue
-  const driver = connStore.currentConnection?.driver === 'postgres' ? 'postgres' : 'mysql'
+  const driver = effectiveConnection.value?.driver === 'postgres' ? 'postgres' : 'mysql'
   const columnNames = columns.map(col => quoteIdentifier(col.name, driver)).join(', ')
 
   const insertStatements = rows.map(row => {

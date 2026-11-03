@@ -354,7 +354,7 @@
 <script setup lang="ts">
 import { ref, computed, reactive, onMounted, onUnmounted, watch } from 'vue'
 import { quoteIdentifier } from '@/utils/sql'
-import { t, toggleLocale } from '@/i18n'
+import { t, toggleLocale, locale } from '@/i18n'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
@@ -1670,7 +1670,7 @@ function registerCommands() {
     id: 'refresh-object-tree',
     title: t('commandPalette.refreshObjectTree'),
     category: t('commandPalette.categoryNav'),
-    shortcut: 'Ctrl+R',
+    // 未绑定全局快捷键（Ctrl+R 可能在 WebView 中触发重载，不抢占），不显示假提示
     available: () => !!currentConnection.value,
     action: () => {
       if (currentConnection.value) {
@@ -1740,14 +1740,62 @@ function syncTableCommands() {
   for (const id of current) tableCommandIds.add(id)
 }
 
+// 语言切换后重建命令面板：registerCommands 里的 t() 是注册时快照，不重建会停留在旧语言
+watch(locale, () => {
+  registry.reset()
+  tableCommandIds.clear()
+  registerCommands()
+  syncTableCommands()
+})
+
+/** 焦点的可编辑判定：`el?.closest` 在个别宿主环境（如非 Element 事件目标）不存在 */
+function isEditableTarget(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null
+  if (!el || typeof el.closest !== 'function') return false
+  return el.closest('input, textarea, select, [contenteditable="true"]') !== null
+}
+
+/** 焦点在数据表格内时，让位给 DataTable 自己的快捷键（Ctrl+N 新增行 / Ctrl+S 保存） */
+function isInDataTable(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null
+  if (!el || typeof el.closest !== 'function') return false
+  return el.closest('.data-table') !== null
+}
+
 function onGlobalKeydown(e: KeyboardEvent) {
+  const mod = e.ctrlKey || e.metaKey
   // Ctrl/Cmd+K 打开/关闭命令面板
-  if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+  if (mod && (e.key === 'k' || e.key === 'K')) {
     e.preventDefault()
     if (registry.open) {
       registry.closePalette()
     } else {
       registry.openPalette()
+    }
+  }
+  // 命令面板里展示的 Ctrl+N / Ctrl+Shift+T / Ctrl+Shift+L 在此真实绑定，
+  // commandRegistry 的 shortcut 字段只登记这些已经生效的键
+  if (
+    mod &&
+    !e.altKey &&
+    !isEditableTarget(e.target) &&
+    !isInDataTable(e.target) &&
+    !hasOpenModal.value &&
+    !registry.open
+  ) {
+    const key = e.key.toLowerCase()
+    if (e.shiftKey) {
+      if (key === 't' && registry.execute('new-console')) {
+        e.preventDefault()
+        return
+      }
+      if (key === 'l' && registry.execute('toggle-theme')) {
+        e.preventDefault()
+        return
+      }
+    } else if (key === 'n' && registry.execute('new-query')) {
+      e.preventDefault()
+      return
     }
   }
   // 面板打开时阻止下层组件响应方向键等

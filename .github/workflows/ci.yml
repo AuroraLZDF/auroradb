@@ -66,16 +66,25 @@ jobs:
             patchelf \
             pkg-config
 
+      # tauri::generate_context!() 在编译期硬检查 frontendDist 路径存在。
+      # runner 是干净环境没跑过前端 build，所以 stub 一个空 dist 目录
+      # 让 proc macro 过校验即可（clippy 不执行 UI，不关心内容）。
+      - name: Stub frontend dist for tauri proc macro
+        run: |
+          mkdir -p src-ui/dist
+          echo '<!doctype html><html><body>ci stub</body></html>' > src-ui/dist/index.html
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: .
 
+      # 用 --workspace：只测 src-tauri 会漏掉 crates/core 与 crates/pro 的全部单测
       - name: Clippy
-        run: cargo clippy --locked --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+        run: cargo test --locked --workspace

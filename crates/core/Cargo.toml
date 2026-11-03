@@ -1,7 +1,7 @@
 [package]
 name = "auroradb-core"
 version = "2.0.0"
-description = "AuroraDB 连接、执行、元数据与本地授权核心"
+description = "AuroraDB core library: MySQL / PostgreSQL database client"
 edition = "2021"
 rust-version = "1.77.2"
 

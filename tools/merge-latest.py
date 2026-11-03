@@ -11,8 +11,14 @@ Windows 分别构建、分别发布时，不能直接用后发布平台的清单
         --platform linux-x86_64 \
         --artifact-url https://.../AuroraDB_1.0.9_amd64.AppImage \
         --signature-file AuroraDB.AppImage.sig \
+        [--artifact-sha256 <AppImage 的 SHA-256>] \
         [--deb-url https://.../AuroraDB_1.0.9_amd64.deb] \
-        [--deb-signature-file AuroraDB.deb.sig]
+        [--deb-signature-file AuroraDB.deb.sig] \
+        [--deb-sha256 <deb 的 SHA-256>]
+
+`--artifact-sha256` / `--deb-sha256` 可选：提供时才写入对应条目的 `sha256` 字段，
+缺省不写，保持与旧清单、旧发布脚本的兼容。deb 的 `sha256` 供应用内手动下载后校验
+（见 src-tauri/src/commands/update.rs 的 download_update_package）。
 
 --existing 可为：Gitee contents API 的响应（含 content 字段，自动 base64 解码）、
 纯 latest.json、空文件，或文件不存在（按全新清单处理）。
@@ -31,6 +37,16 @@ def parse_version(value):
     if len(parts) != 3 or not all(p.isdigit() for p in parts):
         return None
     return tuple(int(p) for p in parts)
+
+
+def normalize_sha256(value):
+    """校验并规范化 SHA-256：去空白、`sha256:` 前缀，统一小写十六进制。"""
+    compact = ''.join(value.split()).lower()
+    if compact.startswith('sha256:'):
+        compact = compact[len('sha256:'):]
+    if len(compact) != 64 or any(c not in '0123456789abcdef' for c in compact):
+        sys.exit(f'SHA-256 格式非法（需 64 位十六进制）: {value!r}')
+    return compact
 
 
 def load_existing(path):
@@ -75,8 +91,10 @@ def main():
     parser.add_argument('--platform', required=True)
     parser.add_argument('--artifact-url', required=True)
     parser.add_argument('--signature-file', required=True)
+    parser.add_argument('--artifact-sha256')
     parser.add_argument('--deb-url')
     parser.add_argument('--deb-signature-file')
+    parser.add_argument('--deb-sha256')
     args = parser.parse_args()
 
     version = parse_version(args.version)
@@ -107,6 +125,8 @@ def main():
                 'platforms': existing.get('platforms') or {},
             }
     platforms[args.platform] = {'signature': signature, 'url': args.artifact_url}
+    if args.artifact_sha256:
+        platforms[args.platform]['sha256'] = normalize_sha256(args.artifact_sha256)
 
     data = {
         'version': args.version,
@@ -122,7 +142,17 @@ def main():
         if args.deb_signature_file:
             with open(args.deb_signature_file, encoding='utf-8') as f:
                 deb['signature'] = f.read().strip()
+        # deb 由应用下载到本地后交给用户手动安装，必须带 SHA-256 供应用校验
+        if args.deb_sha256:
+            deb['sha256'] = normalize_sha256(args.deb_sha256)
+        else:
+            print('  警告: 未提供 --deb-sha256，应用内下载 deb 时将无法校验完整性', file=sys.stderr)
         data['deb'] = deb
+    elif existing:
+        # 本次未传 deb（如只发 Windows）：保留同 tag 的 deb 条目，避免把 Linux 的 deb 字段冲掉
+        old_deb = existing.get('deb')
+        if isinstance(old_deb, dict) and same_release(old_deb.get('url'), args.tag):
+            data['deb'] = old_deb
 
     with open(args.output, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)

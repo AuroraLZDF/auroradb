@@ -146,6 +146,19 @@ fn is_line_comment_start(chars: &std::iter::Peekable<std::str::Chars<'_>>) -> bo
 /// 字符串字面量与反引号标识符内的内容原样保留。
 /// 注释被替换为一个空格，避免前后 token 直接粘连。
 fn strip_sql_comments(sql: &str) -> String {
+    strip_comments(sql, false)
+}
+
+/// 剥离普通注释，但保留 MySQL 可执行注释（`/*! ... */`，版本号可选）里的语句体。
+///
+/// 可执行注释会被服务端当作真实 SQL 执行，分类与结构变更判断不能像普通注释一样整段丢弃；
+/// 这里只去掉注释外壳（`/*!`、版本号与结尾 `*/`），保留中间文本参与后续判断。
+fn strip_comments_keep_executable(sql: &str) -> String {
+    strip_comments(sql, true)
+}
+
+/// 剥离注释的公共实现；`keep_executable` 为 true 时保留可执行注释体。
+fn strip_comments(sql: &str, keep_executable: bool) -> String {
     let mut result = String::with_capacity(sql.len());
     let mut chars = sql.chars().peekable();
 
@@ -154,8 +167,21 @@ fn strip_sql_comments(sql: &str) -> String {
     let mut in_backtick = false;
     let mut in_line_comment = false;
     let mut in_block_comment = false;
+    let mut in_executable_comment = false;
 
     while let Some(c) = chars.next() {
+        // 可执行注释体原样保留（去掉结尾的 `*/`），供注释感知的分类逻辑使用
+        if in_executable_comment {
+            if c == '*' && chars.peek() == Some(&'/') {
+                chars.next();
+                in_executable_comment = false;
+                result.push(' ');
+            } else {
+                result.push(c);
+            }
+            continue;
+        }
+
         if in_line_comment {
             if c == '\n' {
                 in_line_comment = false;
@@ -216,7 +242,17 @@ fn strip_sql_comments(sql: &str) -> String {
             }
             if c == '/' && chars.peek() == Some(&'*') {
                 chars.next();
-                in_block_comment = true;
+                if keep_executable && chars.peek() == Some(&'!') {
+                    // 可执行注释：跳过 `!` 与可选版本号，保留语句体
+                    chars.next();
+                    while chars.peek().is_some_and(|next| next.is_ascii_digit()) {
+                        chars.next();
+                    }
+                    in_executable_comment = true;
+                    result.push(' ');
+                } else {
+                    in_block_comment = true;
+                }
                 continue;
             }
         }
@@ -227,12 +263,91 @@ fn strip_sql_comments(sql: &str) -> String {
     result
 }
 
+/// SQL 语句的执行路径粗分类
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqlKind {
+    /// 会话级语句：`USE` / `SET` / `RESET`，必须固定在一条物理连接上执行
+    Session,
+    /// 结构变更语句：`CREATE` / `ALTER` / `DROP` / `RENAME` / `TRUNCATE` 等
+    Ddl,
+    /// 数据变更语句：`INSERT` / `UPDATE` / `DELETE` / `REPLACE`，含 `WITH` 前缀
+    Dml,
+    /// 需要数据库上下文的元数据语句：`SHOW` / `DESC` / `DESCRIBE`
+    NeedsDbContext,
+    /// 其他语句（普通查询等）
+    Query,
+}
+
+/// 对 SQL 做执行路径分类：先剥离注释取首关键字，`WITH` 前缀交给 sqlparser 判定。
+///
+/// 直接 `starts_with` 会被前缀注释（如 `/* c */ DELETE ...`）和 MySQL 可执行注释
+/// （如 `/*!40101 SET NAMES utf8 */`）误判；`WITH ... INSERT/UPDATE/DELETE` 的首关键字
+/// 也不是真实动作，需要用 sqlparser 检查查询体。多语句按第一条语句分类。
+pub fn classify_sql(sql: &str) -> SqlKind {
+    let cleaned = strip_comments_keep_executable(sql);
+    let keyword = first_keyword(&cleaned);
+    if keyword == "WITH" {
+        return classify_with_statement(sql);
+    }
+    classify_keyword(&keyword)
+}
+
+/// 按首个关键字分类（`WITH` 前缀不适用）
+fn classify_keyword(keyword: &str) -> SqlKind {
+    match keyword {
+        "USE" | "SET" | "RESET" => SqlKind::Session,
+        "SHOW" | "DESC" | "DESCRIBE" => SqlKind::NeedsDbContext,
+        "INSERT" | "UPDATE" | "DELETE" | "REPLACE" => SqlKind::Dml,
+        "CREATE" | "ALTER" | "DROP" | "RENAME" | "TRUNCATE" | "GRANT" | "REVOKE" => SqlKind::Ddl,
+        _ => SqlKind::Query,
+    }
+}
+
+/// `WITH` 前缀的真实动作在 CTE 之后：用 sqlparser 解析查询体判定
+fn classify_with_statement(sql: &str) -> SqlKind {
+    use sqlparser::ast::{SetExpr, Statement};
+    use sqlparser::dialect::MySqlDialect;
+    use sqlparser::parser::Parser;
+
+    let Ok(statements) = Parser::parse_sql(&MySqlDialect {}, sql) else {
+        // 解析失败时无法判断 CTE 之后的动作，按普通查询处理（安全校验另有 fail-closed 逻辑）
+        return SqlKind::Query;
+    };
+    for statement in &statements {
+        match statement {
+            Statement::Query(query) => {
+                if matches!(
+                    query.body.as_ref(),
+                    SetExpr::Insert(_) | SetExpr::Update(_) | SetExpr::Delete(_)
+                ) {
+                    return SqlKind::Dml;
+                }
+            }
+            Statement::Insert(_) | Statement::Update(_) | Statement::Delete(_) => {
+                return SqlKind::Dml;
+            }
+            _ => {}
+        }
+    }
+    SqlKind::Query
+}
+
+/// 取文本中的首个关键字（大写）；调用前应已剥离注释
+fn first_keyword(sql: &str) -> String {
+    sql.trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect::<String>()
+        .to_uppercase()
+}
+
 /// 判断 SQL 是否会改变库/表结构（DDL）。
 ///
 /// 用于执行成功后失效元数据缓存：对象树与表结构有 30 秒 TTL，
 /// 建表/删表后若不失效，界面刷新会拿到旧快照。
 pub fn is_schema_changing(sql: &str) -> bool {
-    let upper = sql.trim_start().to_uppercase();
+    // 注释可能出现在 DDL 之前，直接 trim_start 会漏判；先剥离注释（保留可执行注释体）
+    let upper = strip_comments_keep_executable(sql).trim_start().to_uppercase();
     const PREFIXES: &[&str] = &[
         "CREATE TABLE",
         "CREATE TEMPORARY TABLE",
@@ -461,8 +576,8 @@ pub fn split_sql_statements(sql: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_schema_changing, leading_use_database, rewrite_table_names, split_sql_statements,
-        strip_sql_comments,
+        classify_sql, is_schema_changing, leading_use_database, rewrite_table_names,
+        split_sql_statements, strip_sql_comments, SqlKind,
     };
     use crate::connection::driver::DriverKind;
 
@@ -682,9 +797,48 @@ mod tests {
         assert!(is_schema_changing("ALTER TABLE `t` ADD COLUMN c INT"));
         assert!(is_schema_changing("CREATE OR REPLACE VIEW v AS SELECT 1"));
         assert!(is_schema_changing("RENAME TABLE a TO b"));
+        // 前缀注释（普通注释/可执行注释）不影响判断
+        assert!(is_schema_changing("-- 建表\nCREATE TABLE `t` (id INT)"));
+        assert!(is_schema_changing("/* c */ DROP TABLE `t`"));
+        assert!(is_schema_changing("/*!50000 CREATE TABLE `t` (id INT)*/"));
         assert!(!is_schema_changing("SELECT * FROM t"));
         assert!(!is_schema_changing("INSERT INTO t VALUES (1)"));
         assert!(!is_schema_changing("TRUNCATE TABLE t"));
+        assert!(!is_schema_changing("/*!40101 SET NAMES utf8 */"));
+    }
+
+    #[test]
+    fn test_classify_sql() {
+        // 注释前缀不能影响首关键字判定
+        assert_eq!(
+            classify_sql("/* c */ CREATE TABLE t (id INT)"),
+            SqlKind::Ddl
+        );
+        assert_eq!(
+            classify_sql("-- 注释\nDELETE FROM t WHERE id = 1"),
+            SqlKind::Dml
+        );
+        // WITH 前缀看查询体真实动作
+        assert_eq!(
+            classify_sql("WITH x AS (SELECT 1) INSERT INTO t SELECT * FROM x"),
+            SqlKind::Dml
+        );
+        assert_eq!(
+            classify_sql("WITH x AS (SELECT 1) SELECT * FROM x"),
+            SqlKind::Query
+        );
+        // 元数据语句需要数据库上下文
+        assert_eq!(classify_sql("SHOW TABLES"), SqlKind::NeedsDbContext);
+        assert_eq!(classify_sql("DESC t"), SqlKind::NeedsDbContext);
+        // MySQL 可执行注释按真实语句分类
+        assert_eq!(classify_sql("/*!40101 SET NAMES utf8*/"), SqlKind::Session);
+        assert_eq!(classify_sql("/*!50000 DROP TABLE t*/"), SqlKind::Ddl);
+        // 常见语句分类
+        assert_eq!(classify_sql("USE demo"), SqlKind::Session);
+        assert_eq!(classify_sql("REPLACE INTO t VALUES (1)"), SqlKind::Dml);
+        assert_eq!(classify_sql("TRUNCATE TABLE t"), SqlKind::Ddl);
+        assert_eq!(classify_sql("GRANT SELECT ON *.* TO u"), SqlKind::Ddl);
+        assert_eq!(classify_sql("SELECT * FROM t"), SqlKind::Query);
     }
 
     #[test]
