@@ -613,7 +613,7 @@ impl ConnectionManager {
 
         // 解析时间
         let parse_time = |opt: Option<String>| -> Option<String> {
-            opt.and_then(|s| if s.is_empty() { None } else { Some(s) })
+            opt.filter(|s| !s.is_empty())
         };
 
         // 解析行数
@@ -638,9 +638,9 @@ impl ConnectionManager {
             indexes: index_info,
             foreign_keys: fk_info,
             create_statement: create_stmt.1,
-            engine: table_info.1.and_then(|s| if s.is_empty() { None } else { Some(s) }),
+            engine: table_info.1.filter(|s| !s.is_empty()),
             charset,
-            collation: table_info.2.and_then(|s| if s.is_empty() { None } else { Some(s) }),
+            collation: table_info.2.filter(|s| !s.is_empty()),
             row_count,
             data_size: size_info.0.and_then(|s| s.parse().ok()),
             index_size: size_info.1.and_then(|s| s.parse().ok()),

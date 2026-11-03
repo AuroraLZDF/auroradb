@@ -151,9 +151,15 @@ def root_members(text):
 
 
 def tauri_manifest(text):
+    # 1. 删掉 auroradb-pro 依赖行
     text = re.sub(r"^auroradb-pro = .*\r?\n", "", text, count=1, flags=re.M)
+    # 2. 删掉"专业版：..."注释行
     text = re.sub(r"^# 专业版：.*\r?\n", "", text, count=1, flags=re.M)
-    text = re.sub(r"^pro = .*\r?\n", "", text, count=1, flags=re.M)
+    # 3. 保留 pro 作为**空 feature**，但不再绑定 dep:auroradb-pro
+    #    —— 代码里的 #[cfg(feature = "pro")] 仍能匹配到合法 feature 名称，
+    #       不会触发 unexpected-cfgs lint；启用后无任何依赖被拉入，编译器行为和免费版一致
+    text = re.sub(r'^pro = \["dep:auroradb-pro"\]\r?\n', 'pro = []\n', text, count=1, flags=re.M)
+    # 4. default 里去掉 pro（公开仓默认免费版）
     return text.replace('default = ["custom-protocol", "pro"]', 'default = ["custom-protocol"]')
 
 
