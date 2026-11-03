@@ -49,10 +49,15 @@ pub const LICENSE_REQUIRED_PREFIX: &str = "LICENSE_REQUIRED:";
 
 /// 自助试用天数
 pub const TRIAL_DAYS: i64 = 14;
-/// 与 license.key 同目录的试用记录文件
+/// 与 license.key 同目录的试用主记录文件（锚点 A）
 const TRIAL_STATE_FILE: &str = "trial.state";
-/// 防删除的试用台账文件（默认放在配置目录）
+/// 配置目录下的防删除台账（锚点 B）
 const TRIAL_LEDGER_FILE: &str = "trial.ledger";
+/// 缓存目录下的隐藏 marker（锚点 C）
+const TRIAL_MARKER_FILE: &str = "trial.marker";
+/// 系统级锚点（Unix）：全局临时目录，权限不足时静默跳过
+#[cfg(not(windows))]
+const TRIAL_SYSTEM_FILE: &str = "/var/tmp/.auroradb-trial";
 /// 试用记录格式版本
 const TRIAL_RECORD_VERSION: u8 = 1;
 /// HMAC 密钥派生前缀；修改后旧记录一律失效，需随协议升级一起变更
@@ -182,10 +187,10 @@ impl LicenseStatus {
 /// 许可证状态管理器，作为 Tauri `manage` 状态注入各命令
 pub struct LicenseManager {
     path: PathBuf,
-    /// 与 license.key 同目录的自助试用记录
+    /// 与 license.key 同目录的试用主记录（锚点 A；删除后可从其它锚点恢复）
     trial_state_path: PathBuf,
-    /// 防删除的试用台账；trial.state 被删后可由此恢复
-    trial_ledger_path: PathBuf,
+    /// 多处试用记录锚点，顺序即恢复优先级
+    trial_anchors: TrialAnchors,
     public_key: [u8; 32],
     /// 已保存的激活码原文；内存中保留一份，便于运行时重新校验有效期
     code: RwLock<Option<String>>,
@@ -193,34 +198,58 @@ pub struct LicenseManager {
 }
 
 impl LicenseManager {
-    /// 使用默认存储位置 `<应用数据目录>/mysql-client/license.key`，
-    /// 试用台账放在 `<配置目录>/mysql-client/trial.ledger`
+    /// 使用默认存储位置 `<应用数据目录>/mysql-client/license.key`；
+    /// 试用记录分散在数据/配置/缓存/状态目录与系统级位置共 5 处，任一处幸存即可恢复
     pub fn new() -> Self {
         let path = dirs::data_dir()
             .map(|dir| dir.join("mysql-client").join("license.key"))
             .unwrap_or_else(|| PathBuf::from("license.key"));
-        let ledger = dirs::config_dir()
-            .map(|dir| dir.join("mysql-client").join(TRIAL_LEDGER_FILE))
-            .unwrap_or_else(|| path.with_file_name(TRIAL_LEDGER_FILE));
+        let mut anchors = TrialAnchors::default();
+        // A：与 license.key 同目录的主记录
+        if let Some(parent) = path.parent() {
+            anchors.push_file(parent.join(TRIAL_STATE_FILE));
+        }
+        // B：配置目录台账
+        if let Some(dir) = dirs::config_dir() {
+            anchors.push_file(dir.join("mysql-client").join(TRIAL_LEDGER_FILE));
+        }
+        // C：缓存目录 marker
+        if let Some(dir) = dirs::cache_dir() {
+            anchors.push_file(dir.join("mysql-client").join(TRIAL_MARKER_FILE));
+        }
+        // D：XDG 状态目录（无该目录的平台自动跳过）
+        if let Some(dir) = dirs::state_dir() {
+            anchors.push_file(dir.join("mysql-client").join(TRIAL_STATE_FILE));
+        }
+        // E：系统级锚点（Unix 固定文件；Windows 注册表）
+        anchors.push_system_anchor();
         let public_key = decode_public_key(PUBLIC_KEY_HEX).expect("内置许可证公钥格式错误");
-        Self::with_paths(path, ledger, public_key)
+        Self::with_anchors(path, anchors, public_key)
     }
 
-    /// 测试用构造：试用记录与台账都放在 license.key 所在目录
+    /// 测试用构造：5 处锚点全部收拢到 license.key 所在目录附近，
+    /// 系统级锚点也用测试目录模拟，避免污染真实 /var/tmp 或注册表
     pub fn new_in(path: impl Into<PathBuf>, public_key: [u8; 32]) -> Self {
         let path = path.into();
-        let ledger = path
+        let parent = path
             .parent()
-            .map(|dir| dir.join(TRIAL_LEDGER_FILE))
-            .unwrap_or_else(|| PathBuf::from(TRIAL_LEDGER_FILE));
-        Self::with_paths(path, ledger, public_key)
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let mut anchors = TrialAnchors::default();
+        anchors.push_file(parent.join(TRIAL_STATE_FILE));
+        anchors.push_file(parent.join(TRIAL_LEDGER_FILE));
+        anchors.push_file(parent.join(TRIAL_MARKER_FILE));
+        anchors.push_file(parent.join("state").join(TRIAL_STATE_FILE));
+        anchors.push_file(parent.join("trial.system"));
+        Self::with_anchors(path, anchors, public_key)
     }
 
-    fn with_paths(path: PathBuf, trial_ledger_path: PathBuf, public_key: [u8; 32]) -> Self {
-        let trial_state_path = path
-            .parent()
-            .map(|dir| dir.join(TRIAL_STATE_FILE))
-            .unwrap_or_else(|| PathBuf::from(TRIAL_STATE_FILE));
+    fn with_anchors(path: PathBuf, trial_anchors: TrialAnchors, public_key: [u8; 32]) -> Self {
+        let trial_state_path = trial_anchors
+            .file_paths()
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| path.with_file_name(TRIAL_STATE_FILE));
         let fingerprint = machine_fingerprint();
         let code = std::fs::read_to_string(&path)
             .ok()
@@ -231,14 +260,13 @@ impl LicenseManager {
             code.as_deref(),
             &public_key,
             &fingerprint,
-            &trial_state_path,
-            &trial_ledger_path,
+            &trial_anchors,
             Utc::now(),
         );
         Self {
             path,
             trial_state_path,
-            trial_ledger_path,
+            trial_anchors,
             public_key,
             code: RwLock::new(code),
             status: RwLock::new(status),
@@ -323,12 +351,7 @@ impl LicenseManager {
             }
         }
 
-        match evaluate_trial(
-            &self.trial_state_path,
-            &self.trial_ledger_path,
-            &fingerprint,
-            now,
-        ) {
+        match evaluate_trial(&self.trial_anchors, &fingerprint, now) {
             // 幂等：已在试用中直接返回当前状态
             TrialEvaluation::Valid { .. } => {
                 self.refresh_at(now).await;
@@ -344,7 +367,7 @@ impl LicenseManager {
                     return Err("检测到已有激活码记录，试用不可用".to_string());
                 }
                 let record = new_trial_record(&fingerprint, now);
-                write_trial_record(&self.trial_state_path, &self.trial_ledger_path, &record)?;
+                write_trial_record(&self.trial_anchors, &record)?;
                 self.refresh_at(now).await;
                 Ok(self.status.read().await.clone())
             }
@@ -377,8 +400,7 @@ impl LicenseManager {
             code.as_deref(),
             &self.public_key,
             &fingerprint,
-            &self.trial_state_path,
-            &self.trial_ledger_path,
+            &self.trial_anchors,
             now,
         );
         *self.status.write().await = next;
@@ -406,6 +428,7 @@ struct TrialRecord {
 }
 
 /// 单份试用文件的读取结果
+#[derive(Debug, Clone)]
 enum TrialFile {
     Missing,
     Corrupt(String),
@@ -430,13 +453,119 @@ enum TrialEvaluation {
     },
 }
 
+/// 单份试用记录锚点：通常是文件，Windows 额外有一份注册表副本
+#[derive(Debug, Clone)]
+enum TrialAnchor {
+    File(PathBuf),
+    #[cfg(windows)]
+    Registry,
+}
+
+impl TrialAnchor {
+    fn read(&self) -> TrialFile {
+        match self {
+            TrialAnchor::File(path) => read_trial_file(path),
+            #[cfg(windows)]
+            TrialAnchor::Registry => read_registry_trial(),
+        }
+    }
+
+    fn write(&self, content: &[u8]) -> Result<(), String> {
+        match self {
+            TrialAnchor::File(path) => write_private(path, content),
+            #[cfg(windows)]
+            TrialAnchor::Registry => write_registry_trial(content),
+        }
+    }
+}
+
+/// 多处试用记录锚点，顺序即恢复优先级（A 主记录 → B 台账 → C 缓存 → D 状态目录 → E 系统级）
+#[derive(Debug, Clone, Default)]
+struct TrialAnchors {
+    anchors: Vec<TrialAnchor>,
+}
+
+impl TrialAnchors {
+    fn push_file(&mut self, path: PathBuf) {
+        if path.as_os_str().is_empty() {
+            return;
+        }
+        // XDG 环境变量未设置时配置/缓存/状态目录可能重合，按路径去重
+        let duplicated = self
+            .anchors
+            .iter()
+            .any(|anchor| matches!(anchor, TrialAnchor::File(existing) if existing == &path));
+        if !duplicated {
+            self.anchors.push(TrialAnchor::File(path));
+        }
+    }
+
+    /// 系统级锚点：Unix 用全局临时目录文件；Windows 用当前用户注册表
+    #[cfg(not(windows))]
+    fn push_system_anchor(&mut self) {
+        self.push_file(PathBuf::from(TRIAL_SYSTEM_FILE));
+    }
+
+    #[cfg(windows)]
+    fn push_system_anchor(&mut self) {
+        self.anchors.push(TrialAnchor::Registry);
+    }
+
+    fn file_paths(&self) -> Vec<PathBuf> {
+        // Unix 上没有注册表锚点，直接映射；Windows 需要过滤掉注册表变体
+        #[cfg(not(windows))]
+        {
+            self.anchors
+                .iter()
+                .map(|anchor| match anchor {
+                    TrialAnchor::File(path) => path.clone(),
+                })
+                .collect()
+        }
+        #[cfg(windows)]
+        {
+            self.anchors
+                .iter()
+                .filter_map(|anchor| match anchor {
+                    TrialAnchor::File(path) => Some(path.clone()),
+                    TrialAnchor::Registry => None,
+                })
+                .collect()
+        }
+    }
+
+    fn read_all(&self) -> Vec<TrialFile> {
+        self.anchors.iter().map(TrialAnchor::read).collect()
+    }
+
+    /// 尽力写入全部锚点：只要有一处成功就算成功，个别位置失败不阻断试用
+    fn write_all(&self, content: &[u8]) -> bool {
+        let mut any_written = false;
+        for anchor in &self.anchors {
+            if anchor.write(content).is_ok() {
+                any_written = true;
+            }
+        }
+        any_written
+    }
+}
+
+/// 记录本身是否可信（HMAC、版本、指纹与时间字段均合法）；时间语义另行判断
+fn trial_record_is_valid(record: &TrialRecord, fingerprint: &str) -> bool {
+    record.v == TRIAL_RECORD_VERSION
+        && trial_hmac_matches(record, fingerprint)
+        && normalize_fingerprint(&record.fingerprint) == normalize_fingerprint(fingerprint)
+        && parse_timestamp(&record.started_at).is_some()
+        && parse_timestamp(&record.expires_at).is_some()
+        && parse_timestamp(&record.last_seen_at).is_some()
+}
+
 /// 综合激活码与试用记录计算对外状态
 fn compute_status(
     code: Option<&str>,
     public_key: &[u8; 32],
     fingerprint: &str,
-    trial_state_path: &Path,
-    trial_ledger_path: &Path,
+    trial_anchors: &TrialAnchors,
     now: DateTime<Utc>,
 ) -> LicenseStatus {
     let code_status = code.map(|code| {
@@ -457,7 +586,7 @@ fn compute_status(
     let mut status = code_status.unwrap_or_else(|| LicenseStatus::free(fingerprint.to_string()));
     apply_trial_evaluation(
         &mut status,
-        evaluate_trial(trial_state_path, trial_ledger_path, fingerprint, now),
+        evaluate_trial(trial_anchors, fingerprint, now),
         has_code,
     );
     status
@@ -537,108 +666,102 @@ fn apply_trial_evaluation(
 }
 
 fn evaluate_trial(
-    state_path: &Path,
-    ledger_path: &Path,
+    anchors: &TrialAnchors,
     fingerprint: &str,
     now: DateTime<Utc>,
 ) -> TrialEvaluation {
-    let primary = read_trial_file(state_path);
-    let ledger = read_trial_file(ledger_path);
+    let reads = anchors.read_all();
 
-    let record = match (&primary, &ledger) {
-        (TrialFile::Present(record), _) => record.clone(),
-        (TrialFile::Corrupt(detail), _) => {
-            return TrialEvaluation::Invalid {
-                reason: format!("试用记录校验失败：记录文件已损坏（{detail}）"),
-                record: None,
+    // 任意一处锚点留有可信记录即视为试用存在；按优先级取第一份
+    let mut chosen: Option<TrialRecord> = None;
+    let mut first_problem: Option<String> = None;
+    for (index, read) in reads.iter().enumerate() {
+        match read {
+            TrialFile::Present(record) if trial_record_is_valid(record, fingerprint) => {
+                chosen = Some(record.clone());
+                break;
             }
-        }
-        (TrialFile::Missing, TrialFile::Present(record)) => record.clone(),
-        (TrialFile::Missing, TrialFile::Corrupt(detail)) => {
-            return TrialEvaluation::Invalid {
-                reason: format!("试用记录校验失败：台账文件已损坏（{detail}）"),
-                record: None,
+            TrialFile::Present(_) => {
+                if first_problem.is_none() {
+                    first_problem = Some(format!("第 {} 处锚点记录无效", index + 1));
+                }
             }
+            TrialFile::Corrupt(detail) => {
+                if first_problem.is_none() {
+                    first_problem = Some(detail.clone());
+                }
+            }
+            TrialFile::Missing => {}
         }
-        (TrialFile::Missing, TrialFile::Missing) => return TrialEvaluation::Absent,
-    };
-
-    if record.v != TRIAL_RECORD_VERSION {
-        return TrialEvaluation::Invalid {
-            reason: "试用记录校验失败：版本不受支持".to_string(),
-            record: Some(record),
-        };
-    }
-    if !trial_hmac_matches(&record, fingerprint) {
-        return TrialEvaluation::Invalid {
-            reason: "试用记录校验失败：HMAC 不符".to_string(),
-            record: Some(record),
-        };
-    }
-    if normalize_fingerprint(&record.fingerprint) != normalize_fingerprint(fingerprint) {
-        return TrialEvaluation::Invalid {
-            reason: "试用记录校验失败：与本机机器码不匹配".to_string(),
-            record: Some(record),
-        };
     }
 
-    let Some(last_seen) = parse_timestamp(&record.last_seen_at) else {
-        return TrialEvaluation::Invalid {
-            reason: "试用记录校验失败：last_seen_at 格式错误".to_string(),
-            record: Some(record),
-        };
-    };
-    let Some(expires) = parse_timestamp(&record.expires_at) else {
-        return TrialEvaluation::Invalid {
-            reason: "试用记录校验失败：expires_at 格式错误".to_string(),
-            record: Some(record),
+    let Some(mut record) = chosen else {
+        return match first_problem {
+            Some(detail) => TrialEvaluation::Invalid {
+                reason: format!("试用记录校验失败：{detail}"),
+                record: None,
+            },
+            // 所有锚点都不存在：本机从未开始过试用
+            None => TrialEvaluation::Absent,
         };
     };
 
-    // 校验通过后补齐缺失/损坏的另一份，保证双份冗余
-    let need_repair = matches!(primary, TrialFile::Missing)
-        || matches!(ledger, TrialFile::Missing)
-        || matches!(ledger, TrialFile::Corrupt(_));
-    if need_repair {
-        let _ = write_trial_record(state_path, ledger_path, &record);
-    }
-
-    if record.tampered {
+    // 任一处锚点被标记 tampered 都永久失效，避免部分锚点写入失败时被绕过
+    let any_tampered = reads.iter().any(|read| {
+        matches!(read, TrialFile::Present(existing) if existing.tampered && trial_record_is_valid(existing, fingerprint))
+    });
+    if record.tampered || any_tampered {
+        // 强制同步到所有锚点，避免删掉某一处后从旧副本复活
+        record.tampered = true;
+        record.hmac = trial_hmac(&record, fingerprint);
+        let _ = write_trial_record(anchors, &record);
         return TrialEvaluation::Invalid {
             reason: "试用记录已因时间回拨永久失效，请购买正式授权".to_string(),
             record: Some(record),
         };
     }
 
-    // 时钟回拨超过容忍窗口：永久标记 tampered 并落盘
+    // 除可信记录外的缺失/损坏锚点都要用可信记录修复
+    let need_repair = reads.iter().any(|read| {
+        !matches!(read, TrialFile::Present(existing) if trial_record_is_valid(existing, fingerprint))
+    });
+
+    let last_seen = parse_timestamp(&record.last_seen_at).expect("记录已验证");
+    let expires = parse_timestamp(&record.expires_at).expect("记录已验证");
+
+    // 时钟回拨超过容忍窗口：永久标记 tampered 并写入所有锚点
     if now.timestamp() + TRIAL_ROLLBACK_TOLERANCE_SECS < last_seen.timestamp() {
-        let mut tampered = record;
-        tampered.tampered = true;
-        tampered.hmac = trial_hmac(&tampered, fingerprint);
-        let _ = write_trial_record(state_path, ledger_path, &tampered);
+        record.tampered = true;
+        record.hmac = trial_hmac(&record, fingerprint);
+        let _ = write_trial_record(anchors, &record);
         return TrialEvaluation::Invalid {
             reason: "检测到系统时间回拨，试用已永久失效".to_string(),
-            record: Some(tampered),
+            record: Some(record),
         };
     }
 
     if now > expires {
+        // 到期时也把 last_seen_at 推进到当前时间：之后再把时钟调回试用期内
+        // 会因 last_seen_at 领先而命中「时间回拨」，无法重置试用
+        record.last_seen_at = format_timestamp(now);
+        record.hmac = trial_hmac(&record, fingerprint);
+        let _ = write_trial_record(anchors, &record);
         return TrialEvaluation::Expired { record };
     }
 
     let remaining = (expires - now).num_seconds().max(0);
     let days_left = ((remaining + 86_399) / 86_400).clamp(1, TRIAL_DAYS) as u32;
-    let mut record = record;
-    // 节流更新 last_seen_at，减少写盘次数
+    // 节流更新 last_seen_at，减少写盘次数；缺失/损坏的锚点则借机修复
+    let mut changed = need_repair;
     if now.timestamp() - last_seen.timestamp() > TRIAL_LAST_SEEN_THROTTLE_SECS {
         record.last_seen_at = format_timestamp(now);
         record.hmac = trial_hmac(&record, fingerprint);
-        let _ = write_trial_record(state_path, ledger_path, &record);
+        changed = true;
     }
-    TrialEvaluation::Valid {
-        record,
-        days_left,
+    if changed {
+        let _ = write_trial_record(anchors, &record);
     }
+    TrialEvaluation::Valid { record, days_left }
 }
 
 fn read_trial_file(path: &Path) -> TrialFile {
@@ -836,13 +959,77 @@ fn windows_machine_guid() -> Option<String> {
     parse_reg_sz(&String::from_utf8_lossy(&output.stdout))
 }
 
-/// 从 `reg query` 输出中解析 `REG_SZ` 值（单独拆出便于跨平台单测）。
+/// Windows 注册表试用锚点位置（当前用户，无需管理员权限）
+#[cfg(windows)]
+const TRIAL_REGISTRY_KEY: &str = r"HKCU\Software\AuroraDB";
+#[cfg(windows)]
+const TRIAL_REGISTRY_VALUE: &str = "Trial";
+
+/// 读取 Windows 注册表锚点；无 reg.exe / 无权限等失败一律静默视为缺失
+#[cfg(windows)]
+fn read_registry_trial() -> TrialFile {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let output = match std::process::Command::new("reg")
+        .args([
+            "query",
+            TRIAL_REGISTRY_KEY,
+            "/v",
+            TRIAL_REGISTRY_VALUE,
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    {
+        Ok(output) if output.status.success() => output,
+        _ => return TrialFile::Missing,
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    match parse_reg_sz_named(&text, TRIAL_REGISTRY_VALUE) {
+        Some(value) => match serde_json::from_str::<TrialRecord>(&value) {
+            Ok(record) => TrialFile::Present(record),
+            Err(error) => TrialFile::Corrupt(format!("无法解析注册表值：{error}")),
+        },
+        None => TrialFile::Missing,
+    }
+}
+
+/// 写入 Windows 注册表锚点；失败只返回错误，由锚点集合忽略
+#[cfg(windows)]
+fn write_registry_trial(content: &[u8]) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let value = String::from_utf8_lossy(content).into_owned();
+    let output = std::process::Command::new("reg")
+        .args([
+            "add",
+            TRIAL_REGISTRY_KEY,
+            "/v",
+            TRIAL_REGISTRY_VALUE,
+            "/t",
+            "REG_SZ",
+            "/d",
+            value.as_str(),
+            "/f",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|error| format!("调用 reg.exe 失败：{error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err("写入注册表试用锚点失败".to_string())
+    }
+}
+
+/// 从 `reg query` 输出中解析指定名称的 `REG_SZ` 值（单独拆出便于跨平台单测）。
 #[cfg(any(windows, test))]
-fn parse_reg_sz(output: &str) -> Option<String> {
+fn parse_reg_sz_named(output: &str, name: &str) -> Option<String> {
     // 输出形如：`    MachineGuid    REG_SZ    1234abcd-...`
     output.lines().find_map(|line| {
         let mut fields = line.split_whitespace();
-        if fields.next()? != "MachineGuid" {
+        if fields.next()? != name {
             return None;
         }
         if fields.next()? != "REG_SZ" {
@@ -850,6 +1037,11 @@ fn parse_reg_sz(output: &str) -> Option<String> {
         }
         fields.next().map(str::to_string)
     })
+}
+
+#[cfg(any(windows, test))]
+fn parse_reg_sz(output: &str) -> Option<String> {
+    parse_reg_sz_named(output, "MachineGuid")
 }
 
 /// 由机器标识片段派生指纹：同一组片段总是得到同一指纹。
@@ -989,18 +1181,16 @@ fn write_private(path: &Path, content: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// 同时写入 trial.state 与 trial.ledger（内容相同，均 0600）
-fn write_trial_record(
-    state_path: &Path,
-    ledger_path: &Path,
-    record: &TrialRecord,
-) -> Result<(), String> {
+/// 把试用记录写入全部锚点：只要有一处成功就算成功，
+/// 个别位置（如 /var/tmp 无权限、注册表不可用）失败不阻断试用
+fn write_trial_record(anchors: &TrialAnchors, record: &TrialRecord) -> Result<(), String> {
     let content = serde_json::to_vec(record)
         .map_err(|e| format!("序列化试用记录失败：{}", e))?;
-    write_private(state_path, &content).map_err(|e| format!("写入试用记录失败：{}", e))?;
-    // 台账写失败不阻断试用，但尽力记录，避免主记录删掉后无法恢复
-    let _ = write_private(ledger_path, &content);
-    Ok(())
+    if anchors.write_all(&content) {
+        Ok(())
+    } else {
+        Err("写入试用记录失败：所有锚点均不可写".to_string())
+    }
 }
 
 #[cfg(test)]
@@ -1335,11 +1525,13 @@ mod tests {
         LicenseManager::new_in(dir.join("license.key"), public)
     }
 
+    fn trial_anchor_paths(manager: &LicenseManager) -> Vec<PathBuf> {
+        manager.trial_anchors.file_paths()
+    }
+
     fn cleanup_trial(dir: &Path) {
-        for name in ["license.key", TRIAL_STATE_FILE, TRIAL_LEDGER_FILE] {
-            let _ = std::fs::remove_file(dir.join(name));
-        }
-        let _ = std::fs::remove_dir(dir);
+        // 锚点包含 state 子目录与模拟的系统级文件，直接递归清理
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1478,12 +1670,13 @@ mod tests {
         let manager = trial_manager(&dir, public);
         manager.start_trial_at(t0).await.unwrap();
 
-        // 修改记录字段但保留原 HMAC
-        let state_path = dir.join(TRIAL_STATE_FILE);
-        let text = std::fs::read_to_string(&state_path).unwrap();
-        let mut value: serde_json::Value = serde_json::from_str(&text).unwrap();
-        value["license_id"] = serde_json::Value::String("TRIAL-FORGED".to_string());
-        std::fs::write(&state_path, serde_json::to_vec(&value).unwrap()).unwrap();
+        // 任意一处有效锚点都会让试用继续，因此必须把所有锚点都改成伪造内容
+        for state_path in trial_anchor_paths(&manager) {
+            let text = std::fs::read_to_string(&state_path).unwrap();
+            let mut value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            value["license_id"] = serde_json::Value::String("TRIAL-FORGED".to_string());
+            std::fs::write(&state_path, serde_json::to_vec(&value).unwrap()).unwrap();
+        }
 
         let status = manager.status_at(t0 + Duration::minutes(1)).await;
         assert!(!status.activated);
@@ -1572,6 +1765,188 @@ mod tests {
         assert!(!status.trial_expired);
         assert!(!status.activated);
         assert_eq!(status.edition, "free");
+
+        cleanup_trial(&dir);
+    }
+
+    #[tokio::test]
+    async fn deleted_primary_recovers_from_remaining_anchors() {
+        let (_signing, public) = test_key();
+        let dir = trial_dir();
+        let t0 = Utc::now();
+        let manager = trial_manager(&dir, public);
+        let started = manager.start_trial_at(t0).await.unwrap();
+
+        let paths = trial_anchor_paths(&manager);
+        std::fs::remove_file(&paths[0]).unwrap();
+
+        let reloaded = trial_manager(&dir, public);
+        let status = reloaded.status_at(t0 + Duration::days(1)).await;
+        assert!(status.trial_active, "got: {:?}", status.error);
+        assert_eq!(status.license_id, started.license_id);
+        assert_eq!(status.trial_days_left, Some(13));
+        // 主记录被回写
+        assert!(paths[0].exists());
+
+        cleanup_trial(&dir);
+    }
+
+    #[tokio::test]
+    async fn system_anchor_alone_recovers_trial() {
+        let (_signing, public) = test_key();
+        let dir = trial_dir();
+        let t0 = Utc::now();
+        let manager = trial_manager(&dir, public);
+        let started = manager.start_trial_at(t0).await.unwrap();
+
+        let paths = trial_anchor_paths(&manager);
+        for path in &paths[..4] {
+            std::fs::remove_file(path).unwrap();
+        }
+
+        let reloaded = trial_manager(&dir, public);
+        let status = reloaded.status_at(t0 + Duration::hours(1)).await;
+        assert!(status.trial_active, "got: {:?}", status.error);
+        assert_eq!(status.license_id, started.license_id);
+        // 其余锚点被重新修复
+        for path in &paths[..4] {
+            assert!(path.exists(), "missing: {}", path.display());
+        }
+
+        cleanup_trial(&dir);
+    }
+
+    #[tokio::test]
+    async fn all_anchors_deleted_offers_fresh_trial() {
+        let (_signing, public) = test_key();
+        let dir = trial_dir();
+        let t0 = Utc::now();
+        let manager = trial_manager(&dir, public);
+        manager.start_trial_at(t0).await.unwrap();
+
+        for path in trial_anchor_paths(&manager) {
+            let _ = std::fs::remove_file(&path);
+        }
+
+        let reloaded = trial_manager(&dir, public);
+        let status = reloaded.status_at(t0 + Duration::hours(1)).await;
+        assert!(status.trial_available);
+        assert!(!status.trial_active);
+
+        let started = reloaded
+            .start_trial_at(t0 + Duration::hours(1))
+            .await
+            .unwrap();
+        assert!(started.trial_active);
+        assert_eq!(started.trial_days_left, Some(14));
+
+        cleanup_trial(&dir);
+    }
+
+    #[tokio::test]
+    async fn corrupt_anchors_are_repaired_from_valid_copy() {
+        let (_signing, public) = test_key();
+        let dir = trial_dir();
+        let t0 = Utc::now();
+        let manager = trial_manager(&dir, public);
+        let started = manager.start_trial_at(t0).await.unwrap();
+
+        let paths = trial_anchor_paths(&manager);
+        std::fs::write(&paths[0], b"not json").unwrap();
+        std::fs::write(&paths[2], b"not json").unwrap();
+
+        let reloaded = trial_manager(&dir, public);
+        let status = reloaded.status_at(t0 + Duration::hours(1)).await;
+        assert!(status.trial_active, "got: {:?}", status.error);
+        assert_eq!(status.license_id, started.license_id);
+        for path in [&paths[0], &paths[2]] {
+            let text = std::fs::read_to_string(path).unwrap();
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(
+                value["license_id"],
+                serde_json::Value::String(started.license_id.clone().unwrap())
+            );
+        }
+
+        cleanup_trial(&dir);
+    }
+
+    #[tokio::test]
+    async fn all_anchors_corrupt_is_invalid() {
+        let (_signing, public) = test_key();
+        let dir = trial_dir();
+        let t0 = Utc::now();
+        let manager = trial_manager(&dir, public);
+        manager.start_trial_at(t0).await.unwrap();
+
+        for path in trial_anchor_paths(&manager) {
+            std::fs::write(&path, b"broken").unwrap();
+        }
+
+        let status = manager.status_at(t0 + Duration::hours(1)).await;
+        assert!(!status.activated);
+        assert!(!status.trial_active);
+        assert!(!status.trial_available);
+        assert!(
+            status.error.as_deref().unwrap_or_default().contains("校验失败"),
+            "got: {:?}",
+            status.error
+        );
+
+        cleanup_trial(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn trial_anchor_files_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_signing, public) = test_key();
+        let dir = trial_dir();
+        let t0 = Utc::now();
+        let manager = trial_manager(&dir, public);
+        manager.start_trial_at(t0).await.unwrap();
+
+        for path in trial_anchor_paths(&manager) {
+            assert!(path.exists(), "missing: {}", path.display());
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "unexpected mode {mode:o} for {}", path.display());
+        }
+
+        cleanup_trial(&dir);
+    }
+
+    #[tokio::test]
+    async fn expired_then_clock_rollback_is_tampered() {
+        let (_signing, public) = test_key();
+        let dir = trial_dir();
+        let t0 = Utc::now();
+        let manager = trial_manager(&dir, public);
+        manager.start_trial_at(t0).await.unwrap();
+
+        // 先调到 15 天后判定过期：此时也会把 last_seen_at 推进到该时间
+        let expired = manager.status_at(t0 + Duration::days(15)).await;
+        assert!(expired.trial_expired);
+
+        // 再调回试用期内应命中时间回拨而永久失效，而不是恢复试用
+        let status = manager.status_at(t0 + Duration::days(3)).await;
+        assert!(!status.activated);
+        assert!(!status.trial_active);
+        assert!(
+            status.error.as_deref().unwrap_or_default().contains("时间回拨"),
+            "got: {:?}",
+            status.error
+        );
+
+        // tampered 已持久化，重启后仍失效
+        let reloaded = trial_manager(&dir, public);
+        let status = reloaded.status_at(t0 + Duration::days(3)).await;
+        assert!(!status.activated);
+        assert!(
+            status.error.as_deref().unwrap_or_default().contains("时间回拨"),
+            "got: {:?}",
+            status.error
+        );
 
         cleanup_trial(&dir);
     }
