@@ -2,70 +2,113 @@
 //! `SHOW FULL PROCESSLIST` 进程列表、`KILL CONNECTION` 终止会话，
 //! 以及基于 `SHOW GLOBAL STATUS` / `SHOW GLOBAL VARIABLES` 的服务端指标。
 
-use super::manager::ConnectionManager;
-use super::metadata::with_metadata_timeout;
-use super::types::*;
+use auroradb_core::connection::metadata::with_metadata_timeout;
+use auroradb_core::connection::ConnectionManager;
 use anyhow::{anyhow, Result};
+use serde::Serialize;
 use sqlx::mysql::MySqlRow;
 use sqlx::{MySqlPool, Row};
 use std::collections::HashMap;
 
-impl ConnectionManager {
-    /// 读取服务端全部会话（需要 PROCESS 权限，否则只能看到当前用户的会话）
-    pub async fn get_process_list(&self, connection_id: &str) -> Result<Vec<ProcessInfo>> {
-        let pool = self.pool_of(connection_id, "进程监控").await?;
+/// 服务端会话/进程（对应 `SHOW FULL PROCESSLIST` 的一行）
+#[derive(Debug, Clone, Serialize)]
+pub struct ProcessInfo {
+    pub id: u64,
+    pub user: String,
+    pub host: String,
+    pub database: Option<String>,
+    pub command: String,
+    /// 当前状态已持续的秒数
+    pub time: u64,
+    pub state: Option<String>,
+    pub info: Option<String>,
+}
 
-        let rows: Vec<MySqlRow> =
-            with_metadata_timeout(sqlx::query("SHOW FULL PROCESSLIST").fetch_all(&pool)).await?;
+/// 服务端运行指标（来自 `SHOW GLOBAL STATUS` / `SHOW GLOBAL VARIABLES`）
+#[derive(Debug, Clone, Serialize)]
+pub struct ServerMetrics {
+    pub version: String,
+    pub uptime_seconds: u64,
+    /// 自启动以来的平均每秒查询数（Questions / Uptime）
+    pub qps: f64,
+    pub threads_connected: u64,
+    pub threads_running: u64,
+    pub max_connections: u64,
+    pub slow_queries: u64,
+    pub slow_query_log: bool,
+    pub long_query_time: f64,
+    pub aborted_connects: u64,
+    /// InnoDB 缓冲池命中率（百分比，0-100）；缺少相关状态项时为 None
+    pub buffer_pool_hit_rate: Option<f64>,
+    pub bytes_received: u64,
+    pub bytes_sent: u64,
+    pub com_select: u64,
+    pub com_insert: u64,
+    pub com_update: u64,
+    pub com_delete: u64,
+}
 
-        Ok(rows.iter().map(process_from_row).collect())
+/// 读取服务端全部会话（需要 PROCESS 权限，否则只能看到当前用户的会话）
+pub async fn get_process_list(
+    manager: &ConnectionManager,
+    connection_id: &str,
+) -> Result<Vec<ProcessInfo>> {
+    let pool = pool_of(manager, connection_id, "进程监控").await?;
+
+    let rows: Vec<MySqlRow> =
+        with_metadata_timeout(sqlx::query("SHOW FULL PROCESSLIST").fetch_all(&pool)).await?;
+
+    Ok(rows.iter().map(process_from_row).collect())
+}
+
+/// 终止指定会话（`KILL CONNECTION <id>`）；process_id 为 u64，天然避免注入
+pub async fn kill_process(
+    manager: &ConnectionManager,
+    connection_id: &str,
+    process_id: u64,
+) -> Result<()> {
+    if process_id == 0 {
+        return Err(anyhow!("无效的会话 ID"));
     }
 
-    /// 终止指定会话（`KILL CONNECTION <id>`）；process_id 为 u64，天然避免注入
-    pub async fn kill_process(&self, connection_id: &str, process_id: u64) -> Result<()> {
-        if process_id == 0 {
-            return Err(anyhow!("无效的会话 ID"));
-        }
+    let pool = pool_of(manager, connection_id, "进程监控").await?;
 
-        let pool = self.pool_of(connection_id, "进程监控").await?;
-
-        with_metadata_timeout(
-            sqlx::query(&format!("KILL CONNECTION {}", process_id)).execute(&pool),
-        )
+    with_metadata_timeout(sqlx::query(&format!("KILL CONNECTION {}", process_id)).execute(&pool))
         .await?;
-        Ok(())
-    }
+    Ok(())
+}
 
-    /// 读取服务端版本、连接数、QPS、慢查询与 InnoDB 缓冲池命中率等指标
-    pub async fn get_server_metrics(&self, connection_id: &str) -> Result<ServerMetrics> {
-        let pool = self.pool_of(connection_id, "服务监控").await?;
+/// 读取服务端版本、连接数、QPS、慢查询与 InnoDB 缓冲池命中率等指标
+pub async fn get_server_metrics(
+    manager: &ConnectionManager,
+    connection_id: &str,
+) -> Result<ServerMetrics> {
+    let pool = pool_of(manager, connection_id, "服务监控").await?;
 
-        let status_rows: Vec<(String, Option<String>)> = with_metadata_timeout(
-            sqlx::query_as("SHOW GLOBAL STATUS").fetch_all(&pool),
+    let status_rows: Vec<(String, Option<String>)> =
+        with_metadata_timeout(sqlx::query_as("SHOW GLOBAL STATUS").fetch_all(&pool)).await?;
+    let variable_rows: Vec<(String, Option<String>)> = with_metadata_timeout(
+        sqlx::query_as(
+            "SHOW GLOBAL VARIABLES WHERE Variable_name IN
+             ('version', 'max_connections', 'slow_query_log', 'long_query_time')",
         )
-        .await?;
-        let variable_rows: Vec<(String, Option<String>)> = with_metadata_timeout(
-            sqlx::query_as(
-                "SHOW GLOBAL VARIABLES WHERE Variable_name IN
-                 ('version', 'max_connections', 'slow_query_log', 'long_query_time')",
-            )
-            .fetch_all(&pool),
-        )
-        .await?;
+        .fetch_all(&pool),
+    )
+    .await?;
 
-        let status = normalize_pairs(status_rows);
-        let variables = normalize_pairs(variable_rows);
-        Ok(build_metrics(&status, &variables))
-    }
+    let status = normalize_pairs(status_rows);
+    let variables = normalize_pairs(variable_rows);
+    Ok(build_metrics(&status, &variables))
+}
 
-    /// 取出连接池后立刻释放连接表读锁，避免监控查询期间阻塞心跳等写操作
-    async fn pool_of(&self, connection_id: &str, feature: &str) -> Result<MySqlPool> {
-        let connections = self.connections.read().await;
-        let conn = connections
-            .get(connection_id)
-            .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
-        conn.mysql_pool(feature)
-    }
+/// 取出连接池副本，避免监控查询期间持有连接表读锁
+async fn pool_of(
+    manager: &ConnectionManager,
+    connection_id: &str,
+    feature: &str,
+) -> Result<MySqlPool> {
+    let snapshot = manager.connection_snapshot(connection_id).await?;
+    Ok(snapshot.pool.as_mysql(feature)?.clone())
 }
 
 /// 把 `SHOW ...` 的 (名称, 值) 行转成小写键的 map，忽略 NULL 值
@@ -108,7 +151,10 @@ fn decimal(map: &HashMap<String, String>, key: &str) -> f64 {
 }
 
 /// 由状态/变量 map 组装指标；拆分出来便于单测（不依赖真实数据库）
-fn build_metrics(status: &HashMap<String, String>, variables: &HashMap<String, String>) -> ServerMetrics {
+fn build_metrics(
+    status: &HashMap<String, String>,
+    variables: &HashMap<String, String>,
+) -> ServerMetrics {
     let uptime = number(status, "uptime");
     let questions = number(status, "questions");
     let qps = if uptime > 0 {

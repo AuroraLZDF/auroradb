@@ -2,7 +2,7 @@
 //! 仅持有连接注册表与连接状态的类型定义；各方法实现拆分到 session/executor/metadata 兄弟模块。
 
 use super::driver::{AnyPool, AnyTransaction};
-use super::tunnel::SshTunnel;
+use super::tunnel::{Tunnel, TunnelFactory};
 use super::types::*;
 use anyhow::{anyhow, Result};
 use sqlx::pool::PoolConnection;
@@ -21,6 +21,8 @@ pub struct ConnectionManager {
     /// PG 的数据库在建立连接时固定、无法在同一连接内切换，浏览非默认库只能另开连接池；
     /// 按需建立并缓存，断开连接时统一关闭。
     pub(super) pg_pools: Arc<Mutex<HashMap<(String, String), PgPool>>>,
+    /// SSH 隧道工厂：专业版启动时注入；免费版为 None，SSH 连接会明确报错。
+    tunnel_factory: Option<TunnelFactory>,
 }
 
 /// 管理的连接
@@ -46,9 +48,9 @@ pub struct ManagedConnection {
     /// 懒创建：只有在用户执行过会话语句后才占用一条物理连接。
     pub session: Arc<Mutex<Option<PoolConnection<MySql>>>>,
     /// 元数据缓存：对象树/表结构带 TTL，避免每次展开都打 INFORMATION_SCHEMA
-    pub metadata_cache: Arc<Mutex<HashMap<String, (Instant, MetadataCacheValue)>>>,
+    pub(crate) metadata_cache: Arc<Mutex<HashMap<String, (Instant, MetadataCacheValue)>>>,
     /// SSH 隧道：连接期间必须存活，断开时置 None 触发 Drop 关闭
-    pub tunnel: Option<SshTunnel>,
+    pub tunnel: Option<Box<dyn Tunnel>>,
     /// 连接是否因 TLS 握手失败已回退为明文连接（仅 MySQL「首选」模式可能为 true）。
     /// 外部备份/还原 CLI 需要据此决定是否禁用 TLS，否则会与连接实际状态不一致。
     pub tls_disabled: bool,
@@ -98,7 +100,21 @@ impl ConnectionManager {
         Self {
             connections: Arc::new(RwLock::new(HashMap::new())),
             pg_pools: Arc::new(Mutex::new(HashMap::new())),
+            tunnel_factory: None,
         }
+    }
+
+    /// 带 SSH 隧道工厂构造：专业版在应用启动时使用。
+    pub fn with_tunnel_factory(factory: TunnelFactory) -> Self {
+        Self {
+            tunnel_factory: Some(factory),
+            ..Self::new()
+        }
+    }
+
+    /// 当前可用的隧道工厂；免费版返回 None
+    pub(crate) fn tunnel_factory(&self) -> Option<&TunnelFactory> {
+        self.tunnel_factory.as_ref()
     }
 
     /// 连接的展示信息（名称、主机、端口），供审计日志记录操作来源
@@ -108,6 +124,46 @@ impl ConnectionManager {
             .get(connection_id)
             .map(|conn| (conn.config.name.clone(), conn.config.host.clone(), conn.config.port))
     }
+
+    /// 连接资源快照：供专业版模块读取配置与连接池，避免长时间持有连接表读锁。
+    pub async fn connection_snapshot(&self, connection_id: &str) -> Result<ConnectionSnapshot> {
+        let connections = self.connections.read().await;
+        let conn = connections
+            .get(connection_id)
+            .ok_or_else(|| anyhow!("连接 {} 不存在或已断开", connection_id))?;
+        let pool = conn
+            .pool
+            .as_ref()
+            .ok_or_else(|| anyhow!("连接 {} 未建立", connection_id))?
+            .clone();
+        Ok(ConnectionSnapshot {
+            config: conn.config.clone(),
+            pool,
+            ssl_config: conn.effective_ssl_config(),
+            tunnel_local_port: conn.tunnel.as_ref().map(|tunnel| tunnel.local_port()),
+            tls_disabled: conn.tls_disabled,
+        })
+    }
+
+    /// 外部客户端执行的脚本绕过了连接池，元数据缓存不会自动失效，
+    /// 必须手动清空，否则对象树/表结构会在 TTL（30s）内返回执行前的旧快照。
+    pub async fn invalidate_metadata_cache(&self, connection_id: &str) {
+        let connections = self.connections.read().await;
+        if let Some(conn) = connections.get(connection_id) {
+            conn.metadata_cache.lock().await.clear();
+        }
+    }
+}
+
+/// 连接资源快照
+pub struct ConnectionSnapshot {
+    pub config: ConnectionConfig,
+    pub pool: AnyPool,
+    /// 已按实际 TLS 回退状态修正的 SSL 配置
+    pub ssl_config: SslConfig,
+    /// SSH 隧道本地转发端口
+    pub tunnel_local_port: Option<u16>,
+    pub tls_disabled: bool,
 }
 
 impl Default for ConnectionManager {

@@ -10,6 +10,8 @@ rust-version = "1.77.2"
 tauri-build = { version = "2.0", features = [] }
 
 [dependencies]
+auroradb-core = { path = "../crates/core" }
+auroradb-pro = { path = "../crates/pro", optional = true }
 tauri = { version = "2.0", features = [] }
 tauri-plugin-dialog = "2.0"
 # 自动更新：检查/下载/安装更新包，安装后需要重启进程
@@ -39,10 +41,10 @@ sqlparser = { version = "0.63", features = ["visitor"] }
 # constant_memory：大表导出 Excel 时逐行落盘，内存占用与行数无关
 rust_xlsxwriter = { version = "0.83", features = ["constant_memory"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
-# SSH 隧道：纯 Rust 实现，关闭默认特性避免拉入 aws-lc-rs（需 cmake/C 工具链），改用 ring
-russh = { version = "0.54", default-features = false, features = ["ring", "rsa"] }
 tauri-plugin-single-instance = "2.4.5"
 
 [features]
-default = ["custom-protocol"]
+default = ["custom-protocol", "pro"]
 custom-protocol = ["tauri/custom-protocol"]
+# 专业版：结构对比、实例监控、备份还原、ER 图、全局搜索、执行计划与 SSH 隧道
+pro = ["dep:auroradb-pro"]

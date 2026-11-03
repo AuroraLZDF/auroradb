@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Column, Row};
 
 use crate::commands::connection::ConnectionManagerState;
-use crate::core::connection::export::{ExportColumn, ExportFormat};
-use crate::core::connection::resultset::{classify_column, convert_value, ColumnKind};
-use crate::core::connection::CellValue;
+use auroradb_core::connection::export::{ExportColumn, ExportFormat};
+use auroradb_core::connection::resultset::{classify_column, convert_value, ColumnKind};
+use auroradb_core::connection::CellValue;
 
 /// 列定义
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -167,7 +167,7 @@ pub async fn export_table_to_excel(
     let mut columns = manager
         .table_export_columns(&connection_id, &database, &table)
         .await
-        .map_err(|e| crate::core::error::user_message(&e))?;
+        .map_err(|e| auroradb_core::error::user_message(&e))?;
     let mut kinds: Vec<ColumnKind> = columns
         .iter()
         .map(|col| classify_column(&col.data_type))
@@ -221,7 +221,7 @@ pub async fn export_table_to_excel(
                 Ok(())
             })
             .await
-            .map_err(|e| crate::core::error::user_message(&e))?;
+            .map_err(|e| auroradb_core::error::user_message(&e))?;
 
         // 常量内存模式允许在数据写完后设置列宽
         for (col_idx, col) in columns.iter().enumerate() {
@@ -269,7 +269,7 @@ pub async fn export_table_to_file(
     filename: String,
 ) -> Result<String, String> {
     let export_format =
-        ExportFormat::parse(&format).map_err(|e| crate::core::error::user_message(&e))?;
+        ExportFormat::parse(&format).map_err(|e| auroradb_core::error::user_message(&e))?;
     // 用户传入的文件名只允许纯文件名，避免路径穿越
     let safe_name = sanitize_file_name(
         &filename,
@@ -303,7 +303,7 @@ pub async fn export_table_to_file(
         Err(e) => {
             // 半成品文件对用户没有价值，顺手清理
             let _ = tokio::fs::remove_file(&path).await;
-            Err(crate::core::error::user_message(&e))
+            Err(auroradb_core::error::user_message(&e))
         }
     }
 }

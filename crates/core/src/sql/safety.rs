@@ -11,7 +11,7 @@ use sqlparser::ast::{Query, SetExpr, Statement};
 use sqlparser::dialect::MySqlDialect;
 use sqlparser::parser::Parser;
 
-use crate::core::connection::types::SafetyMode;
+use crate::connection::types::SafetyMode;
 
 pub const READ_ONLY_MESSAGE: &str = "当前连接为只读模式，已阻止执行非查询语句";
 pub const SAFE_MODE_MESSAGE: &str =
@@ -54,7 +54,7 @@ pub fn enforce(mode: SafetyMode, sql: &str) -> Result<()> {
 fn has_destructive_statement(sql: &str) -> bool {
     const DESTRUCTIVE_KEYWORDS: &[&str] = &["TRUNCATE", "DROP", "LOAD", "CALL"];
 
-    crate::core::sql::split_sql_statements(sql).iter().any(|statement| {
+    crate::sql::split_sql_statements(sql).iter().any(|statement| {
         let keyword = leading_keyword(statement);
         DESTRUCTIVE_KEYWORDS.contains(&keyword.as_str())
             || contains_keyword(statement, "OUTFILE")
@@ -186,7 +186,7 @@ fn set_expr_has_unconditional_write(expr: &SetExpr) -> bool {
 
 /// 解析失败时的兜底判断：逐条按首关键字与 WHERE 关键字判断
 fn check_by_keyword(mode: SafetyMode, sql: &str) -> Result<()> {
-    for statement in crate::core::sql::split_sql_statements(sql) {
+    for statement in crate::sql::split_sql_statements(sql) {
         let statement = statement.trim();
         if statement.is_empty() {
             continue;

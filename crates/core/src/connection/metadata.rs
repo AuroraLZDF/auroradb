@@ -20,7 +20,7 @@ const METADATA_QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 type TableMetaRow = (String, Option<i64>, Option<String>, Option<i64>);
 
 /// 元数据查询兜底：包一层超时，把超时与底层错误统一转为 anyhow 错误（不吞错）
-pub(super) async fn with_metadata_timeout<T, E, F>(fut: F) -> Result<T>
+pub async fn with_metadata_timeout<T, E, F>(fut: F) -> Result<T>
 where
     E: Into<anyhow::Error>,
     F: std::future::Future<Output = std::result::Result<T, E>>,

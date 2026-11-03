@@ -1,14 +1,10 @@
-use crate::core::audit::{AuditEntry, AuditLog};
-use crate::core::connection::backup::{ImportLogLine, ImportProgress, ImportReporter};
-use crate::core::connection::{
+use auroradb_core::audit::{AuditEntry, AuditLog};
+use auroradb_core::connection::transfer::{ImportLogLine, ImportProgress, ImportReporter};
+use auroradb_core::connection::{
     ConnectionConfig, ConnectionManager, ConnectionRequest, ConnectionStatus, DataQueryRequest,
-    ErDiagramData, ExplainPlan, GlobalSearchRequest, GlobalSearchResult, SshConfig,
+    SshConfig,
 };
-use crate::core::license::{
-    LicenseManager, FEATURE_BACKUP, FEATURE_ER_DIAGRAM, FEATURE_GLOBAL_SEARCH,
-    FEATURE_MONITOR, FEATURE_QUERY_PLAN, FEATURE_SCHEMA_DIFF,
-    FEATURE_SSH_TUNNEL,
-};
+use auroradb_core::license::{LicenseManager, FEATURE_SSH_TUNNEL};
 use tauri::{command, Emitter, State};
 use tauri_plugin_dialog::{DialogExt, FilePath};
 use std::sync::Arc;
@@ -21,19 +17,27 @@ pub struct ConnectionManagerState {
 
 impl ConnectionManagerState {
     pub fn new() -> Self {
+        // SSH 隧道实现位于专业版 crate，启动时注入工厂；免费构建保持 None
+        #[cfg(feature = "pro")]
+        let manager = ConnectionManager::with_tunnel_factory(auroradb_pro::tunnel::factory());
+        #[cfg(not(feature = "pro"))]
+        let manager = ConnectionManager::new();
         Self {
-            manager: Arc::new(RwLock::new(ConnectionManager::new())),
+            manager: Arc::new(RwLock::new(manager)),
         }
     }
 }
 
 /// 统一错误出口：驱动错误翻译为中文可读提示，其余错误保留原信息
-fn fail(e: &anyhow::Error) -> String {
-    crate::core::error::user_message(e)
+pub(crate) fn fail(e: &anyhow::Error) -> String {
+    auroradb_core::error::user_message(e)
 }
 
 /// 审计用连接信息：连接已断开时退化为连接 ID，host 留空
-async fn connection_meta(state: &ConnectionManagerState, connection_id: &str) -> (String, String) {
+pub(crate) async fn connection_meta(
+    state: &ConnectionManagerState,
+    connection_id: &str,
+) -> (String, String) {
     let manager = state.manager.read().await;
     match manager.connection_meta(connection_id).await {
         Some((name, host, port)) => (name, format!("{}:{}", host, port)),
@@ -42,13 +46,13 @@ async fn connection_meta(state: &ConnectionManagerState, connection_id: &str) ->
 }
 
 /// 执行 SQL 并写入审计日志（成功与失败都记录）
-async fn execute_with_audit(
+pub(crate) async fn execute_with_audit(
     state: &ConnectionManagerState,
     audit: &AuditLog,
     connection_id: &str,
     database: &str,
     sql: &str,
-) -> Result<crate::core::connection::QueryResult, String> {
+) -> Result<auroradb_core::connection::QueryResult, String> {
     let (name, host) = connection_meta(state, connection_id).await;
     let started = Instant::now();
     let outcome = {
@@ -143,7 +147,7 @@ pub async fn execute_sql(
     connection_id: String,
     database: String,
     sql: String,
-) -> Result<crate::core::connection::QueryResult, String> {
+) -> Result<auroradb_core::connection::QueryResult, String> {
     execute_with_audit(&state, &audit, &connection_id, &database, &sql).await
 }
 
@@ -153,7 +157,7 @@ pub async fn execute_sql(
 /// 避免后端只保留第一个结果集导致其余结果被丢弃。
 #[command]
 pub fn split_sql_statements(sql: String) -> Vec<String> {
-    crate::core::sql::split_sql_statements(&sql)
+    auroradb_core::sql::split_sql_statements(&sql)
 }
 
 /// 在单个事务中批量应用表数据变更（任一条失败即整体回滚）
@@ -163,8 +167,8 @@ pub async fn apply_table_changes(
     audit: State<'_, AuditLog>,
     connection_id: String,
     database: String,
-    changes: Vec<crate::core::connection::TableChange>,
-) -> Result<crate::core::connection::ApplyChangesResult, String> {
+    changes: Vec<auroradb_core::connection::TableChange>,
+) -> Result<auroradb_core::connection::ApplyChangesResult, String> {
     // 审计记录聚合后的 SQL 文本；changes 随后会移交给执行层
     let sql_summary = changes
         .iter()
@@ -210,7 +214,7 @@ pub async fn apply_table_changes(
 pub async fn query_table_data(
     state: State<'_, ConnectionManagerState>,
     request: DataQueryRequest,
-) -> Result<crate::core::connection::DataQueryResponse, String> {
+) -> Result<auroradb_core::connection::DataQueryResponse, String> {
     let manager = state.manager.read().await;
 
     let conn_id = request.connection_id.clone();
@@ -234,7 +238,7 @@ pub async fn get_object_tree(
     state: State<'_, ConnectionManagerState>,
     connection_id: String,
     database: Option<String>,
-) -> Result<Vec<crate::core::connection::DatabaseObject>, String> {
+) -> Result<Vec<auroradb_core::connection::DatabaseObject>, String> {
     let manager = state.manager.read().await;
 
     match manager.get_object_tree(&connection_id, database.as_deref()).await {
@@ -250,7 +254,7 @@ pub async fn get_table_structure(
     connection_id: String,
     database: String,
     table: String,
-) -> Result<crate::core::connection::TableStructure, String> {
+) -> Result<auroradb_core::connection::TableStructure, String> {
     let manager = state.manager.read().await;
 
     match manager.get_table_structure(&connection_id, &database, &table).await {
@@ -265,7 +269,7 @@ pub async fn get_schema_snapshot(
     state: State<'_, ConnectionManagerState>,
     connection_id: String,
     database: String,
-) -> Result<crate::core::connection::SchemaSnapshot, String> {
+) -> Result<auroradb_core::connection::SchemaSnapshot, String> {
     let manager = state.manager.read().await;
 
     match manager.get_schema_snapshot(&connection_id, &database).await {
@@ -274,71 +278,13 @@ pub async fn get_schema_snapshot(
     }
 }
 
-/// 对比两个库的表结构，返回差异与迁移脚本
-#[command]
-pub async fn compare_schemas(
-    state: State<'_, ConnectionManagerState>,
-    license: State<'_, LicenseManager>,
-    source_connection_id: String,
-    source_database: String,
-    target_connection_id: String,
-    target_database: String,
-) -> Result<crate::core::connection::SchemaDiff, String> {
-    license.ensure(FEATURE_SCHEMA_DIFF, "结构对比").await?;
-    let manager = state.manager.read().await;
-
-    match manager
-        .compare_schemas(
-            &source_connection_id,
-            &source_database,
-            &target_connection_id,
-            &target_database,
-        )
-        .await
-    {
-        Ok(diff) => Ok(diff),
-        Err(e) => Err(fail(&e)),
-    }
-}
-
-/// 将 Schema 差异迁移脚本逐条应用到目标库，遇错即停并返回失败序号
-#[command]
-pub async fn apply_schema_diff(
-    state: State<'_, ConnectionManagerState>,
-    audit: State<'_, AuditLog>,
-    license: State<'_, LicenseManager>,
-    connection_id: String,
-    database: String,
-    statements: Vec<String>,
-) -> Result<crate::core::connection::ApplySchemaDiffResult, String> {
-    license.ensure(FEATURE_SCHEMA_DIFF, "结构对比").await?;
-
-    let mut applied = 0usize;
-    for (idx, sql) in statements.iter().enumerate() {
-        if let Err(e) = execute_with_audit(&state, &audit, &connection_id, &database, sql).await {
-            return Ok(crate::core::connection::ApplySchemaDiffResult {
-                applied,
-                failed_at: Some(idx + 1),
-                error: Some(e),
-            });
-        }
-        applied += 1;
-    }
-
-    Ok(crate::core::connection::ApplySchemaDiffResult {
-        applied,
-        failed_at: None,
-        error: None,
-    })
-}
-
 /// 获取数据库信息
 #[command]
 pub async fn get_database_info(
     state: State<'_, ConnectionManagerState>,
     connection_id: String,
     database: String,
-) -> Result<crate::core::connection::DatabaseInfo, String> {
+) -> Result<auroradb_core::connection::DatabaseInfo, String> {
     let manager = state.manager.read().await;
 
     match manager.get_database_info(&connection_id, &database).await {
@@ -523,13 +469,13 @@ pub async fn import_database_sql(
 /// 导入进度事件负载：附带 taskId，便于前端区分并发任务
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ImportProgressPayload {
-    task_id: String,
-    bytes: u64,
-    total: u64,
-    lines: Vec<ImportLogLine>,
-    done: bool,
-    success: bool,
+pub(crate) struct ImportProgressPayload {
+    pub(crate) task_id: String,
+    pub(crate) bytes: u64,
+    pub(crate) total: u64,
+    pub(crate) lines: Vec<ImportLogLine>,
+    pub(crate) done: bool,
+    pub(crate) success: bool,
 }
 
 /// 从文件导入数据库 SQL
@@ -584,184 +530,3 @@ pub async fn import_sql_file(
         }
     }
 }
-
-/// 读取服务端会话/进程列表
-#[command]
-pub async fn get_process_list(
-    state: State<'_, ConnectionManagerState>,
-    license: State<'_, LicenseManager>,
-    connection_id: String,
-) -> Result<Vec<crate::core::connection::ProcessInfo>, String> {
-    license.ensure(FEATURE_MONITOR, "实例监控").await?;
-    let manager = state.manager.read().await;
-
-    match manager.get_process_list(&connection_id).await {
-        Ok(processes) => Ok(processes),
-        Err(e) => Err(fail(&e)),
-    }
-}
-
-/// 终止指定会话
-#[command]
-pub async fn kill_process(
-    state: State<'_, ConnectionManagerState>,
-    license: State<'_, LicenseManager>,
-    connection_id: String,
-    process_id: u64,
-) -> Result<(), String> {
-    license.ensure(FEATURE_MONITOR, "实例监控").await?;
-    let manager = state.manager.read().await;
-
-    match manager.kill_process(&connection_id, process_id).await {
-        Ok(_) => Ok(()),
-        Err(e) => Err(fail(&e)),
-    }
-}
-
-/// 读取服务端运行指标（版本、连接数、QPS、慢查询、缓冲池命中率等）
-#[command]
-pub async fn get_server_metrics(
-    state: State<'_, ConnectionManagerState>,
-    license: State<'_, LicenseManager>,
-    connection_id: String,
-) -> Result<crate::core::connection::ServerMetrics, String> {
-    license.ensure(FEATURE_MONITOR, "实例监控").await?;
-    let manager = state.manager.read().await;
-
-    match manager.get_server_metrics(&connection_id).await {
-        Ok(metrics) => Ok(metrics),
-        Err(e) => Err(fail(&e)),
-    }
-}
-
-/// 解释 SQL 执行计划（EXPLAIN FORMAT=JSON / EXPLAIN (FORMAT JSON)）
-///
-/// 前端调用：`invoke('explain_sql', { connectionId, database, sql })`
-#[command]
-pub async fn explain_sql(
-    state: State<'_, ConnectionManagerState>,
-    license: State<'_, LicenseManager>,
-    connection_id: String,
-    database: String,
-    sql: String,
-) -> Result<ExplainPlan, String> {
-    license.ensure(FEATURE_QUERY_PLAN, "执行计划解释").await?;
-    let manager = state.manager.read().await;
-
-    match manager.explain(&connection_id, &database, &sql).await {
-        Ok(plan) => Ok(plan),
-        Err(e) => Err(fail(&e)),
-    }
-}
-
-/// 拉取整个数据库的 ER 图数据（所有表 + 所有外键）
-///
-/// 前端调用：`invoke('get_er_diagram_data', { connectionId, database })`
-#[command]
-pub async fn get_er_diagram_data(
-    state: State<'_, ConnectionManagerState>,
-    license: State<'_, LicenseManager>,
-    connection_id: String,
-    database: String,
-) -> Result<ErDiagramData, String> {
-    license.ensure(FEATURE_ER_DIAGRAM, "ER 图").await?;
-    let manager = state.manager.read().await;
-
-    match manager.get_er_diagram_data(&connection_id, &database).await {
-        Ok(data) => Ok(data),
-        Err(e) => Err(fail(&e)),
-    }
-}
-
-/// 触发完整数据库备份（mysqldump / pg_dump 子进程）
-///
-/// 由用户在系统保存对话框中选择输出路径，后端直接把 dump 写入该文件。
-#[command]
-pub async fn backup_database(
-    window: tauri::Window,
-    state: State<'_, ConnectionManagerState>,
-    license: State<'_, LicenseManager>,
-    connection_id: String,
-    database: String,
-    default_filename: String,
-) -> Result<String, String> {
-    license.ensure(FEATURE_BACKUP, "数据库备份").await?;
-
-    let (tx, rx) = tokio::sync::oneshot::channel::<Option<FilePath>>();
-    window
-        .dialog()
-        .file()
-        .set_title("备份数据库")
-        .set_file_name(&default_filename)
-        .add_filter("SQL 文件", &["sql"])
-        .add_filter("所有文件", &["*"])
-        .save_file(move |path| {
-            let _ = tx.send(path);
-        });
-
-    let output_path = match rx.await {
-        Ok(Some(path)) => path.to_string(),
-        Ok(None) => return Err("用户取消了保存操作".to_string()),
-        Err(_) => return Err("对话框操作被取消".to_string()),
-    };
-
-    let manager = state.manager.read().await;
-    manager
-        .backup_database(&connection_id, &database, &output_path)
-        .await
-        .map_err(|e| fail(&e))?;
-
-    Ok(output_path)
-}
-
-/// 从 dump 文件还原数据库
-///
-/// 执行过程中推送 `restore-progress` 事件，前端据此展示字节进度与逐条语句流水，
-/// 避免大文件还原期间界面只有静止的按钮、用户无从判断是否卡死。
-#[command]
-pub async fn restore_database(
-    window: tauri::Window,
-    state: State<'_, ConnectionManagerState>,
-    license: State<'_, LicenseManager>,
-    connection_id: String,
-    database: String,
-    dump_path: String,
-) -> Result<(), String> {
-    license.ensure(FEATURE_BACKUP, "数据库还原").await?;
-    let manager = state.manager.read().await;
-
-    let reporter: ImportReporter = Arc::new(move |progress: ImportProgress| {
-        let payload = ImportProgressPayload {
-            task_id: String::new(),
-            bytes: progress.bytes,
-            total: progress.total,
-            lines: progress.lines,
-            done: progress.done,
-            success: progress.success,
-        };
-        let _ = window.emit("restore-progress", payload);
-    });
-
-    match manager
-        .restore_database(&connection_id, &database, &dump_path, Some(reporter))
-        .await
-    {
-        Ok(()) => Ok(()),
-        Err(e) => Err(fail(&e)),
-    }
-}
-
-/// 跨库全局搜索（Pro）：按表名 / 字段名 / 数据内容查找
-#[command]
-pub async fn global_search(
-    state: State<'_, ConnectionManagerState>,
-    license: State<'_, LicenseManager>,
-    request: GlobalSearchRequest,
-) -> Result<GlobalSearchResult, String> {
-    license
-        .ensure(FEATURE_GLOBAL_SEARCH, "跨库全局搜索")
-        .await?;
-    let manager = state.manager.read().await;
-    manager.global_search(request).await.map_err(|e| fail(&e))
-}
-

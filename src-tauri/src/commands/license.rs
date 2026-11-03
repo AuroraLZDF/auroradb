@@ -1,6 +1,6 @@
 //! 许可证激活命令：状态读取、激活与停用
 
-use crate::core::license::{LicenseManager, LicenseStatus};
+use auroradb_core::license::{LicenseManager, LicenseStatus};
 use tauri::{command, State};
 
 /// 读取授权状态；已保存的激活码会重新验签与检查有效期

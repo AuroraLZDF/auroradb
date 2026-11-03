@@ -54,7 +54,7 @@
               class="tools-item"
               role="menuitem"
               :title="t('header.schemaDiffHint')"
-              :disabled="connStore.activeConnections.length === 0 || !licenseStore.allows('schema-diff')"
+              :disabled="connStore.activeConnections.length === 0"
               @click="openTool('openSchemaDiff')"
             >
               <GitCompare :size="16" />
@@ -64,7 +64,7 @@
               class="tools-item"
               role="menuitem"
               :title="t('header.erDiagramHint')"
-              :disabled="connStore.activeConnections.length === 0 || !licenseStore.allows('er-diagram')"
+              :disabled="connStore.activeConnections.length === 0"
               @click="openTool('openErDiagram')"
             >
               <Network :size="16" />
@@ -74,7 +74,7 @@
               class="tools-item"
               role="menuitem"
               :title="t('header.monitorHint')"
-              :disabled="connStore.activeConnections.length === 0 || !licenseStore.allows('monitor')"
+              :disabled="connStore.activeConnections.length === 0"
               @click="openTool('openMonitor')"
             >
               <Activity :size="16" />
@@ -84,7 +84,7 @@
               class="tools-item"
               role="menuitem"
               :title="t('header.backupHint')"
-              :disabled="connStore.activeConnections.length === 0 || !licenseStore.allows('backup')"
+              :disabled="connStore.activeConnections.length === 0"
               @click="openTool('openBackup')"
             >
               <HardDrive :size="16" />
@@ -94,7 +94,7 @@
               class="tools-item"
               role="menuitem"
               :title="t('header.globalSearchHint')"
-              :disabled="connStore.activeConnections.length === 0 || !licenseStore.allows('global-search')"
+              :disabled="connStore.activeConnections.length === 0"
               @click="openTool('openGlobalSearch')"
             >
               <Search :size="16" />

@@ -11,8 +11,10 @@
 //! 主机密钥按 `~/.ssh/known_hosts` 校验：已记录但不一致时拒绝连接（防中间人），
 //! 未记录时按 TOFU 记录后再放行（等价 OpenSSH 的 `StrictHostKeyChecking=accept-new`）。
 
-use super::types::{SshAuthType, SshConfig};
+use auroradb_core::connection::tunnel::{Tunnel, TunnelFactory};
+use auroradb_core::connection::types::{SshAuthType, SshConfig};
 use anyhow::{anyhow, Context, Result};
+use futures_util::future::BoxFuture;
 use russh::client::{self, AuthResult, Handle, Msg};
 use russh::keys::known_hosts::{check_known_hosts_path, learn_known_hosts_path};
 use russh::keys::{load_secret_key, HashAlg, PrivateKeyWithHashAlg, PublicKey};
@@ -119,6 +121,22 @@ impl Drop for SshTunnel {
             task.abort();
         }
     }
+}
+
+impl Tunnel for SshTunnel {
+    fn local_port(&self) -> u16 {
+        self.local_port
+    }
+}
+
+/// 创建专业版隧道工厂，应用启动时注入连接管理器。
+pub fn factory() -> TunnelFactory {
+    Arc::new(|config: SshConfig, target_host: String, target_port: u16| {
+        Box::pin(async move {
+            let tunnel = SshTunnel::open(&config, &target_host, target_port).await?;
+            Ok(Box::new(tunnel) as Box<dyn Tunnel>)
+        }) as BoxFuture<'static, Result<Box<dyn Tunnel>>>
+    })
 }
 
 /// 参数校验：尽量在连网前给出可读提示

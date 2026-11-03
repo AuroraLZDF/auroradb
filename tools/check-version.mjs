@@ -4,7 +4,7 @@
 //
 // 用法: node tools/check-version.mjs
 
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -67,7 +67,16 @@ const targets = [
     return lock.version
   }),
   check('src-tauri/Cargo.toml', () => cargoPackageVersion('src-tauri/Cargo.toml')),
-  check('src-tauri/Cargo.lock', () => cargoLockVersion('src-tauri/Cargo.lock', 'auroradb')),
+  check('crates/core/Cargo.toml', () => cargoPackageVersion('crates/core/Cargo.toml')),
+  // 公开仓不包含 Pro crate，此处按实际存在的情况校验
+  ...(existsSync(resolve(ROOT, 'crates/pro/Cargo.toml'))
+    ? [check('crates/pro/Cargo.toml', () => cargoPackageVersion('crates/pro/Cargo.toml'))]
+    : []),
+  check('Cargo.lock (auroradb)', () => cargoLockVersion('Cargo.lock', 'auroradb')),
+  check('Cargo.lock (auroradb-core)', () => cargoLockVersion('Cargo.lock', 'auroradb-core')),
+  ...(existsSync(resolve(ROOT, 'crates/pro/Cargo.toml'))
+    ? [check('Cargo.lock (auroradb-pro)', () => cargoLockVersion('Cargo.lock', 'auroradb-pro'))]
+    : []),
 ]
 
 let failed = false
@@ -87,6 +96,6 @@ for (const { label, version, error } of targets) {
 if (failed) {
   console.error('')
   console.error('版本号不一致：请以 src-tauri/tauri.conf.json 为准，手工同步以下文件：')
-  console.error('  src-ui/package.json、src-ui/package-lock.json、src-tauri/Cargo.toml、src-tauri/Cargo.lock')
+  console.error('  src-ui/package.json、src-ui/package-lock.json、src-tauri/Cargo.toml、crates/core/Cargo.toml、crates/pro/Cargo.toml、Cargo.lock')
   process.exit(1)
 }

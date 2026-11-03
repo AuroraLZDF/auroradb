@@ -139,7 +139,11 @@
 
           <!-- ER 图视图 -->
           <div v-else-if="activeTab?.type === 'er'" class="er-view">
-            <ErDiagram :database="(activeTab as ErTab).database.split('.').pop() || ''" />
+            <component
+              :is="ProUi.ErDiagram"
+              v-if="ProUi.ErDiagram"
+              :database="(activeTab as ErTab).database.split('.').pop() || ''"
+            />
           </div>
 
           <!-- 空状态 -->
@@ -167,7 +171,7 @@ import { Database, Table2, FileCode, X, Terminal, Network } from 'lucide-vue-nex
 import DataTable from '@/components/DataTable.vue'
 import SqlEditor from '@/components/SqlEditor.vue'
 import Console from '@/components/Console.vue'
-import ErDiagram from '@/components/ErDiagram.vue'
+import { ProUi } from '@/utils/pro'
 import { useDataBrowserStore } from '@/stores/dataBrowser'
 import { useEditorTabsStore } from '@/stores/editorTabs'
 import { confirmDanger } from '@/composables/useConfirm'

@@ -1,7 +1,7 @@
 //! 审计日志查询与清理命令（专业版功能）
 
-use crate::core::audit::{AuditEntry, AuditLog};
-use crate::core::license::{LicenseManager, FEATURE_AUDIT};
+use auroradb_core::audit::{AuditEntry, AuditLog};
+use auroradb_core::license::{LicenseManager, FEATURE_AUDIT};
 use tauri::{command, State};
 
 /// 按时间倒序读取审计日志；空条件表示不过滤

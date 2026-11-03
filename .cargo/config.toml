@@ -1,0 +1,3 @@
+[build]
+# 保持既有构建/发布脚本约定的产物目录：src-tauri/target/release/bundle
+target-dir = "src-tauri/target"

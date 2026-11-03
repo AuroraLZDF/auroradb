@@ -5,16 +5,14 @@
 ## 功能
 
 - **连接管理**：保存多个连接、密码通过系统 keyring 加密存储、连接池与心跳检测
-- **SSH 隧道**：通过纯 Rust 实现的 SSH 隧道连接内网数据库
 - **对象树浏览**：数据库、表、视图、索引、外键等对象的浏览与刷新
 - **SQL 编辑器**：语法高亮、自动补全、多语句执行、结果集分页与取消查询
 - **数据表格**：虚拟滚动、单元格编辑、变更暂存与批量提交
 - **表设计器 / 数据库设计器**：可视化查看与修改表结构
-- **结构对比**：两个数据库之间的表结构差异对比
-- **服务器监控**：进程列表、连接数与运行指标
-- **审计日志**：记录本机执行过的 SQL 操作
 - **导入导出**：CSV / JSON / SQL / Excel
 - **其他**：明暗主题、中英文切换、自动更新
+
+专业版需激活码解锁，另含：SSH 隧道、结构对比、服务器监控、审计日志、执行计划可视化、ER 图、备份还原、跨库全局搜索。
 
 ## 技术栈
 
@@ -23,20 +21,23 @@
 | 桌面框架 | Tauri 2 |
 | 前端 | Vue 3 + TypeScript + Vite + Pinia |
 | 后端 | Rust（sqlx、tokio、sqlparser、russh） |
-| 授权 | 离线 Ed25519 签名激活码（一码一机） |
+| 授权 | 开源核心 AGPL-3.0 + 专业版商业许可；离线 Ed25519 激活码（一码一机） |
 
 ## 目录结构
 
 ```
 .
+├── crates/
+│   ├── core/               # 开源核心库 auroradb-core（连接、执行、导入导出、授权校验）
+│   └── pro/                # 专业版库 auroradb-pro（私有，公开仓不含）
 ├── src-ui/                 # Vue 3 前端
-│   ├── src/components/     # 业务组件与基础 UI 组件
+│   ├── src/components/     # 免费版业务组件与基础 UI 组件
+│   ├── src/pro/            # 专业版页面（私有，公开仓不含，缺失时自动退化为无入口）
 │   ├── src/stores/         # Pinia 状态（连接、数据浏览、授权、更新等）
 │   ├── src/i18n/           # 轻量 i18n（中/英）
-│   └── src/utils/          # SQL 与表格变更工具函数
-├── src-tauri/              # Rust 后端
-│   ├── src/commands/       # Tauri 命令（连接、文件、审计、授权）
-│   ├── src/core/           # 连接驱动、执行器、导出、结构对比、监控、授权校验
+│   └── src/utils/          # SQL、表格变更与专业版界面注册表
+├── src-tauri/              # Tauri 应用（命令注册、窗口与更新）
+│   ├── src/commands/       # Tauri 命令层（pro.rs 为专业版，公开仓以 pro_stub.rs 占位）
 │   └── src/password_store.rs
 ├── tools/
 │   ├── build/              # 构建实现（linux.sh / windows.ps1 / appimage-*.sh）
@@ -44,7 +45,12 @@
 │   ├── check-version.mjs   # 版本号一致性校验
 │   ├── check-release.sh    # 发布前产物检查
 │   ├── merge-latest.py     # latest.json 合并
-│   └── license-gen/        # 激活码签发工具（仅发行方使用）
+│   ├── export-public.sh    # 从私有主仓导出公开仓（私有，公开仓不含）
+│   └── license-gen/        # 激活码签发工具（私有，公开仓不含）
+├── docs/EULA.md            # 官方发行包与专业版的最终用户许可协议
+├── LICENSE                 # AGPL-3.0
+├── CLA.md                  # 贡献者许可协议
+├── NOTICE                  # 第三方组件许可声明
 └── start.sh                # 启动 Tauri 开发模式（需前端 dev server 已运行）
 ```
 
@@ -74,6 +80,9 @@ npm test            # vitest
 
 cd ../src-tauri
 cargo test --offline
+
+# 校验免费版构建（不启用 pro feature，对应公开仓）
+cargo check --offline --no-default-features
 ```
 
 发版前按 [发版冒烟清单](docs/smoke-checklist.md) 在 Linux 与 Windows 上各跑一遍。
@@ -146,7 +155,7 @@ Gitee 单个仓库的发行版附件总量上限为 **1GB**，历史版本会持
 
 ### 手工发版步骤
 
-版本号以 `src-tauri/tauri.conf.json` 为准，需同步 `src-ui/package.json`、`src-ui/package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`，然后：
+版本号以 `src-tauri/tauri.conf.json` 为准，需同步 `src-ui/package.json`、`src-ui/package-lock.json`、`src-tauri/Cargo.toml`、`crates/core/Cargo.toml`、`crates/pro/Cargo.toml` 与根目录 `Cargo.lock`（公开仓没有 `crates/pro`，`check-version.mjs` 会自动跳过），然后：
 
 ```bash
 node tools/check-version.mjs
@@ -155,21 +164,36 @@ git tag v2.1.0
 git push origin main --tags
 ```
 
-## 授权
+## 授权与许可
 
-应用采用**离线买断**模式：激活码由发行方离线签名，客户端本地验签，无需联网。
+AuroraDB 采用 open core 双许可：开源核心以 AGPL-3.0 发布，专业版功能以商业许可提供。
 
-- 免费版可直接使用基础连接与查询功能
-- Pro 版解锁：SSH 隧道、结构对比、服务器监控、审计日志、导入导出
-- 激活码与机器码绑定（一码一机），机器码可在「激活」对话框中复制
+### 开源部分（AGPL-3.0）
 
-签发工具位于 `tools/license-gen`，仅供发行方构建与使用：
+`crates/core`、`src-tauri` 中的免费命令层与 `src-ui` 的免费界面依据 [GNU AGPL-3.0](LICENSE) 授权。您可以自由使用、修改和分发，但：
 
-```bash
-cd tools/license-gen
-cargo run -- keygen --out ~/.config/auroradb/license.key
-cargo run -- sign --fingerprint XXXX-XXXX-XXXX-XXXX --key ~/.config/auroradb/license.key --days 0
-```
+- 分发修改后的版本时，需按 AGPL-3.0 提供完整的对应源码；
+- 通过网络向用户提供修改版本的服务时，同样需要提供源码（AGPL 第 13 条）。
+
+### 专业版（商业许可）
+
+免费版可直接使用连接管理与日常查询；专业版需激活码解锁，包含：
+
+- SSH 隧道、结构对比、服务器监控、审计日志
+- 执行计划可视化、ER 图、备份还原、跨库全局搜索
+
+应用采用**离线买断**模式：激活码由发行方离线签名（Ed25519），客户端本地验签，无需联网。激活码与机器码绑定（一码一机），机器码可在「激活」对话框中复制。
+
+专业版源码不在公开仓中，安装与使用受 [最终用户许可协议](docs/EULA.md) 约束。如需基于专业版功能二次开发或商业分发，请联系【联系邮箱】获取商业许可。
+
+### 公开仓与贡献
+
+- 公开仓由 `tools/export-public.sh` 从私有主仓导出，只包含上述开源部分；
+- 公开仓保留专业版入口占位，点击时提示安装专业版，构建产物中不包含任何专业版代码；
+- 提交贡献前请阅读 [CLA](CLA.md)，首次提交需在 Pull Request 中签署；
+- 安装包中的第三方组件与许可证见 [NOTICE](NOTICE)。
+
+激活码签发工具位于私有主仓的 `tools/license-gen`，仅供发行方构建与使用。
 
 ## 日志
 

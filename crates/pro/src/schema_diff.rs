@@ -3,12 +3,112 @@
 //! 方向约定：source 为基准（源库），target 为待同步（目标库）；
 //! Added 表示仅源库存在（需要 ADD/CREATE），Removed 表示仅目标库存在（需要 DROP）。
 
-use super::manager::ConnectionManager;
-use super::metadata::with_metadata_timeout;
-use super::types::*;
-use super::validation::{escape_string, validate_identifier};
+use auroradb_core::connection::metadata::with_metadata_timeout;
+use auroradb_core::connection::validation::{escape_string, validate_identifier};
+use auroradb_core::connection::ConnectionManager;
 use anyhow::{anyhow, Result};
+use serde::Serialize;
 use std::collections::HashMap;
+
+/// Schema 对比：列定义（来自 INFORMATION_SCHEMA.COLUMNS）
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SchemaCompareColumn {
+    pub name: String,
+    pub column_type: String,
+    pub is_nullable: bool,
+    pub default_value: Option<String>,
+    pub extra: String,
+    pub comment: String,
+    pub ordinal: u32,
+    pub generation_expression: Option<String>,
+}
+
+/// Schema 对比：索引定义（来自 INFORMATION_SCHEMA.STATISTICS）
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SchemaCompareIndex {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub is_unique: bool,
+    pub index_type: String,
+}
+
+/// Schema 对比：表结构快照（仅基表）
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SchemaCompareTable {
+    pub name: String,
+    pub columns: Vec<SchemaCompareColumn>,
+    pub indexes: Vec<SchemaCompareIndex>,
+}
+
+/// 差异类型：Added=仅源库存在，Removed=仅目标库存在，Changed=两边都有但不一致
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DiffChange {
+    Added,
+    Removed,
+    Changed,
+}
+
+/// 列级差异
+#[derive(Debug, Clone, Serialize)]
+pub struct SchemaColumnDiff {
+    pub name: String,
+    pub change: DiffChange,
+    pub source: Option<String>,
+    pub target: Option<String>,
+    pub details: Vec<String>,
+}
+
+/// 索引级差异
+#[derive(Debug, Clone, Serialize)]
+pub struct SchemaIndexDiff {
+    pub name: String,
+    pub change: DiffChange,
+    pub source: Option<String>,
+    pub target: Option<String>,
+}
+
+/// 表级差异
+#[derive(Debug, Clone, Serialize)]
+pub struct SchemaTableDiff {
+    pub name: String,
+    pub change: DiffChange,
+    pub columns: Vec<SchemaColumnDiff>,
+    pub indexes: Vec<SchemaIndexDiff>,
+    pub statements: Vec<String>,
+}
+
+/// 差异汇总
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SchemaDiffSummary {
+    pub added_tables: usize,
+    pub removed_tables: usize,
+    pub changed_tables: usize,
+    pub added_columns: usize,
+    pub removed_columns: usize,
+    pub changed_columns: usize,
+    pub added_indexes: usize,
+    pub removed_indexes: usize,
+    pub changed_indexes: usize,
+}
+
+/// Schema 对比结果：source 为基准，target 为待同步；statements 为可直接执行的迁移脚本
+#[derive(Debug, Clone, Serialize)]
+pub struct SchemaDiff {
+    pub source_database: String,
+    pub target_database: String,
+    pub tables: Vec<SchemaTableDiff>,
+    pub statements: Vec<String>,
+    pub summary: SchemaDiffSummary,
+}
+
+/// Schema 差异脚本执行结果：逐条应用，遇错即停；`failed_at` 为失败语句的序号（从 1 开始）
+#[derive(Debug, Clone, Serialize)]
+pub struct ApplySchemaDiffResult {
+    pub applied: usize,
+    pub failed_at: Option<usize>,
+    pub error: Option<String>,
+}
 
 /// INFORMATION_SCHEMA.COLUMNS 的一行：
 /// 表名、列名、类型、是否可空、默认值、EXTRA、注释、序号、生成表达式
@@ -24,141 +124,117 @@ type ColumnRow = (
     Option<String>,
 );
 
-impl ConnectionManager {
-    /// 对比两个连接上的库结构，返回差异与迁移脚本
-    pub async fn compare_schemas(
-        &self,
-        source_connection: &str,
-        source_database: &str,
-        target_connection: &str,
-        target_database: &str,
-    ) -> Result<SchemaDiff> {
-        let source = self
-            .load_compare_schema(source_connection, source_database)
-            .await?;
-        let target = self
-            .load_compare_schema(target_connection, target_database)
-            .await?;
+/// 对比两个连接上的库结构，返回差异与迁移脚本
+pub async fn compare_schemas(
+    manager: &ConnectionManager,
+    source_connection: &str,
+    source_database: &str,
+    target_connection: &str,
+    target_database: &str,
+) -> Result<SchemaDiff> {
+    let source = load_compare_schema(manager, source_connection, source_database).await?;
+    let target = load_compare_schema(manager, target_connection, target_database).await?;
 
-        let mut diff = diff_schemas(source_database, target_database, &source, &target);
+    let mut diff = diff_schemas(source_database, target_database, &source, &target);
 
-        // 新增表优先使用源库真实建表语句（含引擎/字符集/外键等），失败时保留兜底语句
-        for table in diff
-            .tables
-            .iter_mut()
-            .filter(|t| t.change == DiffChange::Added)
-        {
-            match self
-                .show_create_table(source_connection, source_database, &table.name)
-                .await
-            {
-                Ok(statement) => table.statements = vec![terminate(statement)],
-                Err(e) => {
-                    tracing::warn!("读取建表语句失败，改用兜底 DDL: {}: {}", table.name, e);
-                }
+    // 新增表优先使用源库真实建表语句（含引擎/字符集/外键等），失败时保留兜底语句
+    for table in diff
+        .tables
+        .iter_mut()
+        .filter(|t| t.change == DiffChange::Added)
+    {
+        match show_create_table(manager, source_connection, source_database, &table.name).await {
+            Ok(statement) => table.statements = vec![terminate(statement)],
+            Err(e) => {
+                tracing::warn!("读取建表语句失败，改用兜底 DDL: {}: {}", table.name, e);
             }
         }
-
-        diff.statements = diff
-            .tables
-            .iter()
-            .flat_map(|t| t.statements.iter().cloned())
-            .collect();
-
-        Ok(diff)
     }
 
-    /// 读取参与对比的表结构：仅基表，列与索引各一条查询
-    async fn load_compare_schema(
-        &self,
-        connection_id: &str,
-        database: &str,
-    ) -> Result<Vec<SchemaCompareTable>> {
-        validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
+    diff.statements = diff
+        .tables
+        .iter()
+        .flat_map(|t| t.statements.iter().cloned())
+        .collect();
 
-        let connections = self.connections.read().await;
-        let conn = connections
-            .get(connection_id)
-            .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
-        let pool = conn
-            .pool
-            .as_ref()
-            .ok_or_else(|| anyhow!("连接不可用: {}", connection_id))?
-            .as_mysql("Schema 对比")?;
+    Ok(diff)
+}
 
-        let table_rows: Vec<(String,)> = with_metadata_timeout(
-            sqlx::query_as(
-                "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES
-                 WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'
-                 ORDER BY TABLE_NAME ASC",
-            )
-            .bind(database)
-            .fetch_all(pool),
+/// 读取参与对比的表结构：仅基表，列与索引各一条查询
+async fn load_compare_schema(
+    manager: &ConnectionManager,
+    connection_id: &str,
+    database: &str,
+) -> Result<Vec<SchemaCompareTable>> {
+    validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
+
+    let snapshot = manager.connection_snapshot(connection_id).await?;
+    let pool = snapshot.pool.as_mysql("Schema 对比")?;
+
+    let table_rows: Vec<(String,)> = with_metadata_timeout(
+        sqlx::query_as(
+            "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES
+             WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'
+             ORDER BY TABLE_NAME ASC",
         )
-        .await?;
+        .bind(database)
+        .fetch_all(pool),
+    )
+    .await?;
 
-        let column_rows: Vec<ColumnRow> = with_metadata_timeout(
-            sqlx::query_as(
-                "SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT,
-                        EXTRA, COLUMN_COMMENT, CAST(ORDINAL_POSITION AS SIGNED),
-                        GENERATION_EXPRESSION
-                 FROM INFORMATION_SCHEMA.COLUMNS
-                 WHERE TABLE_SCHEMA = ?
-                 ORDER BY TABLE_NAME ASC, ORDINAL_POSITION ASC",
-            )
-            .bind(database)
-            .fetch_all(pool),
+    let column_rows: Vec<ColumnRow> = with_metadata_timeout(
+        sqlx::query_as(
+            "SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT,
+                    EXTRA, COLUMN_COMMENT, CAST(ORDINAL_POSITION AS SIGNED),
+                    GENERATION_EXPRESSION
+             FROM INFORMATION_SCHEMA.COLUMNS
+             WHERE TABLE_SCHEMA = ?
+             ORDER BY TABLE_NAME ASC, ORDINAL_POSITION ASC",
         )
-        .await?;
+        .bind(database)
+        .fetch_all(pool),
+    )
+    .await?;
 
-        let index_rows: Vec<(String, String, Option<String>, i64, String, i64)> =
-            with_metadata_timeout(
-                sqlx::query_as(
-                    "SELECT TABLE_NAME, INDEX_NAME, COLUMN_NAME,
-                            CAST(NON_UNIQUE AS SIGNED), INDEX_TYPE, CAST(SEQ_IN_INDEX AS SIGNED)
-                     FROM INFORMATION_SCHEMA.STATISTICS
-                     WHERE TABLE_SCHEMA = ?
-                     ORDER BY TABLE_NAME ASC, INDEX_NAME ASC, SEQ_IN_INDEX ASC",
-                )
-                .bind(database)
-                .fetch_all(pool),
-            )
-            .await?;
-
-        Ok(build_tables(table_rows, column_rows, index_rows))
-    }
-
-    /// 读取源库真实建表语句（新增表同步时使用）
-    async fn show_create_table(
-        &self,
-        connection_id: &str,
-        database: &str,
-        table: &str,
-    ) -> Result<String> {
-        validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
-
-        let connections = self.connections.read().await;
-        let conn = connections
-            .get(connection_id)
-            .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
-        let pool = conn
-            .pool
-            .as_ref()
-            .ok_or_else(|| anyhow!("连接不可用: {}", connection_id))?
-            .as_mysql("Schema 对比")?;
-
-        let (_, create_sql): (String, String) = with_metadata_timeout(
-            sqlx::query_as(&format!(
-                "SHOW CREATE TABLE {}.{}",
-                quote(database),
-                quote(table)
-            ))
-            .fetch_one(pool),
+    let index_rows: Vec<(String, String, Option<String>, i64, String, i64)> = with_metadata_timeout(
+        sqlx::query_as(
+            "SELECT TABLE_NAME, INDEX_NAME, COLUMN_NAME,
+                    CAST(NON_UNIQUE AS SIGNED), INDEX_TYPE, CAST(SEQ_IN_INDEX AS SIGNED)
+             FROM INFORMATION_SCHEMA.STATISTICS
+             WHERE TABLE_SCHEMA = ?
+             ORDER BY TABLE_NAME ASC, INDEX_NAME ASC, SEQ_IN_INDEX ASC",
         )
-        .await?;
+        .bind(database)
+        .fetch_all(pool),
+    )
+    .await?;
 
-        Ok(create_sql)
-    }
+    Ok(build_tables(table_rows, column_rows, index_rows))
+}
+
+/// 读取源库真实建表语句（新增表同步时使用）
+async fn show_create_table(
+    manager: &ConnectionManager,
+    connection_id: &str,
+    database: &str,
+    table: &str,
+) -> Result<String> {
+    validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
+
+    let snapshot = manager.connection_snapshot(connection_id).await?;
+    let pool = snapshot.pool.as_mysql("Schema 对比")?;
+
+    let (_, create_sql): (String, String) = with_metadata_timeout(
+        sqlx::query_as(&format!(
+            "SHOW CREATE TABLE {}.{}",
+            quote(database),
+            quote(table)
+        ))
+        .fetch_one(pool),
+    )
+    .await?;
+
+    Ok(create_sql)
 }
 
 /// 把 INFORMATION_SCHEMA 的三份结果聚合成按表分组的结构

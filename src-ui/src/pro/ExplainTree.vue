@@ -31,27 +31,8 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { t } from '@/i18n'
+import type { ExplainPlan } from '@/utils/explain'
 import ExplainNodeRow from './ExplainNodeRow.vue'
-
-export interface ExplainNode {
-  operation: string
-  table?: string
-  index?: string
-  rows?: number
-  cost?: number
-  filtered?: number
-  extra: string[]
-  children: ExplainNode[]
-}
-
-export interface ExplainPlan {
-  driver: 'mysql' | 'postgres'
-  sql: string
-  nodes: ExplainNode[]
-  warnings: string[]
-  raw_json: string
-  execution_time_ms: number
-}
 
 defineProps<{
   plan: ExplainPlan | null

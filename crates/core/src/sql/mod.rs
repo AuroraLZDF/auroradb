@@ -3,7 +3,7 @@
 
 pub mod safety;
 
-use crate::core::connection::driver::DriverKind;
+use crate::connection::driver::DriverKind;
 
 /// 使用 sqlparser 解析 SQL，为所有未带 schema 前缀的表名添加数据库前缀。
 /// 解析失败时回退返回原始 SQL，避免破坏 MySQL 特有语法。
@@ -464,7 +464,7 @@ mod tests {
         is_schema_changing, leading_use_database, rewrite_table_names, split_sql_statements,
         strip_sql_comments,
     };
-    use crate::core::connection::driver::DriverKind;
+    use crate::connection::driver::DriverKind;
 
     #[test]
     fn test_rewrite_simple_select() {

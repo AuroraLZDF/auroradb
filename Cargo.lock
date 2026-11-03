@@ -311,6 +311,8 @@ name = "auroradb"
 version = "2.0.0"
 dependencies = [
  "anyhow",
+ "auroradb-core",
+ "auroradb-pro",
  "base64 0.21.7",
  "chrono",
  "dirs 5.0.1",
@@ -318,7 +320,6 @@ dependencies = [
  "futures-util",
  "keyring",
  "reqwest",
- "russh",
  "rust_decimal",
  "rust_xlsxwriter",
  "rustls 0.23.46",
@@ -337,6 +338,42 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "auroradb-core"
+version = "2.0.0"
+dependencies = [
+ "anyhow",
+ "base64 0.21.7",
+ "chrono",
+ "dirs 5.0.1",
+ "ed25519-dalek",
+ "futures-util",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlparser",
+ "sqlx",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "auroradb-pro"
+version = "2.0.0"
+dependencies = [
+ "anyhow",
+ "auroradb-core",
+ "dirs 5.0.1",
+ "futures-util",
+ "russh",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -1,7 +1,7 @@
-//! 数据库完整备份与还原。
+//! 数据库 SQL 导入导出（免费版）。
 //!
-//! 通过子进程调用官方客户端工具（`mysqldump` / `pg_dump` / `mysql` / `psql`），
-//! 覆盖纯 SQL 导出的 10K 行上限，并天然包含 views / triggers / routines。
+//! 通过子进程调用官方客户端工具（`mysqldump` / `mysql`），覆盖纯 SQL 导出的 10K 行上限，
+//! 并天然包含 views / triggers / routines。
 //!
 //! 凭据处理：
 //! - MySQL：写临时 `defaults-extra-file`（权限 0600），用完删除，避免密码暴露在进程列表
@@ -31,66 +31,6 @@ const CLIENT_TIMEOUT: Duration = Duration::from_secs(3600);
 const VERSION_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 
 impl ConnectionManager {
-    /// 外部客户端执行的脚本绕过了连接池，元数据缓存不会自动失效，
-    /// 必须手动清空，否则对象树/表结构会在 TTL（30s）内返回执行前的旧快照。
-    async fn invalidate_metadata_cache(&self, connection_id: &str) {
-        let connections = self.connections.read().await;
-        if let Some(conn) = connections.get(connection_id) {
-            conn.metadata_cache.lock().await.clear();
-        }
-    }
-
-    /// 触发完整备份：根据驱动调用 mysqldump / pg_dump，写入用户选择的路径。
-    pub async fn backup_database(
-        &self,
-        connection_id: &str,
-        database: &str,
-        output_path: &str,
-    ) -> Result<u64> {
-        // 取连接配置与隧道状态
-        let (config, ssl_config, tunnel_port) = {
-            let connections = self.connections.read().await;
-            let conn = connections
-                .get(connection_id)
-                .ok_or_else(|| anyhow!("连接 {} 不存在或已断开", connection_id))?;
-            let tunnel_port = conn.tunnel.as_ref().map(|t| t.local_port());
-            (conn.config.clone(), conn.effective_ssl_config(), tunnel_port)
-        };
-
-        if config.driver == DriverKind::Postgres {
-            tracing::warn!("PostgreSQL 备份还原尚未实现，跳过 pg_dump 调用");
-            return Err(anyhow!(
-                "PostgreSQL 完整备份将在后续版本提供，请先使用导出 SQL 功能"
-            ));
-        }
-
-        // 解析实际要连接的 host/port（SSH 隧道存在时走本地转发端口）
-        let (host, port) = if let Some(local_port) = tunnel_port {
-            ("127.0.0.1".to_string(), local_port)
-        } else {
-            (config.host.clone(), config.port)
-        };
-
-        // 确保输出目录存在（用户可能在对话框中输入了尚不存在的目录）
-        let output_path = PathBuf::from(output_path);
-        if let Some(parent) = output_path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent).ok();
-            }
-        }
-
-        run_mysqldump_to_file(
-            &host,
-            port,
-            database,
-            &config.username,
-            &config.password,
-            &ssl_config,
-            &output_path,
-        )
-        .await
-    }
-
     /// 导出整库 SQL 到用户指定路径（mysqldump 直写文件，不经内存/IPC）。
     ///
     /// 相比旧版逐表拼接 SQL 的实现，这里没有 1 万行上限，也不会在超时后静默跳过表，
@@ -136,57 +76,6 @@ impl ConnectionManager {
             &output_path,
         )
         .await
-    }
-
-    /// 从 dump 文件还原数据库（MySQL 先用 stdin 管道实现）
-    ///
-    /// 传入 `reporter` 时推送字节进度与逐条语句流水，前端据此展示还原进度。
-    pub async fn restore_database(
-        &self,
-        connection_id: &str,
-        database: &str,
-        dump_path: &str,
-        reporter: Option<ImportReporter>,
-    ) -> Result<()> {
-        let (config, ssl_config, tunnel_port) = {
-            let connections = self.connections.read().await;
-            let conn = connections
-                .get(connection_id)
-                .ok_or_else(|| anyhow!("连接 {} 不存在或已断开", connection_id))?;
-            let tunnel_port = conn.tunnel.as_ref().map(|t| t.local_port());
-            (conn.config.clone(), conn.effective_ssl_config(), tunnel_port)
-        };
-
-        if config.driver == DriverKind::Postgres {
-            return Err(anyhow!("PostgreSQL 还原将在后续版本提供"));
-        }
-
-        let (host, port) = if let Some(local_port) = tunnel_port {
-            ("127.0.0.1".to_string(), local_port)
-        } else {
-            (config.host.clone(), config.port)
-        };
-
-        let path = PathBuf::from(dump_path);
-        if !path.is_file() {
-            return Err(anyhow!("备份文件不存在：{}", dump_path));
-        }
-
-        run_mysql_script_file(
-            &host,
-            port,
-            database,
-            &config.username,
-            &config.password,
-            &ssl_config,
-            &path,
-            "还原",
-            reporter,
-        )
-        .await?;
-        // 还原脚本可能重建表结构，清空缓存让刷新能拿到最新列表
-        self.invalidate_metadata_cache(connection_id).await;
-        Ok(())
     }
 
     /// 流式导入 SQL 文件（大文件不经过 IPC / 内存，因此没有 10MB 上限）
@@ -525,7 +414,7 @@ async fn copy_into_stdin(
 /// 传入 `reporter` 时额外开启 `-v`，解析客户端回显并实时推送逐条语句流水。
 // 参数多但都是一次性调用所需的连接信息，拆成结构体反而让调用处更繁琐
 #[allow(clippy::too_many_arguments)]
-async fn run_mysql_script_file(
+pub async fn run_mysql_script_file(
     host: &str,
     port: u16,
     database: &str,
@@ -847,7 +736,7 @@ async fn run_mysql_script_file(
 ///   当成库名，导致 dump 的是错误的库甚至报错）
 /// - 先写同目录 `.part` 临时文件，确认 dump footer 完整后才替换目标文件，
 ///   避免失败时破坏用户已有的同名文件、也避免留下半截 dump 被当作有效备份
-async fn run_mysqldump_to_file(
+pub async fn run_mysqldump_to_file(
     host: &str,
     port: u16,
     database: &str,

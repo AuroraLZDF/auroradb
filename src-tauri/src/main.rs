@@ -1,13 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
-mod core;
 mod password_store;
 
+use auroradb_core::audit::AuditLog;
+use auroradb_core::license::LicenseManager;
 use commands::connection::ConnectionManagerState;
 use commands::sql_file::PendingSqlFiles;
-use core::audit::AuditLog;
-use core::license::LicenseManager;
 use password_store::PasswordStore;
 use tauri::Manager;
 use tracing_subscriber::filter::LevelFilter;
@@ -121,8 +120,8 @@ fn main() {
             commands::connection::get_object_tree,
             commands::connection::get_table_structure,
             commands::connection::get_schema_snapshot,
-            commands::connection::compare_schemas,
-            commands::connection::apply_schema_diff,
+            commands::pro::compare_schemas,
+            commands::pro::apply_schema_diff,
             commands::connection::get_database_info,
             commands::connection::begin_transaction,
             commands::connection::commit_transaction,
@@ -133,14 +132,14 @@ fn main() {
             commands::connection::export_database_sql_to_file,
             commands::connection::import_database_sql,
             commands::connection::import_sql_file,
-            commands::connection::get_process_list,
-            commands::connection::kill_process,
-            commands::connection::get_server_metrics,
-            commands::connection::explain_sql,
-            commands::connection::get_er_diagram_data,
-            commands::connection::backup_database,
-            commands::connection::restore_database,
-            commands::connection::global_search,
+            commands::pro::get_process_list,
+            commands::pro::kill_process,
+            commands::pro::get_server_metrics,
+            commands::pro::explain_sql,
+            commands::pro::get_er_diagram_data,
+            commands::pro::backup_database,
+            commands::pro::restore_database,
+            commands::pro::global_search,
             commands::audit::list_audit_entries,
             commands::audit::clear_audit_logs,
             password_store::save_connection_password,

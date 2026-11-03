@@ -246,7 +246,9 @@
     <!-- Schema 对比弹窗 -->
     <div v-if="showSchemaDiff" class="modal-overlay">
       <div class="modal-content modal-large">
-        <SchemaDiff
+        <component
+          :is="ProUi.SchemaDiff"
+          v-if="ProUi.SchemaDiff"
           :connections="activeConnections"
           :initial-connection-id="currentConnection?.id"
           :initial-database="browserStore.currentDatabase"
@@ -258,7 +260,9 @@
     <!-- 实例监控与审计弹窗 -->
     <div v-if="showMonitor" class="modal-overlay">
       <div class="modal-content modal-large">
-        <MonitorPanel
+        <component
+          :is="ProUi.MonitorPanel"
+          v-if="ProUi.MonitorPanel"
           :connections="activeConnections"
           :initial-connection-id="currentConnection?.id"
           @close="showMonitor = false"
@@ -269,7 +273,12 @@
     <!-- 备份还原弹窗 -->
     <div v-if="showBackup" class="modal-overlay">
       <div class="modal-content modal-backup">
-        <BackupDialog @close="showBackup = false" @restored="onDatabaseRestored" />
+        <component
+          :is="ProUi.BackupDialog"
+          v-if="ProUi.BackupDialog"
+          @close="showBackup = false"
+          @restored="onDatabaseRestored"
+        />
       </div>
     </div>
 
@@ -293,7 +302,9 @@
     <!-- 跨库全局搜索弹窗 -->
     <div v-if="showGlobalSearch" class="modal-overlay">
       <div class="modal-content modal-large">
-        <GlobalSearchDialog
+        <component
+          :is="ProUi.GlobalSearchDialog"
+          v-if="ProUi.GlobalSearchDialog"
           :initial-connection-id="currentConnection?.id"
           :initial-database="browserStore.currentDatabase"
           @open-table="handleGlobalSearchOpenTable"
@@ -352,7 +363,7 @@ import { useConnectionStore, type ConnectionStatus, type SshConfig } from '@/sto
 import { useSavedConnectionsStore, type SavedConnection } from '@/stores/savedConnections'
 import { useDataBrowserStore, type DatabaseObject } from '@/stores/dataBrowser'
 import { useThemeStore } from '@/stores/theme'
-import { useLicenseStore } from '@/stores/license'
+import { useLicenseStore, type ProFeature } from '@/stores/license'
 import HeaderToolbar from '@/components/layout/HeaderToolbar.vue'
 import MainContent from '@/components/layout/MainContent.vue'
 import ConnectionTree from '@/components/sidebar/ConnectionTree.vue'
@@ -360,16 +371,13 @@ import ConnectionForm from '@/components/ConnectionForm.vue'
 import InfoPanel from '@/components/InfoPanel.vue'
 import TableDesigner from '@/components/TableDesigner.vue'
 import DatabaseDesigner from '@/components/DatabaseDesigner.vue'
-import SchemaDiff from '@/components/SchemaDiff.vue'
-import MonitorPanel from '@/components/MonitorPanel.vue'
 import LicenseDialog from '@/components/LicenseDialog.vue'
 import AboutDialog from '@/components/AboutDialog.vue'
 import ToastNotification from '@/components/ui/Toast.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import CommandPalette from '@/components/CommandPalette.vue'
-import BackupDialog from '@/components/BackupDialog.vue'
 import ImportProgressDialog from '@/components/ImportProgressDialog.vue'
-import GlobalSearchDialog from '@/components/GlobalSearchDialog.vue'
+import { ProUi, hasProUi } from '@/utils/pro'
 import { useCommandRegistryStore } from '@/stores/commandRegistry'
 import { useToast } from '@/composables/useToast'
 import { confirmDanger } from '@/composables/useConfirm'
@@ -429,7 +437,7 @@ watch(isMobile, (mobile) => {
 }, { immediate: true })
 
 // Toast 通知
-const { setToastRef, success: showToast, error: showError } = useToast()
+const { setToastRef, success: showToast, error: showError, warning: showWarning } = useToast()
 onMounted(() => {
   if (toastRef.value) {
     setToastRef(toastRef.value)
@@ -544,15 +552,23 @@ const showGlobalSearch = ref(false)
 // 关于
 const showAbout = ref(false)
 
-// 专业版入口：未激活时先弹出激活窗口
+// 专业版入口：免费构建提示使用专业版，未激活时先弹出激活窗口
+function requireProEntry(feature: ProFeature, label: string): boolean {
+  if (!hasProUi) {
+    showWarning(t('license.proUnavailable'))
+    return false
+  }
+  return licenseStore.requirePro(feature, label)
+}
+
 function handleOpenSchemaDiff() {
-  if (licenseStore.requirePro('schema-diff', t('license.feature.schema-diff'))) {
+  if (requireProEntry('schema-diff', t('license.feature.schema-diff'))) {
     showSchemaDiff.value = true
   }
 }
 
 function handleOpenErDiagram() {
-  if (!licenseStore.requirePro('er-diagram', t('license.feature.er-diagram'))) return
+  if (!requireProEntry('er-diagram', t('license.feature.er-diagram'))) return
   if (!selectedDatabase.value) {
     showError(t('erDiagram.needsDatabase'))
     return
@@ -561,18 +577,18 @@ function handleOpenErDiagram() {
 }
 
 function handleOpenMonitor() {
-  if (licenseStore.requirePro('monitor', t('license.feature.monitor'))) {
+  if (requireProEntry('monitor', t('license.feature.monitor'))) {
     showMonitor.value = true
   }
 }
 
 function handleOpenBackup() {
-  if (!licenseStore.requirePro('backup', t('license.feature.backup'))) return
+  if (!requireProEntry('backup', t('license.feature.backup'))) return
   showBackup.value = true
 }
 
 function handleOpenGlobalSearch() {
-  if (!licenseStore.requirePro('global-search', t('license.feature.global-search'))) return
+  if (!requireProEntry('global-search', t('license.feature.global-search'))) return
   showGlobalSearch.value = true
 }
 

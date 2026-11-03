@@ -5,8 +5,8 @@
 //! 2. 递归扁平化为统一的 ExplainNode 树（operation / table / rows / cost / children），
 //!    前端用 ExplainTree.vue 渲染这棵树，节点颜色按 cost 高亮。
 
-use super::driver::{AnyPool, DriverKind};
-use super::manager::ConnectionManager;
+use auroradb_core::connection::driver::{AnyPool, DriverKind};
+use auroradb_core::connection::ConnectionManager;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -202,7 +202,7 @@ fn flatten_pg_top_level(root: &Value) -> Vec<ExplainNode> {
 
 fn validate_explain_sql(sql: &str, driver: DriverKind) -> Result<()> {
     // 只允许单条语句：EXPLAIN 只作用于紧随其后的第一条语句，多语句会静默忽略其余部分
-    let statements = crate::core::sql::split_sql_statements(sql);
+    let statements = auroradb_core::sql::split_sql_statements(sql);
     if statements.len() > 1 {
         return Err(anyhow!("一次只能解释一条语句，请去掉多余的分号内容"));
     }
@@ -231,79 +231,86 @@ fn validate_explain_sql(sql: &str, driver: DriverKind) -> Result<()> {
     Ok(())
 }
 
-impl ConnectionManager {
-    /// 解释 SQL 执行计划（统一 MySQL/PG）
-    pub async fn explain(
-        &self,
-        connection_id: &str,
-        database: &str,
-        sql: &str,
-    ) -> Result<ExplainPlan> {
-        // 库名会被拼进 USE / search_path，必须先按标识符规则校验
-        if !database.is_empty() {
-            crate::core::connection::validation::validate_identifier(database)
-                .map_err(|e| anyhow!("数据库名验证失败：{}", e))?;
-        }
-
-        let (pool, driver, conn_database) = {
-            let mgr = self.connections.read().await;
-            let conn = mgr.get(connection_id)
-                .ok_or_else(|| anyhow!("连接不存在: {connection_id}"))?;
-            let pool = conn.pool.as_ref()
-                .ok_or_else(|| anyhow!("连接尚未建立"))?
-                .clone();
-            validate_explain_sql(sql, pool.driver())?;
-            (pool.clone(), pool.driver(), conn.config.database.clone())
-        };
-
-        let start = std::time::Instant::now();
-        let raw_json = match &pool {
-            AnyPool::MySql(mysql_pool) => {
-                let mut phys = mysql_pool.acquire().await.context("获取 MySQL 连接失败")?;
-                if !database.is_empty() {
-                    let use_sql = DriverKind::MySql.switch_database_sql(database);
-                    Executor::execute(&mut *phys, use_sql.as_str()).await
-                        .map_err(|e| anyhow!("切换数据库失败：{}", e))?;
-                }
-                let explain_sql = format!("EXPLAIN FORMAT=JSON {}", sql);
-                sqlx::query_scalar::<_, String>(explain_sql.as_str())
-                    .fetch_optional(&mut *phys)
-                    .await
-                    .map_err(|e| anyhow!("执行 EXPLAIN 失败：{}", crate::core::error::translate(&e)))?
-                    .ok_or_else(|| anyhow!("EXPLAIN 未返回结果"))?
-            }
-            AnyPool::Postgres(pg_pool) => {
-                let mut phys = pg_pool.acquire().await.context("获取 PostgreSQL 连接失败")?;
-                if !database.is_empty() && conn_database.as_deref() != Some(database) {
-                    let set_sql = DriverKind::Postgres.switch_database_sql(database);
-                    Executor::execute(&mut *phys, set_sql.as_str()).await
-                        .map_err(|e| anyhow!("切换模式失败：{}", crate::core::error::translate(&e)))?;
-                }
-                let explain_sql = format!("EXPLAIN (FORMAT JSON) {}", sql);
-                sqlx::query_scalar::<_, String>(explain_sql.as_str())
-                    .fetch_optional(&mut *phys)
-                    .await
-                    .map_err(|e| anyhow!("执行 EXPLAIN 失败：{}", crate::core::error::translate(&e)))?
-                    .ok_or_else(|| anyhow!("EXPLAIN 未返回结果"))?
-            }
-        };
-        let warnings: Vec<String> = vec![];
-
-        let parsed: Value = serde_json::from_str(&raw_json)
-            .map_err(|e| anyhow!("解析 EXPLAIN JSON 失败：{e}"))?;
-
-        let nodes = match driver {
-            DriverKind::MySql => flatten_mysql_top_level(&parsed),
-            DriverKind::Postgres => flatten_pg_top_level(&parsed),
-        };
-
-        Ok(ExplainPlan {
-            driver,
-            sql: sql.to_string(),
-            nodes,
-            warnings,
-            raw_json,
-            execution_time_ms: start.elapsed().as_millis() as u64,
-        })
+/// 解释 SQL 执行计划（统一 MySQL/PG）
+pub async fn explain(
+    manager: &ConnectionManager,
+    connection_id: &str,
+    database: &str,
+    sql: &str,
+) -> Result<ExplainPlan> {
+    // 库名会被拼进 USE / search_path，必须先按标识符规则校验
+    if !database.is_empty() {
+        auroradb_core::connection::validation::validate_identifier(database)
+            .map_err(|e| anyhow!("数据库名验证失败：{}", e))?;
     }
+
+    let snapshot = manager.connection_snapshot(connection_id).await?;
+    let pool = snapshot.pool;
+    validate_explain_sql(sql, pool.driver())?;
+    let driver = pool.driver();
+    let conn_database = snapshot.config.database.clone();
+
+    let start = std::time::Instant::now();
+    let raw_json = match &pool {
+        AnyPool::MySql(mysql_pool) => {
+            let mut phys = mysql_pool.acquire().await.context("获取 MySQL 连接失败")?;
+            if !database.is_empty() {
+                let use_sql = DriverKind::MySql.switch_database_sql(database);
+                Executor::execute(&mut *phys, use_sql.as_str())
+                    .await
+                    .map_err(|e| anyhow!("切换数据库失败：{}", e))?;
+            }
+            let explain_sql = format!("EXPLAIN FORMAT=JSON {}", sql);
+            sqlx::query_scalar::<_, String>(explain_sql.as_str())
+                .fetch_optional(&mut *phys)
+                .await
+                .map_err(|e| {
+                    anyhow!(
+                        "执行 EXPLAIN 失败：{}",
+                        auroradb_core::error::translate(&e)
+                    )
+                })?
+                .ok_or_else(|| anyhow!("EXPLAIN 未返回结果"))?
+        }
+        AnyPool::Postgres(pg_pool) => {
+            let mut phys = pg_pool.acquire().await.context("获取 PostgreSQL 连接失败")?;
+            if !database.is_empty() && conn_database.as_deref() != Some(database) {
+                let set_sql = DriverKind::Postgres.switch_database_sql(database);
+                Executor::execute(&mut *phys, set_sql.as_str())
+                    .await
+                    .map_err(|e| {
+                        anyhow!("切换模式失败：{}", auroradb_core::error::translate(&e))
+                    })?;
+            }
+            let explain_sql = format!("EXPLAIN (FORMAT JSON) {}", sql);
+            sqlx::query_scalar::<_, String>(explain_sql.as_str())
+                .fetch_optional(&mut *phys)
+                .await
+                .map_err(|e| {
+                    anyhow!(
+                        "执行 EXPLAIN 失败：{}",
+                        auroradb_core::error::translate(&e)
+                    )
+                })?
+                .ok_or_else(|| anyhow!("EXPLAIN 未返回结果"))?
+        }
+    };
+    let warnings: Vec<String> = vec![];
+
+    let parsed: Value = serde_json::from_str(&raw_json)
+        .map_err(|e| anyhow!("解析 EXPLAIN JSON 失败：{e}"))?;
+
+    let nodes = match driver {
+        DriverKind::MySql => flatten_mysql_top_level(&parsed),
+        DriverKind::Postgres => flatten_pg_top_level(&parsed),
+    };
+
+    Ok(ExplainPlan {
+        driver,
+        sql: sql.to_string(),
+        nodes,
+        warnings,
+        raw_json,
+        execution_time_ms: start.elapsed().as_millis() as u64,
+    })
 }

@@ -11,7 +11,7 @@
           <Square :size="14" />
           {{ t('common.cancel') }}
         </button>
-        <button @click="explainSql" :disabled="explaining || !sql.trim() || !licenseStore.allows('query-plan')" class="btn-explain">
+        <button @click="explainSql" :disabled="explaining || !sql.trim()" class="btn-explain">
           <Cpu :size="14" />
           {{ t('sqlEditor.explain') }}
         </button>
@@ -137,7 +137,7 @@
     </div>
 
     <div v-else-if="resultView === 'explain'" class="result-panel">
-      <ExplainTree :plan="explainResult" />
+      <component :is="ProUi.ExplainTree" v-if="ProUi.ExplainTree" :plan="explainResult" />
     </div>
 
     <div v-else-if="result" class="result-panel">
@@ -354,8 +354,8 @@ import {
   type CompletionItem,
   type CompletionKind,
 } from '@/composables/useSqlCompletion'
-import ExplainTree from './ExplainTree.vue'
-import type { ExplainPlan } from './ExplainTree.vue'
+import type { ExplainPlan } from '@/utils/explain'
+import { ProUi, hasProUi } from '@/utils/pro'
 import CellViewer from '@/components/CellViewer.vue'
 import Select from '@/components/ui/Select.vue'
 
@@ -789,6 +789,10 @@ async function cancelQuery() {
 // EXPLAIN 执行计划（Pro 功能）
 async function explainSql() {
   if (!sql.value.trim() || !currentConnectionId.value) return
+  if (!hasProUi) {
+    globalToast.warning(t('license.proUnavailable'))
+    return
+  }
   if (!licenseStore.allows('query-plan')) {
     licenseStore.openDialog()
     return

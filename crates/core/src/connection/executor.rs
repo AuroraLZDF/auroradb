@@ -11,7 +11,7 @@ use super::resultset::{
 use super::types::*;
 use super::validation::*;
 use anyhow::{anyhow, Context, Result};
-use crate::core::sql::{rewrite_table_names, split_sql_statements};
+use crate::sql::{rewrite_table_names, split_sql_statements};
 use futures_util::TryStreamExt;
 use sqlx::mysql::MySqlPool;
 use sqlx::postgres::{PgConnection, PgPool};
@@ -291,7 +291,7 @@ async fn ensure_table_has_primary_key(
         anyhow!(
             "第 {} 条变更失败：检查表主键时出错：{}",
             position,
-            crate::core::error::translate(&e)
+            crate::error::translate(&e)
         )
     })?
     .is_some();
@@ -322,7 +322,7 @@ async fn apply_changes_in_txn(
     let use_sql = format!("USE `{}`", database);
     Executor::execute(&mut *txn, use_sql.as_str())
         .await
-        .map_err(|e| anyhow!("切换数据库失败：{}", crate::core::error::translate(&e)))?;
+        .map_err(|e| anyhow!("切换数据库失败：{}", crate::error::translate(&e)))?;
 
     let mut unchanged = 0usize;
     // 同一次保存中的表名去重，避免每行变更都查一次元数据
@@ -346,7 +346,7 @@ async fn apply_changes_in_txn(
                 anyhow!(
                     "第 {} 条变更失败：{}",
                     position,
-                    crate::core::error::translate(&e)
+                    crate::error::translate(&e)
                 )
             })?
             .rows_affected();
@@ -385,7 +385,7 @@ async fn apply_changes_in_txn(
                                 Ok(None) => Some("目标行已不存在，可能已被其他会话删除".to_string()),
                                 Err(e) => Some(format!(
                                     "确认目标行是否仍存在时失败：{}",
-                                    crate::core::error::translate(&e)
+                                    crate::error::translate(&e)
                                 )),
                             }
                         }
@@ -433,7 +433,7 @@ fn validate_table_change(
         TableChangeKind::Delete => "DELETE",
     };
 
-    crate::core::sql::safety::enforce(safety_mode, statement)
+    crate::sql::safety::enforce(safety_mode, statement)
         .map_err(|e| anyhow!("第 {} 条变更未通过安全校验：{}", position, e))?;
 
     // 目标表必须从 AST 取：文本匹配会被注释、字符串字面量、JOIN 的其它表绕过
@@ -450,7 +450,7 @@ fn validate_table_change(
 
     if let Some(where_clause) = &change.where_clause {
         let quoted = quote_identifier(&change.table)?;
-        crate::core::sql::safety::validate_where_clause(&quoted, where_clause)
+        crate::sql::safety::validate_where_clause(&quoted, where_clause)
             .map_err(|e| anyhow!("第 {} 条变更的定位条件不合法：{}", position, e))?;
     }
 
@@ -542,7 +542,7 @@ impl ConnectionManager {
             }
 
             // 访问模式守卫：只读模式拒绝非查询语句，安全模式拒绝不带 WHERE 的 UPDATE/DELETE
-            crate::core::sql::safety::enforce(conn.config.safety_mode, sql)?;
+            crate::sql::safety::enforce(conn.config.safety_mode, sql)?;
 
             // 池的克隆只是 Arc 计数增加，用于把具体驱动类型交给对应执行路径
             let pool = conn
@@ -579,7 +579,7 @@ impl ConnectionManager {
 
         // 结构变更成功后立刻失效元数据缓存，否则对象树/表结构会在 TTL（30s）内返回旧快照，
         // 表现为建表后刷新列表看不到新表
-        if crate::core::sql::is_schema_changing(sql) {
+        if crate::sql::is_schema_changing(sql) {
             state.metadata_cache.lock().await.clear();
         }
 
@@ -599,7 +599,7 @@ impl ConnectionManager {
 
         // 同一次提交内可能先切库再查询（`USE db2; SELECT * FROM t`）。
         // 后续未限定表名必须以「最后切换到的库」为准补前缀，否则会被补上侧栏选中的库，静默查错库。
-        let effective_db = match crate::core::sql::leading_use_database(sql) {
+        let effective_db = match crate::sql::leading_use_database(sql) {
             Some(db) => {
                 validate_identifier(&db).map_err(|e| anyhow!("USE 语句中的数据库名不合法: {}", e))?;
                 db
@@ -916,7 +916,7 @@ impl ConnectionManager {
             let set_sql = DriverKind::Postgres.switch_database_sql(database);
             Executor::execute(&mut *pg_conn, set_sql.as_str())
                 .await
-                .map_err(|e| anyhow!("切换模式失败：{}", crate::core::error::translate(&e)))?;
+                .map_err(|e| anyhow!("切换模式失败：{}", crate::error::translate(&e)))?;
         }
         let t_use = Instant::now();
 
@@ -1115,7 +1115,7 @@ impl ConnectionManager {
         };
 
         if let Err(e) = txn.commit().await {
-            return Err(anyhow!("提交保存事务失败：{}", crate::core::error::translate(&e)));
+            return Err(anyhow!("提交保存事务失败：{}", crate::error::translate(&e)));
         }
         drop(txn_guard);
 
@@ -2104,7 +2104,7 @@ impl ConnectionManager {
                         continue;
                     }
                     // 导入脚本此前只拦只读模式，Safe 模式下仍会执行 DROP/TRUNCATE 等危险语句
-                    crate::core::sql::safety::enforce(safety_mode, stmt).map_err(|e| {
+                    crate::sql::safety::enforce(safety_mode, stmt).map_err(|e| {
                         anyhow!("第 {} 条 SQL 被安全模式拦截：{}\nStatement: {}", index + 1, e, stmt)
                     })?;
                     // 文本协议执行：DDL、存储过程等语句无法走预处理协议
@@ -2181,7 +2181,7 @@ impl ConnectionManager {
             }
 
             // 之前仅拦截只读模式，Safe 模式下脚本里的 DROP/TRUNCATE 依然会执行
-            crate::core::sql::safety::enforce(safety_mode, stmt).map_err(|e| {
+            crate::sql::safety::enforce(safety_mode, stmt).map_err(|e| {
                 anyhow!("第 {} 条 SQL 被安全模式拦截：{}\nStatement: {}", index + 1, e, stmt)
             })?;
 
@@ -2326,7 +2326,7 @@ fn ms(end: Instant, start: Instant) -> f64 {
 /// 判断列类型是否参与关键字搜索。
 ///
 /// BLOB/二进制/空间类型无法安全地做字符串包含匹配（或匹配结果没有意义），直接跳过。
-pub(super) fn is_searchable_type(column_type: &str) -> bool {
+pub fn is_searchable_type(column_type: &str) -> bool {
     let t = column_type.to_ascii_lowercase();
     !(t.contains("blob")
         || t.contains("binary")

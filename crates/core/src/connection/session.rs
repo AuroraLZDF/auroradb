@@ -133,8 +133,15 @@ impl ConnectionManager {
         // 隧道对象在此处持有，若后续建池失败会随作用域 Drop 一并关闭。
         let (tunnel, host, port) = match &request.ssh_config {
             Some(ssh) => {
-                let tunnel = super::tunnel::SshTunnel::open(ssh, &request.config.host, request.config.port)
-                    .await?;
+                let factory = self
+                    .tunnel_factory()
+                    .ok_or_else(|| anyhow!("当前版本不包含 SSH 隧道功能"))?;
+                let tunnel = factory(
+                    ssh.clone(),
+                    request.config.host.clone(),
+                    request.config.port,
+                )
+                .await?;
                 let local_port = tunnel.local_port();
                 (Some(tunnel), "127.0.0.1".to_string(), local_port)
             }

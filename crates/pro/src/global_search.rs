@@ -5,8 +5,8 @@
 //!
 //! 仅支持 MySQL：PostgreSQL 连接池经 `as_mysql` 会返回带功能名的明确错误。
 
-use super::executor::is_searchable_type;
-use super::manager::ConnectionManager;
+use auroradb_core::connection::executor::is_searchable_type;
+use auroradb_core::connection::ConnectionManager;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::MySqlPool;
@@ -138,92 +138,87 @@ fn bind_value(mode: SearchMode, keyword: &str) -> String {
     }
 }
 
-impl ConnectionManager {
-    /// 跨库全局搜索：表名 / 字段名 / 数据内容
-    pub async fn global_search(&self, request: GlobalSearchRequest) -> Result<GlobalSearchResult> {
-        let started = Instant::now();
-        let keyword = request.keyword.trim();
-        if keyword.is_empty() {
-            return Err(anyhow!("请输入搜索关键字"));
-        }
-        if keyword.chars().count() > 200 {
-            return Err(anyhow!("搜索关键字不能超过 200 个字符"));
-        }
-
-        let mode = match request.mode.as_deref().unwrap_or("like") {
-            "like" => SearchMode::Like,
-            "regex" => SearchMode::Regex,
-            other => return Err(anyhow!("不支持的搜索模式：{}", other)),
-        };
-
-        let database = request
-            .database
-            .as_deref()
-            .map(str::trim)
-            .filter(|db| !db.is_empty());
-
-        let pool = {
-            let connections = self.connections.read().await;
-            let conn = connections.get(&request.connection_id).ok_or_else(|| {
-                anyhow!("连接 {} 不存在或已断开", request.connection_id)
-            })?;
-            conn.pool
-                .as_ref()
-                .ok_or_else(|| anyhow!("连接 {} 未建立", request.connection_id))?
-                .as_mysql("跨库全局搜索")?
-                .clone()
-        };
-
-        let mut notes: Vec<String> = Vec::new();
-        let mut truncated = false;
-
-        let (tables, table_truncated) = if request.search_tables.unwrap_or(true) {
-            search_table_names(&pool, database, mode, keyword).await?
-        } else {
-            (Vec::new(), false)
-        };
-        truncated |= table_truncated;
-
-        let (columns, column_truncated) = if request.search_columns.unwrap_or(true) {
-            search_column_names(&pool, database, mode, keyword).await?
-        } else {
-            (Vec::new(), false)
-        };
-        truncated |= column_truncated;
-
-        let mut scanned_tables = 0usize;
-        let data = if request.search_data.unwrap_or(false) {
-            let (matches, scanned, data_truncated, data_notes) =
-                search_data_content(&pool, database, mode, keyword, started).await?;
-            scanned_tables = scanned;
-            truncated |= data_truncated;
-            notes.extend(data_notes);
-            matches
-        } else {
-            Vec::new()
-        };
-
-        if truncated && notes.is_empty() {
-            notes.push(format!(
-                "结果已截断：表名/字段名最多返回 {} 条，数据搜索最多扫描 {} 张表",
-                MAX_NAME_MATCHES, MAX_DATA_TABLES
-            ));
-        }
-
-        Ok(GlobalSearchResult {
-            tables,
-            columns,
-            data,
-            scanned_tables,
-            truncated,
-            warning: if notes.is_empty() {
-                None
-            } else {
-                Some(notes.join("；"))
-            },
-            execution_time_ms: started.elapsed().as_millis() as u64,
-        })
+/// 跨库全局搜索：表名 / 字段名 / 数据内容
+pub async fn global_search(
+    manager: &ConnectionManager,
+    request: GlobalSearchRequest,
+) -> Result<GlobalSearchResult> {
+    let started = Instant::now();
+    let keyword = request.keyword.trim();
+    if keyword.is_empty() {
+        return Err(anyhow!("请输入搜索关键字"));
     }
+    if keyword.chars().count() > 200 {
+        return Err(anyhow!("搜索关键字不能超过 200 个字符"));
+    }
+
+    let mode = match request.mode.as_deref().unwrap_or("like") {
+        "like" => SearchMode::Like,
+        "regex" => SearchMode::Regex,
+        other => return Err(anyhow!("不支持的搜索模式：{}", other)),
+    };
+
+    let database = request
+        .database
+        .as_deref()
+        .map(str::trim)
+        .filter(|db| !db.is_empty());
+
+    let snapshot = manager.connection_snapshot(&request.connection_id).await?;
+    let pool = snapshot
+        .pool
+        .as_mysql("跨库全局搜索")?
+        .clone();
+
+    let mut notes: Vec<String> = Vec::new();
+    let mut truncated = false;
+
+    let (tables, table_truncated) = if request.search_tables.unwrap_or(true) {
+        search_table_names(&pool, database, mode, keyword).await?
+    } else {
+        (Vec::new(), false)
+    };
+    truncated |= table_truncated;
+
+    let (columns, column_truncated) = if request.search_columns.unwrap_or(true) {
+        search_column_names(&pool, database, mode, keyword).await?
+    } else {
+        (Vec::new(), false)
+    };
+    truncated |= column_truncated;
+
+    let mut scanned_tables = 0usize;
+    let data = if request.search_data.unwrap_or(false) {
+        let (matches, scanned, data_truncated, data_notes) =
+            search_data_content(&pool, database, mode, keyword, started).await?;
+        scanned_tables = scanned;
+        truncated |= data_truncated;
+        notes.extend(data_notes);
+        matches
+    } else {
+        Vec::new()
+    };
+
+    if truncated && notes.is_empty() {
+        notes.push(format!(
+            "结果已截断：表名/字段名最多返回 {} 条，数据搜索最多扫描 {} 张表",
+            MAX_NAME_MATCHES, MAX_DATA_TABLES
+        ));
+    }
+
+    Ok(GlobalSearchResult {
+        tables,
+        columns,
+        data,
+        scanned_tables,
+        truncated,
+        warning: if notes.is_empty() {
+            None
+        } else {
+            Some(notes.join("；"))
+        },
+        execution_time_ms: started.elapsed().as_millis() as u64,
+    })
 }
 
 /// 数据库过滤片段与绑定值

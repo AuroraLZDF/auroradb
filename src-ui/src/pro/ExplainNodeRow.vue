@@ -32,7 +32,7 @@
 
 <script setup lang="ts">
 import { Folder } from 'lucide-vue-next'
-import type { ExplainNode } from './ExplainTree.vue'
+import type { ExplainNode } from '@/utils/explain'
 
 defineProps<{
   node: ExplainNode
