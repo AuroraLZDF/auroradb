@@ -51,7 +51,7 @@
 ├── LICENSE                 # AGPL-3.0
 ├── CLA.md                  # 贡献者许可协议
 ├── NOTICE                  # 第三方组件许可声明
-└── start.sh                # 启动 Tauri 开发模式（需前端 dev server 已运行）
+└── start.sh                # 一键启动 Tauri 开发模式（首次运行会自动装前端依赖）
 ```
 
 ## 开发
@@ -64,10 +64,22 @@
 
 ### 启动开发模式
 
+首次克隆后，**必须先装前端依赖**（否则 `vite: not found`）：
+
 ```bash
 cd src-ui
-npm install
-npm run tauri:dev
+npm ci        # 或 npm install；推荐 ci，严格按 package-lock.json 安装
+```
+
+之后两种启动方式任选其一：
+
+```bash
+# 方式 A：一键脚本（推荐，自动拉起前端 dev server + Tauri）
+./start.sh
+
+# 方式 B：分别启动（调试时方便看分离的日志）
+cd src-ui && npm run dev &        # 前端 dev server
+cd ../src-tauri && cargo tauri dev # Tauri 壳
 ```
 
 ### 常用检查

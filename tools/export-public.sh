@@ -223,7 +223,7 @@ def clean_readme(text):
         "├── LICENSE                 # AGPL-3.0\n"
         "├── CLA.md                  # 贡献者许可协议\n"
         "├── NOTICE                  # 第三方组件许可声明\n"
-        "└── start.sh                # 启动 Tauri 开发模式（需前端 dev server 已运行）\n"
+        "└── start.sh                # 一键启动 Tauri 开发模式（首次运行需先装前端依赖）\n"
         "```\n",
     )
 
