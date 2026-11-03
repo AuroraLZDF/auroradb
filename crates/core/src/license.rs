@@ -59,6 +59,12 @@ pub struct LicensePayload {
     pub expires_at: Option<String>,
     #[serde(default)]
     pub features: Vec<String>,
+    /// 多机位授权中的机位序号（从 1 开始）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat: Option<u32>,
+    /// 多机位授权的机位总数
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seats: Option<u32>,
 }
 
 /// 返回给前端的授权状态
@@ -66,7 +72,7 @@ pub struct LicensePayload {
 pub struct LicenseStatus {
     /// 是否已激活且校验通过
     pub activated: bool,
-    /// `free` / `pro`
+    /// `free` / `pro` / `trial`
     pub edition: String,
     pub fingerprint: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -76,6 +82,12 @@ pub struct LicenseStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
     pub features: Vec<String>,
+    /// 多机位授权的机位序号（单机授权为 None）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seat: Option<u32>,
+    /// 多机位授权的机位总数（单机授权为 None）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seats: Option<u32>,
     /// 已保存激活码但校验失败时的原因（过期、换机、文件损坏等）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -91,6 +103,8 @@ impl LicenseStatus {
             issued_at: None,
             expires_at: None,
             features: Vec::new(),
+            seat: None,
+            seats: None,
             error: None,
         }
     }
@@ -104,6 +118,8 @@ impl LicenseStatus {
             issued_at: Some(payload.issued_at.clone()),
             expires_at: payload.expires_at.clone(),
             features: payload.features.clone(),
+            seat: payload.seat,
+            seats: payload.seats,
             error: None,
         }
     }
@@ -170,9 +186,9 @@ impl LicenseManager {
     pub async fn allows(&self, feature: &str) -> bool {
         self.refresh().await;
         let status = self.status.read().await;
-        // features 为空表示该授权包含全部专业版能力
+        // features 为空表示该授权包含全部专业版能力；trial 同样视为全功能，到期后由 expires_at 失效
         status.activated
-            && status.edition == "pro"
+            && (status.edition == "pro" || status.edition == "trial")
             && (status.features.is_empty()
                 || status.features.iter().any(|item| item == "*" || item == feature))
     }
@@ -405,7 +421,8 @@ fn verify_code(
     if payload.product != PRODUCT_ID {
         return Err("该激活码不属于 AuroraDB".to_string());
     }
-    if payload.edition != "pro" {
+    // pro 为买断/年度授权，trial 为全功能试用；trial 同样依赖 expires_at 到期失效
+    if payload.edition != "pro" && payload.edition != "trial" {
         return Err("激活码类型不受支持".to_string());
     }
     if normalize_fingerprint(&payload.fingerprint) != normalize_fingerprint(fingerprint) {
@@ -494,6 +511,8 @@ mod tests {
             issued_at: "2026-01-01T00:00:00Z".to_string(),
             expires_at,
             features: vec![FEATURE_SCHEMA_DIFF.to_string()],
+            seat: None,
+            seats: None,
         }
     }
 
@@ -562,6 +581,103 @@ mod tests {
         );
         let error = verify_code(&code, &public, "ABCD-EF01-2345-6789", now()).unwrap_err();
         assert!(error.contains("过期"), "got: {error}");
+    }
+
+    #[tokio::test]
+    async fn trial_code_activates_and_allows_all_features() {
+        let (signing, public) = test_key();
+        let path = temp_path();
+        // 试用版为全功能：features 留空表示全部能力，到期由 expires_at 控制
+        let trial = LicensePayload {
+            edition: "trial".to_string(),
+            features: Vec::new(),
+            ..payload(
+                &machine_fingerprint(),
+                Some("2999-01-01T00:00:00Z".to_string()),
+            )
+        };
+        let code = encode(&signing, &trial);
+
+        let manager = LicenseManager::new_in(&path, public);
+        let status = manager.activate(&code).await.unwrap();
+        assert!(status.activated);
+        assert_eq!(status.edition, "trial");
+        assert!(manager.allows(FEATURE_MONITOR).await);
+        assert!(manager.allows(FEATURE_SCHEMA_DIFF).await);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn rejects_expired_trial_code() {
+        let (signing, public) = test_key();
+        let trial = LicensePayload {
+            edition: "trial".to_string(),
+            features: Vec::new(),
+            ..payload(
+                "ABCD-EF01-2345-6789",
+                Some("2026-05-31T23:59:59Z".to_string()),
+            )
+        };
+        let code = encode(&signing, &trial);
+        let error = verify_code(&code, &public, "ABCD-EF01-2345-6789", now()).unwrap_err();
+        assert!(error.contains("过期"), "got: {error}");
+    }
+
+    #[test]
+    fn parses_seat_fields_and_omits_them_when_absent() {
+        let (signing, public) = test_key();
+        let seat_payload = LicensePayload {
+            seat: Some(2),
+            seats: Some(5),
+            ..payload("ABCD-EF01-2345-6789", None)
+        };
+        let verified = verify_code(
+            &encode(&signing, &seat_payload),
+            &public,
+            "ABCD-EF01-2345-6789",
+            now(),
+        )
+        .unwrap();
+        assert_eq!(verified.seat, Some(2));
+        assert_eq!(verified.seats, Some(5));
+
+        // 未设置时序列化不出现 seat/seats，旧码结构保持不变
+        let old = payload("ABCD-EF01-2345-6789", None);
+        let json = serde_json::to_value(&old).unwrap();
+        assert!(json.get("seat").is_none());
+        assert!(json.get("seats").is_none());
+        let verified = verify_code(
+            &encode(&signing, &old),
+            &public,
+            "ABCD-EF01-2345-6789",
+            now(),
+        )
+        .unwrap();
+        assert_eq!(verified.seat, None);
+        assert_eq!(verified.seats, None);
+    }
+
+    #[test]
+    fn old_pro_code_without_new_fields_still_parses() {
+        let (signing, public) = test_key();
+        // 旧版 license-gen 生成的 JSON：没有 seat/seats 字段，serde(default) 应解析为 None
+        let json = r#"{"v":1,"product":"auroradb","edition":"pro","license_id":"AD-OLD","fingerprint":"ABCD-EF01-2345-6789","issued_at":"2026-01-01T00:00:00Z","features":["schema-diff"]}"#;
+        let payload_b64 = URL_SAFE_NO_PAD.encode(json);
+        let signature = signing.sign(payload_b64.as_bytes());
+        let code = format!(
+            "{}.{}.{}",
+            LICENSE_PREFIX,
+            payload_b64,
+            URL_SAFE_NO_PAD.encode(signature.to_bytes())
+        );
+
+        let verified = verify_code(&code, &public, "ABCD-EF01-2345-6789", now()).unwrap();
+        assert_eq!(verified.edition, "pro");
+        assert_eq!(verified.license_id, "AD-OLD");
+        assert_eq!(verified.seat, None);
+        assert_eq!(verified.seats, None);
+        assert_eq!(verified.features, vec![FEATURE_SCHEMA_DIFF.to_string()]);
     }
 
     #[test]

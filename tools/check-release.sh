@@ -8,9 +8,17 @@
 #   ./tools/check-release.sh --repo owner/auroradb-releases
 #   ./tools/check-release.sh --bundle-dir <目录> # 指定产物目录（默认 src-tauri/target/release/bundle）
 #
+# 双层分发（Linux 完整 AppImage 走 GitHub、deb+lite 走 Gitee）时：
+#   ./tools/check-release.sh --appimage <完整 AppImage> \
+#       --upload-file <deb> --upload-file <lite.AppImage> --upload-file <lite.AppImage.sig>
+#   --appimage 指定应用内更新用的更新包（不必进上传集）；--upload-file 可重复，
+#   表示真正会上传到 Gitee 的文件。上传文件必须 <=100MB（>90MB 给出警告），
+#   更新包不限制大小（不上传），但必须存在、带 .sig、能算出 SHA-256。
+#   不传这两个参数时行为与旧版一致（更新包与安装包都视为上传集）。
+#
 # 检查项:
 #   1. 平台必需产物齐全，更新包带有 .sig 签名
-#   2. 单个附件不超过 Gitee 的 100MB 上限
+#   2. 上传附件不超过 Gitee 的 100MB 上限（>90MB 警告，实测上传不稳）
 #   3. tauri.conf.json 的更新源地址指向本次发布仓库
 #   4. 生成 SHA256SUMS（随安装包一起上传，供用户核对完整性）
 
@@ -28,14 +36,19 @@ PLATFORM="linux"
 RELEASE_REPO=""
 BUNDLE_DIR="src-tauri/target/release/bundle"
 MAX_SIZE=$((100 * 1024 * 1024))
+WARN_SIZE=$((90 * 1024 * 1024))
+APPIMAGE=""
+UPLOAD_FILES=()
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --platform) PLATFORM="${2:-}"; shift 2 ;;
         --repo) RELEASE_REPO="${2:-}"; shift 2 ;;
         --bundle-dir) BUNDLE_DIR="${2:-}"; shift 2 ;;
+        --appimage) APPIMAGE="${2:-}"; shift 2 ;;
+        --upload-file) UPLOAD_FILES+=("${2:-}"); shift 2 ;;
         -h|--help)
-            sed -n '3,15p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '3,23p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *) echo -e "${RED}未知参数: $1${NC}"; exit 1 ;;
@@ -65,6 +78,7 @@ echo "发布前检查: $PLATFORM -> $RELEASE_REPO"
 
 # 1. 平台必需产物：更新包（应用内升级用）与安装包（手动安装用）
 shopt -s nullglob
+EXPLICIT_UPDATER=0
 if [[ "$PLATFORM" == "windows" ]]; then
     PLATFORM_KEY="windows-x86_64"
     # Tauri 2 的 NSIS 更新包就是 *-setup.exe 本身（tools/publish/windows.ps1 也按此口径上传与签名）
@@ -72,12 +86,22 @@ if [[ "$PLATFORM" == "windows" ]]; then
     INSTALLERS=( "${UPDATER[@]}" )
 else
     PLATFORM_KEY="linux-x86_64"
-    UPDATER=( "$BUNDLE_DIR"/appimage/*.AppImage )
+    if [[ -n "$APPIMAGE" ]]; then
+        # 双层分发：完整 AppImage 可以不在 bundle 目录里（例如从其它构建目录取），且不上传 Gitee
+        [[ -f "$APPIMAGE" ]] || fail "指定的更新包不存在: $APPIMAGE"
+        UPDATER=( "$APPIMAGE" )
+        EXPLICIT_UPDATER=1
+    else
+        UPDATER=( "$BUNDLE_DIR"/appimage/*.AppImage )
+    fi
     INSTALLERS=( "$BUNDLE_DIR"/deb/*.deb )
 fi
 shopt -u nullglob
 
-(( ${#UPDATER[@]} == 1 )) || fail "更新包数量应为 1，实际 ${#UPDATER[@]} 个（请清理旧产物后重新构建）"
+# 未显式指定更新包时沿用旧口径：bundle 里必须恰好有一个 AppImage/setup.exe
+if (( EXPLICIT_UPDATER == 0 )); then
+    (( ${#UPDATER[@]} == 1 )) || fail "更新包数量应为 1，实际 ${#UPDATER[@]} 个（请清理旧产物后重新构建）"
+fi
 [[ -f "${UPDATER[0]}.sig" ]] || fail "缺少 ${UPDATER[0]##*/}.sig，应用内更新会校验失败"
 ok "更新包 ${UPDATER[0]##*/} 及签名就绪"
 
@@ -90,12 +114,41 @@ elif [[ ! -f "${INSTALLERS[0]}.sig" ]]; then
     warn "缺少 ${INSTALLERS[0]##*/}.sig，清单中不会包含 deb 校验值"
 fi
 
-# 2. 单附件大小：Gitee 上限 100MB，超限会被拒收
-for f in "${UPDATER[@]}" ${INSTALLERS[@]+"${INSTALLERS[@]}"}; do
+# 上传集：显式给了 --upload-file 就用它（更新包不在其中时不参与大小限制/SHA256SUMS）
+if (( ${#UPLOAD_FILES[@]} > 0 )); then
+    UPLOAD=( "${UPLOAD_FILES[@]}" )
+    for f in "${UPLOAD[@]}"; do
+        [[ -f "$f" ]] || fail "指定的上传文件不存在: $f"
+    done
+else
+    UPLOAD=( "${UPDATER[@]}" ${INSTALLERS[@]+"${INSTALLERS[@]}"} )
+fi
+
+# 2. 上传附件大小：Gitee 上限 100MB，超限会被拒收；90MB 以上实测上传不稳定
+for f in "${UPLOAD[@]}"; do
     SIZE="$(stat -c %s "$f")"
     (( SIZE <= MAX_SIZE )) || fail "$(basename "$f") ($((SIZE / 1024 / 1024))MB) 超过 Gitee 100MB 上限"
+    if (( SIZE > WARN_SIZE )); then
+        warn "$(basename "$f") ($((SIZE / 1024 / 1024))MB) 超过 90MB，Gitee 上传可能不稳定"
+    fi
 done
-ok "附件大小均在 100MB 以内"
+ok "上传附件大小均在 100MB 以内"
+
+# 更新包不进上传集时（latest.json 直接指向它的 URL），单独确认存在、签名与校验值
+if ! printf '%s\n' "${UPLOAD[@]}" | grep -qxF "${UPDATER[0]}"; then
+    UPDATER_SHA256="$(python3 - "$UPDATER" <<'PY'
+import hashlib
+import sys
+
+digest = hashlib.sha256()
+with open(sys.argv[1], 'rb') as f:
+    for chunk in iter(lambda: f.read(1 << 20), b''):
+        digest.update(chunk)
+print(digest.hexdigest())
+PY
+)"
+    ok "更新包 ${UPDATER[0]##*/} 不上传 Gitee，SHA-256: $UPDATER_SHA256"
+fi
 
 # 3. 更新源与发布仓库一致性：地址写错时应用永远收不到更新
 ENDPOINT="$(python3 - <<'PY'
@@ -112,15 +165,15 @@ PY
 [[ "$ENDPOINT" == *"/$RELEASE_REPO/"* ]] || fail "更新源 $ENDPOINT 与发布仓库 $RELEASE_REPO 不一致"
 ok "更新源指向 $RELEASE_REPO"
 
-# 4. SHA256SUMS：签名只覆盖更新包，安装包完整性需靠校验值
-python3 - "$BUNDLE_DIR/SHA256SUMS" "${UPDATER[@]}" ${INSTALLERS[@]+"${INSTALLERS[@]}"} <<'PY'
+# 4. SHA256SUMS：签名只覆盖更新包，安装包完整性需靠校验值（只列真正上传的文件）
+python3 - "$BUNDLE_DIR/SHA256SUMS" "${UPLOAD[@]}" <<'PY'
 import hashlib
 import os
 import sys
 
 out, files = sys.argv[1], sys.argv[2:]
 lines = []
-# Windows 上更新包与安装包是同一个 *-setup.exe，去重避免 SHA256SUMS 出现重复行
+# 同一个文件可能重复出现在参数里（如 Windows 的 setup.exe 身兼更新包与安装包），去重
 for path in sorted(set(files)):
     digest = hashlib.sha256()
     with open(path, 'rb') as f:

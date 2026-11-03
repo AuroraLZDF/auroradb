@@ -42,7 +42,7 @@
 
 | 项 | 说明 | 优先级 |
 |----|------|--------|
-| **AppImage 101MB 超限** | ✅ 已解决：`tools/build/appimage-repack.sh` 复用原 runtime，strip 符号后用 zstd 重压包（101MB → 83MB），构建脚本自动调用并重新签名 | 已解决 |
+| **AppImage 体积超限** | ✅ 已解决：`tools/build/appimage-repack.sh` 复用原 runtime，strip 符号后用 zstd 重压包；full 实测 103,709,176 B（约 98.9 MiB），另提供 `--lite` 变体（约 30.2 MiB，依赖系统 webkit2gtk-4.1），构建脚本自动调用并重新签名 | 已解决 |
 | **Linux 应用内更新** | ✅ 已解决：updater endpoint 指向 `https://gitee.com/auroraLZDF/auroradb-releases/raw/main/latest.json`，`tools/publish/linux.sh` 上传 AppImage 后自动生成并提交 latest.json；deb 不支持更新，仅 AppImage 生效 | 已解决 |
 | **免费版 / Pro 边界细化** | 免费版：多连接 + 查询 + 导入导出 + 表设计器；Pro：结构同步 + 定时备份 + 审计 + SSH 多跳 + 跨库搜索 | 产品 |
 | **试用期** | 14 天全功能；实现：激活码带 trial 标记，或首次启动开始倒计时 | 变现 |
@@ -194,7 +194,7 @@ V2-7 质量门禁随每批并行推进
 ## 变更日志
 
 - 2026-10-26：初稿，P0-P2 分级 + 实施顺序
-- 2026-10-26：发布链路打通 — AppImage 重打包压到 83MB、updater endpoint 落地、release.sh 自动生成 latest.json
+- 2026-10-26：发布链路打通 — AppImage 重打包压到约 98.9 MiB、updater endpoint 落地、release.sh 自动生成 latest.json
 - 2026-10-30：新增 v2.0 规划 — 主题定为平台扩张（Windows/macOS/三平台发布链路），附带大库性能、SQL 文件关联、单元格查看器、工程质量欠账
 - 2026-10-30：V2-0 决策完成 — Windows 暂不签名按内测分发、macOS 移入 v2.1、构建走 Windows+Linux 本地机器、分发 Gitee 主源 + GitHub 镜像；范围随之收缩，实施方案与验收标准同步修订
 - 2026-10-30：V2-3.5 完成 — 新增 `tools/check-version.mjs`，以 `tauri.conf.json` 为基准校验 5 处版本号；接入 build.sh、release-all.sh 与 CI；修复 `package-lock.json` 停留在 1.0.4 的存量不一致
