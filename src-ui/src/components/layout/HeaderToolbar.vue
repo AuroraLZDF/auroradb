@@ -148,7 +148,7 @@
               @click="openTool('openLicense')"
             >
               <KeyRound :size="16" />
-              <span>{{ licenseStore.activated ? t('header.licensePro') : t('header.license') }}</span>
+              <span>{{ licenseLabel }}</span>
             </button>
             <div class="tools-divider"></div>
             <button
@@ -263,6 +263,12 @@ const emit = defineEmits<{
 }>()
 
 const currentConnection = computed(() => connStore.currentConnection)
+
+/** 设置菜单里的授权入口文案：试用中 / 专业版 / 免费版（激活） */
+const licenseLabel = computed(() => {
+  if (licenseStore.isTrial) return t('header.licenseTrial')
+  return licenseStore.activated ? t('header.licensePro') : t('header.license')
+})
 
 // 「工具」「设置」下拉菜单
 const toolsMenuRef = ref<HTMLElement | null>(null)

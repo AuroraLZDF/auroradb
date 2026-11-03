@@ -155,6 +155,7 @@ fn main() {
             commands::license::get_license_status,
             commands::license::activate_license,
             commands::license::deactivate_license,
+            commands::license::start_trial,
             commands::update::get_update_install_kind,
             commands::update::download_update_package,
             commands::sql_file::take_pending_sql_files,

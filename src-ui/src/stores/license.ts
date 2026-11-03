@@ -10,13 +10,24 @@ export type ProFeature = 'schema-diff' | 'monitor' | 'audit' | 'ssh-tunnel' | 'q
 
 interface LicenseStatus {
   activated: boolean
-  edition: 'free' | 'pro'
+  edition: 'free' | 'pro' | 'trial'
   fingerprint: string
   license_id?: string
   issued_at?: string
   expires_at?: string
   features: string[]
   error?: string
+  /** 本机是否还能开启试用（未试用过且未过期）；后端旧版本不返回时为 undefined，按 false 处理 */
+  trial_available?: boolean
+  /** 当前是否处于试用中，与 `edition === 'trial'` 语义一致 */
+  trial_active?: boolean
+  /** 试用是否已结束（结束后 edition 回到 free） */
+  trial_expired?: boolean
+  trial_started_at?: string
+  /** 试用到期时间，展示时只取日期部分 */
+  trial_expires_at?: string
+  /** 试用剩余天数，由后端按自然日计算 */
+  trial_days_left?: number
 }
 
 /** 后端拒绝专业版操作时使用的错误前缀 */
@@ -35,13 +46,24 @@ export const useLicenseStore = defineStore('license', () => {
   const error = ref('')
 
   const activated = computed(() => status.value?.activated === true)
-  const edition = computed<'free' | 'pro'>(() => (activated.value ? 'pro' : 'free'))
+  /** 当前版本：后端用 free / pro / trial 区分；未取到状态时按免费版处理 */
+  const edition = computed<'free' | 'pro' | 'trial'>(() => status.value?.edition ?? 'free')
   const fingerprint = computed(() => status.value?.fingerprint ?? '')
+
+  /** 是否处于 14 天试用期（试用版解锁全部专业版能力） */
+  const isTrial = computed(() => edition.value === 'trial')
+  /** 本机是否还能自助开启试用（试用中/已用尽/记录不可用时均为 false） */
+  const trialAvailable = computed(() => !isTrial.value && status.value?.trial_available === true)
+  /** 试用是否已结束，用于免费版界面提示购买激活码 */
+  const trialExpired = computed(() => status.value?.trial_expired === true)
+  /** 试用剩余天数；后端字段缺失或为负时归零，避免界面出现「剩余 -1 天」 */
+  const trialDaysLeft = computed(() => Math.max(0, status.value?.trial_days_left ?? 0))
 
   /** 当前授权是否包含指定专业版能力 */
   function allows(feature: ProFeature): boolean {
     const current = status.value
-    if (!current?.activated || current.edition !== 'pro') return false
+    // 专业版与试用版都能解锁全部专业版能力
+    if (!current?.activated || (current.edition !== 'pro' && current.edition !== 'trial')) return false
     // features 为空表示包含全部专业版能力
     return (
       current.features.length === 0 ||
@@ -120,6 +142,31 @@ export const useLicenseStore = defineStore('license', () => {
     }
   }
 
+  /**
+   * 开启 14 天免费试用：成功返回 true 并缓存后端返回的最新状态。
+   * 后端按机器码记录试用，每台机器只能开启一次。
+   */
+  async function startTrial(): Promise<boolean> {
+    if (!isTauri()) {
+      error.value = t('license.desktopOnly')
+      return false
+    }
+
+    loading.value = true
+    error.value = ''
+    try {
+      status.value = await invoke<LicenseStatus>('start_trial')
+      globalToast.success(t('license.trialStarted'))
+      return true
+    } catch (e) {
+      error.value = String(e)
+      globalToast.error(t('license.trialStartFailed', { error: String(e) }))
+      return false
+    } finally {
+      loading.value = false
+    }
+  }
+
   /** 停用本机激活码，回到免费版 */
   async function deactivate(): Promise<boolean> {
     if (!isTauri()) return false
@@ -155,6 +202,10 @@ export const useLicenseStore = defineStore('license', () => {
     activated,
     edition,
     fingerprint,
+    isTrial,
+    trialAvailable,
+    trialExpired,
+    trialDaysLeft,
     allows,
     openDialog,
     closeDialog,
@@ -162,6 +213,7 @@ export const useLicenseStore = defineStore('license', () => {
     requirePro,
     handleError,
     activate,
+    startTrial,
     deactivate,
   }
 })

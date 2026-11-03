@@ -23,3 +23,9 @@ pub async fn activate_license(
 pub async fn deactivate_license(license: State<'_, LicenseManager>) -> Result<(), String> {
     license.deactivate().await
 }
+
+/// 开始本机 14 天自助试用（每台机器仅一次，记录写入 trial.state 与试用台账）
+#[command]
+pub async fn start_trial(license: State<'_, LicenseManager>) -> Result<LicenseStatus, String> {
+    license.start_trial().await
+}
