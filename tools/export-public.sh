@@ -96,6 +96,7 @@ EXCLUDES=(
     --exclude=/src-tauri/src/commands/pro.rs
     --exclude=/tools/export-public.sh
     --exclude=/docs/EULA.md          # 专业版最终用户协议，公开仓不含
+    --exclude=/.github/workflows/    # CI 平台私有主仓用不到，公开仓独立维护
     --exclude=.DS_Store
     --exclude='*.log'
 )
@@ -125,6 +126,7 @@ rm -rf "$TARGET/crates/pro" \
        "$TARGET/tools/license-gen"
 rm -f "$TARGET/tools/export-public.sh" \
       "$TARGET/docs/EULA.md"
+rm -rf "$TARGET/.github/workflows"
 
 # 移除专业版依赖、feature 与 workspace 成员，失败即中止（结构变更时需同步本脚本）
 python3 - "$TARGET" <<'PY'
