@@ -16,7 +16,7 @@
 
 ## 下载安装
 
-安装包统一发布在公开仓库的[发行版页面](https://github.com/AuroraLZDF/auroradb/releases/latest)（源码仓保持私有）。当前版本为 v2.0.1。
+安装包统一发布在公开仓库的[发行版页面](https://github.com/AuroraLZDF/auroradb/releases/latest)（源码仓保持私有）。当前版本为 v2.0.2。
 
 | 平台 | 文件名 | 安装方式 |
 | --- | --- | --- |
