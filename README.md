@@ -14,6 +14,21 @@
 
 专业版需激活码解锁，另含：SSH 隧道、结构对比、服务器监控、审计日志、执行计划可视化、ER 图、备份还原、跨库全局搜索。
 
+## 下载安装
+
+安装包统一发布在公开仓库的[发行版页面](https://github.com/AuroraLZDF/auroradb/releases/latest)（源码仓保持私有）。当前版本为 v2.0.1。
+
+| 平台 | 文件名 | 安装方式 |
+| --- | --- | --- |
+| Debian / Ubuntu | `AuroraDB_<版本>_amd64.deb` | `sudo apt install ./AuroraDB_<版本>_amd64.deb` |
+| 通用 Linux | `AuroraDB_<版本>_amd64.AppImage` | `chmod +x` 后直接运行，支持应用内更新 |
+| Fedora / RHEL | `AuroraDB-<版本>-1.x86_64.rpm` | `sudo rpm -i AuroraDB-<版本>-1.x86_64.rpm` |
+| Windows | `AuroraDB_<版本>_x64-setup.exe` | 双击安装（未签名，SmartScreen 会提示） |
+
+每个发行版同时附带 `SHA256SUMS` 与各产物的 `.sig` 签名，下载后可核对完整性。两个平台分别发布，某平台的产物在构建机上还没发布时，对应的文件不会出现在最新发行版里。
+
+应用内自动更新的固定入口是 `https://github.com/AuroraLZDF/auroradb/releases/latest/download/latest.json`，`latest.json` 随每次发布更新，无需随版本改动。
+
 ## 定价与购买
 
 免费版可直接使用。专业版为**买断制**（离线激活、不联网校验），一次付费永久使用 v2.x；v3 大版本升级享 5 折优惠，不承诺终身免费升级。
@@ -172,7 +187,7 @@ npm run tauri signer generate -- -w ~/.config/auroradb/updater.key
 
 ### 发布到 GitHub 发行版
 
-源码仓库保持私有，安装包发布到**公开**仓库 `AuroraLZDF/auroradb`（私有仓库的发行版附件需要登录鉴权，终端用户无法下载）。AppImage、deb、NSIS、`.sig`、`SHA256SUMS` 与 `latest.json` 全部作为发行版附件上传，GitHub 单附件上限 2GB。
+源码仓库保持私有，安装包发布到**公开**仓库 `AuroraLZDF/auroradb`（私有仓库的发行版附件需要登录鉴权，终端用户无法下载）。AppImage、deb、rpm、NSIS、`.sig`、`SHA256SUMS` 与 `latest.json` 全部作为发行版附件上传，GitHub 单附件上限 2GB。
 
 ```bash
 export GITHUB_TOKEN=<GitHub 令牌>   # 经典令牌勾选 repo；细粒度令牌授予 Contents: Read and write
@@ -191,7 +206,7 @@ $env:GITHUB_TOKEN = "<GitHub 令牌>"
 
 两个平台的发布脚本都会显示当前分支、提交、工作区状态、tag 是否已创建并推送，需输入 `yes` 确认后才会上传；缺少 tag 或代码未推送时会给出对应命令提示，可先取消发布处理完再重跑。Linux 脚本在发布前强制调用 `tools/check-release.sh` 校验产物齐全、`.sig` 签名存在、单附件不超过 2GB、更新源指向发布仓库，并生成 `SHA256SUMS`；Windows 脚本不做产物预检，也不生成 `SHA256SUMS`，发布前需手工核对产物与签名。两个平台的 `latest.json` 条目按平台 key 合并，先后发布互不覆盖。令牌只从环境变量读取，不要写入仓库。
 
-应用内自动更新的固定入口为 `https://github.com/AuroraLZDF/auroradb/releases/latest/download/latest.json`（`latest.json` 作为发行版附件随每次发布更新）。任一附件上传失败脚本都会立即中止，不会写入 `latest.json`，避免用户更新到不存在的地址。Tauri 只为 AppImage 生成更新签名，构建脚本会额外为 deb 补签 `.sig`。
+应用内自动更新的固定入口见 [下载安装](#下载安装) 一节。任一附件上传失败脚本都会立即中止，不会写入 `latest.json`，避免用户更新到不存在的地址。Tauri 只为 AppImage 生成更新签名，构建脚本会额外为 deb 补签 `.sig`。
 
 ### 手工发版步骤
 

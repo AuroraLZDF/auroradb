@@ -105,8 +105,9 @@ fi
 TMP="$(mktemp)"
 LATEST_TMP="$(mktemp)"
 LATEST_EXISTING="$(mktemp)"
+CURL_ERR="$(mktemp)"
 # trap 在 EXIT 时展开这些变量，set -u 下必须先初始化，否则早期失败会报 unbound
-trap 'rm -f "$TMP" "$LATEST_TMP" "$LATEST_EXISTING"' EXIT
+trap 'rm -f "$TMP" "$LATEST_TMP" "$LATEST_EXISTING" "$CURL_ERR"' EXIT
 
 # 计算文件 SHA-256（小写十六进制）：写入 latest.json 供应用内下载的安装包校验完整性
 sha256_of() {
@@ -140,6 +141,16 @@ else:
 PY
 }
 
+# 网络不通时给出可判断的提示：curl 的裸报错会把原因藏在 TLS/DNS 细节里
+network_hint() {
+    echo -e "${RED}  ✗ 无法连接 GitHub（$1）${NC}"
+    [[ -s "$CURL_ERR" ]] && sed 's/^/    /' "$CURL_ERR"
+    echo "    这不是令牌问题。先确认本机能访问 api.github.com："
+    echo "      curl -sS -o /dev/null -w '%{http_code}\\n' https://api.github.com/"
+    echo "    返回 000 或 TLS 握手失败，通常是代理/VPN 未放行 github.com"
+    echo "    （DNS 解析到 198.18.x.x 即代理 fake-ip），切换可用节点后重试。"
+}
+
 # 调用 GitHub API：gh_api 方法 路径 [额外 curl 参数...]
 # 响应写入 $TMP，HTTP 状态码通过全局变量 GH_CODE 返回
 GH_CODE=""
@@ -150,7 +161,10 @@ gh_api() {
         -H "Authorization: Bearer $TOKEN" \
         -H "Accept: application/vnd.github+json" \
         -H "X-GitHub-Api-Version: 2022-11-28" \
-        "$@" "$url")"
+        "$@" "$url" 2>"$CURL_ERR")" || {
+        network_hint "$method $url"
+        exit 1
+    }
 }
 
 # ---- 解析更新包与上传集 ----
@@ -273,11 +287,15 @@ if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
     fi
     if (( DRY_RUN == 1 )); then
         echo -e "${YELLOW}  - dry-run 跳过远端 tag 检查（不联网）${NC}"
-    elif git ls-remote --tags "https://github.com/$OWNER/$REPO.git" "refs/tags/$TAG" 2>/dev/null | grep -q "refs/tags/$TAG"; then
-        echo -e "${GREEN}  ✓ tag $TAG 已推送到 GitHub${NC}"
+    elif REMOTE_REFS="$(git ls-remote --tags "https://github.com/$OWNER/$REPO.git" "refs/tags/$TAG" 2>/dev/null)"; then
+        if grep -q "refs/tags/$TAG" <<<"$REMOTE_REFS"; then
+            echo -e "${GREEN}  ✓ tag $TAG 已推送到 GitHub${NC}"
+        else
+            echo -e "${YELLOW}  ! tag $TAG 尚未推送到 GitHub（发行版会自动基于当前分支创建 tag）${NC}"
+            echo "    推送: git push https://github.com/$OWNER/$REPO.git $TAG"
+        fi
     else
-        echo -e "${YELLOW}  ! tag $TAG 尚未推送到 GitHub（发行版会自动基于当前分支创建 tag）${NC}"
-        echo "    推送: git push https://github.com/$OWNER/$REPO.git $TAG"
+        echo -e "${YELLOW}  ! 无法访问 GitHub，跳过 tag 检查（网络/代理问题，见下方 API 报错）${NC}"
     fi
 else
     echo -e "${YELLOW}  ! 本地不存在 tag $TAG${NC}"
@@ -497,8 +515,9 @@ if [[ -n "$LATEST_ASSET_ID" ]]; then
     if ! curl -sS -L -o "$LATEST_EXISTING" \
         -H "Authorization: Bearer $TOKEN" \
         -H "Accept: application/octet-stream" \
-        "$API/releases/assets/$LATEST_ASSET_ID"; then
+        "$API/releases/assets/$LATEST_ASSET_ID" 2>"$CURL_ERR"; then
         echo -e "${RED}  ✗ 下载线上 latest.json 失败，中止发布（避免丢失其他平台的更新条目）${NC}"
+        network_hint "GET $API/releases/assets/$LATEST_ASSET_ID"
         exit 1
     fi
     if ! python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$LATEST_EXISTING" 2>/dev/null; then
@@ -541,7 +560,10 @@ for f in "${FILES[@]}"; do
         -H "X-GitHub-Api-Version: 2022-11-28" \
         -H "Content-Type: application/octet-stream" \
         --data-binary "@$f" \
-        "$UPLOAD_API/releases/$RELEASE_ID/assets?name=$ENCODED_NAME")"
+        "$UPLOAD_API/releases/$RELEASE_ID/assets?name=$ENCODED_NAME" 2>"$CURL_ERR")" || {
+        network_hint "POST $UPLOAD_API"
+        exit 1
+    }
     if [[ "$GH_CODE" == "201" ]]; then
         echo -e "${GREEN}  ✓ $NAME_ONLY ($((SIZE / 1024 / 1024))MB)${NC}"
         echo "    $DOWNLOAD_PREFIX$TAG/$NAME_ONLY"

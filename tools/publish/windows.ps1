@@ -29,6 +29,13 @@ function Fail([string]$Message) {
     exit 1
 }
 
+function Show-NetworkHint([string]$Url) {
+    Write-Host "  ✗ 无法连接 GitHub（$Url）" -ForegroundColor Red
+    Write-Host "    这不是令牌问题。先确认本机能访问 api.github.com："
+    Write-Host "      curl.exe -sS -o NUL -w ""%{http_code}"" https://api.github.com/"
+    Write-Host "    返回 000 或 TLS 握手失败，通常是代理/VPN 未放行 github.com，切换可用节点后重试。"
+}
+
 function Invoke-Curl([string[]]$CurlArgs) {
     # curl 失败信息写在 stderr，PS 5.1 在 Stop 策略下会转成 NativeCommandError，这里只依据退出码判断
     $Previous = $ErrorActionPreference
@@ -36,7 +43,10 @@ function Invoke-Curl([string[]]$CurlArgs) {
     $Output = & curl.exe @CurlArgs
     $ExitCode = $LASTEXITCODE
     $ErrorActionPreference = $Previous
-    if ($ExitCode -ne 0) { Fail "curl 执行失败（退出码 $ExitCode）" }
+    if ($ExitCode -ne 0) {
+        Show-NetworkHint $CurlArgs[-1]
+        Fail "curl 执行失败（退出码 $ExitCode）"
+    }
     return ($Output | Out-String).Trim()
 }
 
