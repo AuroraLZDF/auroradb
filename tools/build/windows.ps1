@@ -217,6 +217,6 @@ if (Test-Path $NsisDir) {
 Write-Host "注意: 当前版本未做代码签名，安装时 SmartScreen 会提示未知发布者，"
 Write-Host "      需点击「更多信息 -> 仍要运行」。企业终端可能被组策略直接拦截。"
 Write-Host ""
-Write-Host "下一步: 发布到 Gitee 发行版"
+Write-Host "下一步: 发布到 GitHub 发行版"
 Write-Host "  .\tools\publish\windows.ps1"
 Write-Host ""

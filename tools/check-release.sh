@@ -5,20 +5,17 @@
 # 用法:
 #   ./tools/check-release.sh                     # 检查 Linux 产物（默认）
 #   ./tools/check-release.sh --platform windows  # 检查 Windows 产物
-#   ./tools/check-release.sh --repo owner/auroradb-releases
+#   ./tools/check-release.sh --repo owner/repo
 #   ./tools/check-release.sh --bundle-dir <目录> # 指定产物目录（默认 src-tauri/target/release/bundle）
 #
-# 双层分发（Linux 完整 AppImage 走 GitHub、deb+lite 走 Gitee）时：
-#   ./tools/check-release.sh --appimage <完整 AppImage> \
-#       --upload-file <deb> --upload-file <lite.AppImage> --upload-file <lite.AppImage.sig>
-#   --appimage 指定应用内更新用的更新包（不必进上传集）；--upload-file 可重复，
-#   表示真正会上传到 Gitee 的文件。上传文件必须 <=100MB（>90MB 给出警告），
-#   更新包不限制大小（不上传），但必须存在、带 .sig、能算出 SHA-256。
-#   不传这两个参数时行为与旧版一致（更新包与安装包都视为上传集）。
+# 上传集可用 --upload-file 显式指定（可重复），更新包可用 --appimage 指定
+# （允许位于 bundle 目录之外）。不传这两个参数时行为与旧版一致（更新包与
+# 安装包都视为上传集）。上传文件必须 <=2GB（GitHub 单附件上限）；更新包
+# 不限制大小，但必须存在、带 .sig、能算出 SHA-256。
 #
 # 检查项:
 #   1. 平台必需产物齐全，更新包带有 .sig 签名
-#   2. 上传附件不超过 Gitee 的 100MB 上限（>90MB 警告，实测上传不稳）
+#   2. 上传附件不超过 GitHub 的 2GB 单附件上限
 #   3. tauri.conf.json 的更新源地址指向本次发布仓库
 #   4. 生成 SHA256SUMS（随安装包一起上传，供用户核对完整性）
 
@@ -35,8 +32,7 @@ cd "$ROOT"
 PLATFORM="linux"
 RELEASE_REPO=""
 BUNDLE_DIR="src-tauri/target/release/bundle"
-MAX_SIZE=$((100 * 1024 * 1024))
-WARN_SIZE=$((90 * 1024 * 1024))
+MAX_SIZE=$((2 * 1024 * 1024 * 1024))
 APPIMAGE=""
 UPLOAD_FILES=()
 
@@ -48,7 +44,7 @@ while [[ $# -gt 0 ]]; do
         --appimage) APPIMAGE="${2:-}"; shift 2 ;;
         --upload-file) UPLOAD_FILES+=("${2:-}"); shift 2 ;;
         -h|--help)
-            sed -n '3,23p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '3,20p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *) echo -e "${RED}未知参数: $1${NC}"; exit 1 ;;
@@ -64,13 +60,16 @@ warn() { echo -e "${YELLOW}  ! $*${NC}"; }
 command -v python3 >/dev/null || fail "未找到 python3"
 [[ -d "$BUNDLE_DIR" ]] || fail "未找到产物目录 $BUNDLE_DIR，请先构建"
 
-# 发布仓库：默认与 tools/publish/ 下的发布脚本相同，为 <owner>/auroradb-releases
+# 发布仓库：默认与 origin 同名（如 AuroraLZDF/auroradb），与发布脚本保持一致
 if [[ -z "$RELEASE_REPO" ]]; then
     REMOTE_URL="$(git remote get-url origin 2>/dev/null || true)"
     [[ -n "$REMOTE_URL" ]] || fail "未配置 origin 远程仓库，请用 --repo 指定发布仓库"
-    PATH_PART="${REMOTE_URL#*gitee.com[:/]}"
-    PATH_PART="${PATH_PART%.git}"
-    RELEASE_REPO="${PATH_PART%%/*}/auroradb-releases"
+    REMOTE_URL="${REMOTE_URL%.git}"
+    REPO_NAME="${REMOTE_URL##*/}"
+    OWNER_PART="${REMOTE_URL%/*}"
+    OWNER_NAME="${OWNER_PART##*[:/]}"
+    [[ -n "$OWNER_NAME" && -n "$REPO_NAME" ]] || fail "无法从 origin 解析仓库地址: $REMOTE_URL"
+    RELEASE_REPO="$OWNER_NAME/$REPO_NAME"
 fi
 [[ "$RELEASE_REPO" == */* ]] || fail "--repo 需为 owner/repo 格式，当前为 $RELEASE_REPO"
 
@@ -87,7 +86,7 @@ if [[ "$PLATFORM" == "windows" ]]; then
 else
     PLATFORM_KEY="linux-x86_64"
     if [[ -n "$APPIMAGE" ]]; then
-        # 双层分发：完整 AppImage 可以不在 bundle 目录里（例如从其它构建目录取），且不上传 Gitee
+        # 完整 AppImage 可以不在 bundle 目录里（例如从其它构建目录取），且不参与大小限制
         [[ -f "$APPIMAGE" ]] || fail "指定的更新包不存在: $APPIMAGE"
         UPDATER=( "$APPIMAGE" )
         EXPLICIT_UPDATER=1
@@ -124,15 +123,12 @@ else
     UPLOAD=( "${UPDATER[@]}" ${INSTALLERS[@]+"${INSTALLERS[@]}"} )
 fi
 
-# 2. 上传附件大小：Gitee 上限 100MB，超限会被拒收；90MB 以上实测上传不稳定
+# 2. 上传附件大小：GitHub 单附件上限 2GB，超限会被拒收
 for f in "${UPLOAD[@]}"; do
     SIZE="$(stat -c %s "$f")"
-    (( SIZE <= MAX_SIZE )) || fail "$(basename "$f") ($((SIZE / 1024 / 1024))MB) 超过 Gitee 100MB 上限"
-    if (( SIZE > WARN_SIZE )); then
-        warn "$(basename "$f") ($((SIZE / 1024 / 1024))MB) 超过 90MB，Gitee 上传可能不稳定"
-    fi
+    (( SIZE <= MAX_SIZE )) || fail "$(basename "$f") ($((SIZE / 1024 / 1024))MB) 超过 GitHub 2GB 上限"
 done
-ok "上传附件大小均在 100MB 以内"
+ok "上传附件大小均在 2GB 以内"
 
 # 更新包不进上传集时（latest.json 直接指向它的 URL），单独确认存在、签名与校验值
 if ! printf '%s\n' "${UPLOAD[@]}" | grep -qxF "${UPDATER[0]}"; then
@@ -147,7 +143,7 @@ with open(sys.argv[1], 'rb') as f:
 print(digest.hexdigest())
 PY
 )"
-    ok "更新包 ${UPDATER[0]##*/} 不上传 Gitee，SHA-256: $UPDATER_SHA256"
+    ok "更新包 ${UPDATER[0]##*/} 不在上传集，SHA-256: $UPDATER_SHA256"
 fi
 
 # 3. 更新源与发布仓库一致性：地址写错时应用永远收不到更新
@@ -162,7 +158,8 @@ PY
 )"
 [[ -n "$ENDPOINT" ]] || fail "tauri.conf.json 未配置 plugins.updater.endpoints"
 [[ "$ENDPOINT" == */latest.json ]] || fail "更新源应以 latest.json 结尾: $ENDPOINT"
-[[ "$ENDPOINT" == *"/$RELEASE_REPO/"* ]] || fail "更新源 $ENDPOINT 与发布仓库 $RELEASE_REPO 不一致"
+# GitHub 的 owner/repo 大小写不敏感，统一转小写比对（origin 是 auroraLZDF，规范名是 AuroraLZDF）
+[[ "${ENDPOINT,,}" == *"/${RELEASE_REPO,,}/"* ]] || fail "更新源 $ENDPOINT 与发布仓库 $RELEASE_REPO 不一致"
 ok "更新源指向 $RELEASE_REPO"
 
 # 4. SHA256SUMS：签名只覆盖更新包，安装包完整性需靠校验值（只列真正上传的文件）

@@ -1,12 +1,12 @@
-﻿# 将 Windows 构建产物上传到 Gitee 发行版，并把 windows-x86_64 条目合并进 latest.json
+﻿# 将 Windows 构建产物上传到 GitHub 发行版，并把 windows-x86_64 条目合并进 latest.json
 #
 # 用法（在仓库根目录执行）:
-#   .\tools\publish\windows.ps1                          # 读 tauri.conf.json 的版本，默认发到 <owner>/auroradb-releases
+#   .\tools\publish\windows.ps1                          # 读 tauri.conf.json 的版本，默认发到 origin 同名公开仓库
 #   .\tools\publish\windows.ps1 -Tag v2.0.0 -Notes "..." # 指定 tag 与发行说明
-#   .\tools\publish\windows.ps1 -Repo owner/auroradb-releases
+#   .\tools\publish\windows.ps1 -Repo owner/repo
 #
 # 前置: 先执行 .\tools\build\windows.ps1 生成并签名 NSIS 安装包
-# 令牌来源: 环境变量 GITEE_TOKEN，或 %USERPROFILE%\.config\auroradb\gitee.token
+# 令牌来源: 环境变量 GITHUB_TOKEN / GH_TOKEN，或 %USERPROFILE%\.config\auroradb\github.token
 # 依赖: curl.exe（Windows 10 1803+ 自带）；PowerShell 5.1 无 Invoke-RestMethod -Form，故用 curl 上传
 
 param(
@@ -18,8 +18,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
-$Api = "https://gitee.com/api/v5/repos"
-$MaxSize = 100 * 1024 * 1024
+$Api = "https://api.github.com/repos"
+$UploadApi = "https://uploads.github.com/repos"
+$MaxSize = 2GB
+
+$script:LastCode = ""
 
 function Fail([string]$Message) {
     Write-Host "错误: $Message" -ForegroundColor Red
@@ -53,20 +56,32 @@ function Get-GitOutput([string[]]$GitArgs) {
     return (($Output | Out-String).Trim())
 }
 
+# 调用 GitHub API：响应写入临时文件，HTTP 状态码放进 $script:LastCode
+function Invoke-Api([string]$Method, [string]$Url, [string[]]$ExtraArgs = @()) {
+    $CurlArgs = @(
+        "-sS", "-X", $Method, "-o", $Tmp, "-w", "%{http_code}",
+        "-H", "Authorization: Bearer $Token",
+        "-H", "Accept: application/vnd.github+json",
+        "-H", "X-GitHub-Api-Version: 2022-11-28"
+    ) + $ExtraArgs + @($Url)
+    $script:LastCode = Invoke-Curl $CurlArgs
+}
+
 if (-not (Get-Command "curl.exe" -ErrorAction SilentlyContinue)) {
     Fail "未找到 curl.exe（Windows 10 1803 及以上版本自带）"
 }
 
-$Token = $env:GITEE_TOKEN
+$Token = $env:GITHUB_TOKEN
+if (-not $Token) { $Token = $env:GH_TOKEN }
 if (-not $Token) {
-    $TokenPath = Join-Path $env:USERPROFILE ".config\auroradb\gitee.token"
+    $TokenPath = Join-Path $env:USERPROFILE ".config\auroradb\github.token"
     if (Test-Path $TokenPath) {
         $Token = (Get-Content $TokenPath -Raw).Trim()
-        Write-Host "  Gitee 令牌: $TokenPath"
+        Write-Host "  GitHub 令牌: $TokenPath"
     }
 }
 if (-not $Token) {
-    Fail "未设置 GITEE_TOKEN，或把令牌写入 $env:USERPROFILE\.config\auroradb\gitee.token"
+    Fail "未设置 GITHUB_TOKEN，或把令牌写入 $env:USERPROFILE\.config\auroradb\github.token"
 }
 
 $ConfigPath = Join-Path $Root "src-tauri\tauri.conf.json"
@@ -80,9 +95,9 @@ if (-not $Repo) {
     $ErrorActionPreference = "Continue"
     $RemoteUrl = (& git -C $Root remote get-url origin 2>$null | Select-Object -First 1)
     $ErrorActionPreference = $Previous
-    $Match = [regex]::Match("$RemoteUrl", "gitee\.com[:/]+([^/]+)/([^/]+?)(?:\.git)?/?$")
+    $Match = [regex]::Match("$RemoteUrl", "[:/]([^/:]+)/([^/]+?)(?:\.git)?/?$")
     if (-not $Match.Success) { Fail "无法从 origin 解析仓库地址: $RemoteUrl" }
-    $Repo = "$($Match.Groups[1].Value)/auroradb-releases"
+    $Repo = "$($Match.Groups[1].Value)/$($Match.Groups[2].Value)"
 }
 if ($Repo -notmatch "^[^/]+/[^/]+$") { Fail "-Repo 需为 owner/repo 格式，当前为 $Repo" }
 
@@ -104,6 +119,9 @@ if (-not (Test-Path $SigPath)) {
 $InstallerSha256 = (Get-FileHash -Path $Installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
 if (-not $InstallerSha256 -or $InstallerSha256.Length -ne 64) {
     Fail "计算 $($Installer.Name) 的 SHA-256 失败"
+}
+if ($Installer.Length -gt $MaxSize) {
+    Fail "$($Installer.Name) 超过 GitHub 单附件 2GB 上限"
 }
 
 # 发布前人工确认：上传后发行版与 latest.json 立即对用户生效，先让发版人核对代码状态
@@ -156,7 +174,7 @@ if ($TagCommit) {
         Write-Host "  OK tag $Tag 已推送到远程" -ForegroundColor Green
     }
     else {
-        Write-Host "  ! 本地 tag $Tag 尚未推送到远程" -ForegroundColor Yellow
+        Write-Host "  ! 本地 tag $Tag 尚未推送到 origin" -ForegroundColor Yellow
         Write-Host "    推送: git push origin $Tag"
     }
 }
@@ -178,37 +196,65 @@ Write-Host "  发布仓库: $Repo  版本: $Tag"
 
 $Tmp = [IO.Path]::GetTempFileName()
 
-# 0. 校验发布仓库可访问，并取默认分支（写入 latest.json 用）
-$Code = Invoke-Curl @("-sS", "-o", $Tmp, "-w", "%{http_code}", "$ApiUrl`?access_token=$Token")
-if ($Code -ne "200") {
-    Fail "无法访问发布仓库 $Repo (HTTP $Code)，请确认仓库存在且令牌有 projects 权限"
+# 0. 校验发布仓库可访问，并取默认分支 / 规范仓库名
+Invoke-Api "GET" $ApiUrl
+if ($script:LastCode -ne "200") {
+    Write-Host (Read-Utf8 $Tmp)
+    Fail "无法访问发布仓库 $Repo (HTTP $($script:LastCode))，请确认仓库公开且令牌有 Contents: Read and write 权限"
 }
 $RepoInfo = Read-Utf8 $Tmp | ConvertFrom-Json
 $Branch = if ($RepoInfo.default_branch) { $RepoInfo.default_branch } else { "main" }
+if ($RepoInfo.full_name) {
+    $Repo = $RepoInfo.full_name
+    $ApiUrl = "$Api/$Repo"
+}
+$DownloadPrefix = "https://github.com/$Repo/releases/download/$Tag/"
 
-# 1. 查找已有发行版（Gitee 在不存在时返回 200 + body null），不存在则创建
-$Code = Invoke-Curl @("-sS", "-o", $Tmp, "-w", "%{http_code}", "$ApiUrl/releases/tags/$Tag`?access_token=$Token")
-$ReleaseId = ""
-if ($Code -eq "200") {
-    $Raw = (Read-Utf8 $Tmp).Trim()
-    if ($Raw -and $Raw -ne "null") { $ReleaseId = (ConvertFrom-Json $Raw).id }
+# latest.json 的固定入口是 /releases/latest，若已存在更高版本的发行版，
+# 重新发布旧 tag 会让所有客户端读到回退后的清单，这里直接中止
+Invoke-Api "GET" "$ApiUrl/releases/latest"
+if ($script:LastCode -eq "200") {
+    $LatestTagName = (Read-Utf8 $Tmp | ConvertFrom-Json).tag_name
+    if ($LatestTagName -and $LatestTagName -ne $Tag) {
+        $LatestVersion = $null
+        $OursVersion = $null
+        [void][version]::TryParse("$LatestTagName".TrimStart("v"), [ref]$LatestVersion)
+        [void][version]::TryParse("$Tag".TrimStart("v"), [ref]$OursVersion)
+        if ($LatestVersion -and $OursVersion -and $LatestVersion -gt $OursVersion) {
+            Fail "线上最新发行版是 $LatestTagName，高于本次 $Tag；latest.json 通过 /releases/latest 分发，发布旧版本会让客户端清单回退"
+        }
+    }
 }
 
-if ($ReleaseId) {
+# 1. 查找已有发行版（不存在返回 404），否则创建
+Invoke-Api "GET" "$ApiUrl/releases/tags/$Tag"
+$ReleaseId = ""
+if ($script:LastCode -eq "200") {
+    $ReleaseId = (Read-Utf8 $Tmp | ConvertFrom-Json).id
     Write-Host "  发行版已存在 (id=$ReleaseId)，追加附件" -ForegroundColor Green
 }
-else {
-    $Code = Invoke-Curl @(
-        "-sS", "-o", $Tmp, "-w", "%{http_code}",
-        "-X", "POST", "$ApiUrl/releases?access_token=$Token",
-        "--data-urlencode", "tag_name=$Tag",
-        "--data-urlencode", "name=AuroraDB $Version",
-        "--data-urlencode", "body=$Notes",
-        "--data-urlencode", "target_commitish=$Branch"
-    )
-    if ($Code -ne "201") {
+elseif ($script:LastCode -ne "404") {
+    Write-Host (Read-Utf8 $Tmp)
+    Fail "查询发行版失败 (HTTP $($script:LastCode))"
+}
+
+if (-not $ReleaseId) {
+    $BodyPath = [IO.Path]::GetTempFileName()
+    $Body = @{
+        tag_name         = $Tag
+        name             = "AuroraDB $Version"
+        body             = $Notes
+        target_commitish = $Branch
+        draft            = $false
+        prerelease       = $false
+    } | ConvertTo-Json -Depth 5
+    $Utf8NoBom = New-Object Text.UTF8Encoding($false)
+    [IO.File]::WriteAllText($BodyPath, $Body, $Utf8NoBom)
+    Invoke-Api "POST" "$ApiUrl/releases" @("-H", "Content-Type: application/json", "--data-binary", "@$BodyPath")
+    Remove-Item $BodyPath -Force -ErrorAction SilentlyContinue
+    if ($script:LastCode -ne "201") {
         Write-Host (Read-Utf8 $Tmp)
-        Fail "创建发行版失败 (HTTP $Code)"
+        Fail "创建发行版失败 (HTTP $($script:LastCode))"
     }
     $ReleaseId = (Read-Utf8 $Tmp | ConvertFrom-Json).id
     Write-Host "  已创建发行版 AuroraDB $Version (id=$ReleaseId)" -ForegroundColor Green
@@ -217,38 +263,61 @@ if (-not $ReleaseId) { Fail "无法解析发行版 id" }
 
 # 2. 列出现有附件，同名附件先删除，重复发布时覆盖旧产物
 $Existing = @{}
-$Code = Invoke-Curl @("-sS", "-o", $Tmp, "-w", "%{http_code}", "$ApiUrl/releases/$ReleaseId/attach_files?access_token=$Token")
-if ($Code -eq "200") {
+Invoke-Api "GET" "$ApiUrl/releases/$ReleaseId/assets?per_page=100"
+if ($script:LastCode -eq "200") {
     foreach ($Item in @(Read-Utf8 $Tmp | ConvertFrom-Json)) {
         if ($Item.name) { $Existing[$Item.name] = $Item.id }
     }
 }
 
+# 先下载线上 latest.json：合并需要旧内容，且同名附件会在上传前被删除
+$LatestExisting = Join-Path ([IO.Path]::GetTempPath()) "auroradb-latest-existing.json"
+$ExistingDoc = $null
+$LatestAssetId = $Existing["latest.json"]
+if ($LatestAssetId) {
+    Invoke-Curl @(
+        "-sS", "-L", "-o", $LatestExisting, "-H", "Authorization: Bearer $Token",
+        "-H", "Accept: application/octet-stream", "$ApiUrl/releases/assets/$LatestAssetId"
+    ) | Out-Null
+    try {
+        $RawLatest = (Read-Utf8 $LatestExisting).Trim()
+        if ($RawLatest -and $RawLatest -ne "null") { $ExistingDoc = $RawLatest | ConvertFrom-Json }
+    }
+    catch {
+        Fail "线上 latest.json 不是合法 JSON，中止发布"
+    }
+    if (-not $ExistingDoc) { Fail "下载线上 latest.json 失败，中止发布（避免丢失其他平台的更新条目）" }
+    Invoke-Api "DELETE" "$ApiUrl/releases/assets/$LatestAssetId"
+    if ($script:LastCode -ne "204") {
+        Fail "删除旧 latest.json 附件失败 (HTTP $($script:LastCode))"
+    }
+}
+Remove-Item $LatestExisting -Force -ErrorAction SilentlyContinue
+
 # 3. 上传安装包与更新签名
 $Uploaded = 0
 foreach ($File in @($Installer, (Get-Item $SigPath))) {
-    if ($File.Length -gt $MaxSize) {
-        Fail "$($File.Name) 超过 Gitee 单附件上限 100MB"
-    }
     if ($Existing.ContainsKey($File.Name)) {
-        $Code = Invoke-Curl @(
-            "-sS", "-o", $Tmp, "-w", "%{http_code}",
-            "-X", "DELETE", "$ApiUrl/releases/$ReleaseId/attach_files/$($Existing[$File.Name])?access_token=$Token"
-        )
-        if ($Code -ne "204" -and $Code -ne "200") { Fail "删除同名旧附件 $($File.Name) 失败 (HTTP $Code)" }
+        Invoke-Api "DELETE" "$ApiUrl/releases/assets/$($Existing[$File.Name])"
+        if ($script:LastCode -ne "204") { Fail "删除同名旧附件 $($File.Name) 失败 (HTTP $($script:LastCode))" }
         Write-Host "  - 已删除同名旧附件 $($File.Name)" -ForegroundColor Yellow
     }
 
-    $Code = Invoke-Curl @(
+    $EncodedName = [Uri]::EscapeDataString($File.Name)
+    $script:LastCode = Invoke-Curl @(
         "-sS", "--retry", "3", "--retry-delay", "2", "--retry-all-errors",
-        "--connect-timeout", "30", "--max-time", "600",
+        "--connect-timeout", "30", "--max-time", "1800",
         "-X", "POST", "-o", $Tmp, "-w", "%{http_code}",
-        "$ApiUrl/releases/$ReleaseId/attach_files?access_token=$Token",
-        "-F", "file=@$($File.FullName)"
+        "-H", "Authorization: Bearer $Token",
+        "-H", "Accept: application/vnd.github+json",
+        "-H", "X-GitHub-Api-Version: 2022-11-28",
+        "-H", "Content-Type: application/octet-stream",
+        "--data-binary", "@$($File.FullName)",
+        "$UploadApi/$Repo/releases/$ReleaseId/assets?name=$EncodedName"
     )
-    if ($Code -ne "201") {
+    if ($script:LastCode -ne "201") {
         Write-Host (Read-Utf8 $Tmp)
-        Fail "$($File.Name) 上传失败 (HTTP $Code)"
+        Fail "$($File.Name) 上传失败 (HTTP $($script:LastCode))"
     }
     $Uploaded++
     Write-Host ("  OK {0} ({1} MB)" -f $File.Name, [math]::Round($File.Length / 1MB, 1)) -ForegroundColor Green
@@ -257,72 +326,58 @@ foreach ($File in @($Installer, (Get-Item $SigPath))) {
 Write-Host "  完成: $Uploaded 个文件已发布到 $Tag" -ForegroundColor Green
 
 # 4. 合并 latest.json：只保留本 tag 的平台条目，其余平台（如 Linux）原样保留
-$Code = Invoke-Curl @("-sS", "-o", $Tmp, "-w", "%{http_code}", "$ApiUrl/contents/latest.json?access_token=$Token&ref=$Branch")
-$Sha = ""
-$ExistingDoc = $null
-if ($Code -eq "200") {
-    $Resp = Read-Utf8 $Tmp | ConvertFrom-Json
-    $Sha = $Resp.sha
-    if ($Resp.content) {
-        $Decoded = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Resp.content)).Trim()
-        if ($Decoded -and $Decoded -ne "null") { $ExistingDoc = $Decoded | ConvertFrom-Json }
-    }
-}
-
 $Platforms = [ordered]@{}
+$PreviousDoc = $null
 if ($ExistingDoc -and $ExistingDoc.platforms) {
     foreach ($Entry in $ExistingDoc.platforms.PSObject.Properties) {
         if ($Entry.Value.url -and $Entry.Value.url -like "*/download/$Tag/*") {
             $Platforms[$Entry.Name] = $Entry.Value
         }
     }
+    if ($ExistingDoc.version -and $ExistingDoc.version -ne $Version) {
+        $PreviousDoc = @{ version = $ExistingDoc.version; platforms = $ExistingDoc.platforms }
+    }
 }
+
+$Signature = (Read-Utf8 $SigPath).Trim()
+if (-not $Signature) { Fail "签名文件为空: $SigPath" }
+
 $Platforms["windows-x86_64"] = [ordered]@{
-    signature = (Read-Utf8 $SigPath).Trim()
-    url = "https://gitee.com/$Repo/releases/download/$Tag/$($Installer.Name)"
-    sha256 = $InstallerSha256
+    signature = $Signature
+    url       = "$DownloadPrefix$($Installer.Name)"
+    sha256    = $InstallerSha256
 }
 
 $Doc = [ordered]@{
-    version = $Version
-    notes = $Notes
-    pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+    version   = $Version
+    notes     = $Notes
+    pub_date  = [DateTime]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'")
     platforms = $Platforms
 }
-if ($ExistingDoc -and $ExistingDoc.version -and $ExistingDoc.version -ne $Version) {
-    $Doc["previous"] = [ordered]@{
-        version = $ExistingDoc.version
-        platforms = $ExistingDoc.platforms
-    }
-}
-# Linux 先发布时清单里有 deb 条目，Windows 后发布不能把它丢掉
-if ($ExistingDoc -and $ExistingDoc.deb -and $ExistingDoc.deb.url -like "*/download/$Tag/*") {
-    $Doc["deb"] = $ExistingDoc.deb
-}
+if ($PreviousDoc) { $Doc.Add("previous", $PreviousDoc) }
 
-$Json = $Doc | ConvertTo-Json -Depth 10
-$B64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Json))
+$LatestPath = Join-Path ([IO.Path]::GetTempPath()) "auroradb-latest.json"
+$Utf8NoBom = New-Object Text.UTF8Encoding($false)
+[IO.File]::WriteAllText($LatestPath, ($Doc | ConvertTo-Json -Depth 10), $Utf8NoBom)
 
-# 文件已存在时必须走 PUT 并带上当前 sha，否则 Gitee 拒绝覆盖
-$Method = if ($Sha) { "PUT" } else { "POST" }
-$CurlArgs = @(
-    "-sS", "-o", $Tmp, "-w", "%{http_code}",
-    "-X", $Method, "$ApiUrl/contents/latest.json",
-    "--data-urlencode", "access_token=$Token",
-    "--data-urlencode", "content=$B64",
-    "--data-urlencode", "message=chore(release): latest.json $Tag (windows-x86_64)",
-    "--data-urlencode", "branch=$Branch"
+$script:LastCode = Invoke-Curl @(
+    "-sS", "--retry", "3", "--retry-delay", "2", "--retry-all-errors",
+    "--connect-timeout", "30", "--max-time", "300",
+    "-X", "POST", "-o", $Tmp, "-w", "%{http_code}",
+    "-H", "Authorization: Bearer $Token",
+    "-H", "Accept: application/vnd.github+json",
+    "-H", "X-GitHub-Api-Version: 2022-11-28",
+    "-H", "Content-Type: application/octet-stream",
+    "--data-binary", "@$LatestPath",
+    "$UploadApi/$Repo/releases/$ReleaseId/assets?name=latest.json"
 )
-if ($Sha) { $CurlArgs += @("--data-urlencode", "sha=$Sha") }
-$Code = Invoke-Curl $CurlArgs
-if ($Code -ne "200" -and $Code -ne "201") {
+if ($script:LastCode -ne "201") {
     Write-Host (Read-Utf8 $Tmp)
-    Fail "写入 latest.json 失败 (HTTP $Code)"
+    Fail "自动更新清单上传失败 (HTTP $($script:LastCode))"
 }
+Remove-Item $LatestPath -Force -ErrorAction SilentlyContinue
 
-$Kept = @($Platforms.Keys | Where-Object { $_ -ne "windows-x86_64" })
-$KeptText = if ($Kept.Count -gt 0) { "（保留 $($Kept -join ', ')）" } else { "（无其他平台）" }
-Write-Host "  清单平台: windows-x86_64$KeptText" -ForegroundColor Green
-Write-Host "  发行版: https://gitee.com/$Repo/releases/tag/$Tag" -ForegroundColor Green
-
-Remove-Item $Tmp -Force -ErrorAction SilentlyContinue
+$LatestUrl = "https://github.com/$Repo/releases/latest/download/latest.json"
+Write-Host "  自动更新清单已上传: $LatestUrl" -ForegroundColor Green
+Write-Host ""
+Write-Host "发布完成: https://github.com/$Repo/releases/tag/$Tag" -ForegroundColor Green

@@ -12,7 +12,8 @@
 #
 # 导出内容：crates/core、免费的 src-tauri 命令层、免费前端与构建发布脚本
 # 排除：crates/pro、src-ui/src/pro、src-tauri/src/commands/pro.rs、
-#       tools/license-gen（激活码签发）、docs/EULA.md 以及全部构建产物
+#       tools/license-gen（激活码签发）、tools/ship.sh 与 tools/commit-brief.sh
+#       （私有提交工作流）、docs/EULA.md 以及全部构建产物
 # 保留目标目录自有内容：README.md、ROADMAP.md 与 .github/（公开仓独立维护，
 #       不会被私有仓版本覆盖；目标目录必须先准备好这三项）。
 # 导出后自动移除专业版 workspace 成员与 Cargo feature，并重新生成 Cargo.lock。
@@ -121,6 +122,8 @@ EXCLUDES=(
     --exclude=/src-ui/src/pro/
     --exclude=/src-tauri/src/commands/pro.rs
     --exclude=/tools/export-public.sh
+    --exclude=/tools/ship.sh           # 提交/双仓发布工作流，仅私有仓使用
+    --exclude=/tools/commit-brief.sh   # 提交信息采集器，仅私有仓使用
     --exclude=/docs/EULA.md          # 专业版最终用户协议，公开仓不含
     --exclude=/.github/              # 公开仓 CI 独立维护，与私有仓不同，整体不覆盖
     --exclude=/README.md             # 公开仓 README 独立维护，不复制私有版本
@@ -162,6 +165,8 @@ rm -rf "$TARGET/crates/pro" \
        "$TARGET/src-tauri/src/commands/pro.rs" \
        "$TARGET/tools/license-gen"
 rm -f "$TARGET/tools/export-public.sh" \
+      "$TARGET/tools/ship.sh" \
+      "$TARGET/tools/commit-brief.sh" \
       "$TARGET/docs/EULA.md"
 
 # 移除专业版依赖、feature 与 workspace 成员，失败即中止（结构变更时需同步本脚本）

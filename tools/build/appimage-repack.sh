@@ -4,12 +4,12 @@
 #
 # 产物形态:
 #   full（默认）: 自带 WebKitGTK / JavaScriptCore / ICU，约 99MiB，自包含、离线可用；
-#                 受 Gitee 单附件 100MB 上限约束，因此仍需 strip + zstd22 重压缩。
+#                 因此需 strip + zstd22 重压缩以控制体积。
 #   lite（--lite）: 不打包 WebKitGTK / JavaScriptCore / ICU，改由系统提供
 #                 （deb 安装包已在 Depends 中声明 libwebkit2gtk-4.1-0），约 30MiB；
 #                 同时移除仅 WebKit 使用的媒体编解码/语音库与 linuxdeploy 误捆绑的孤立 Qt6 库；
 #                 启动时 AppRun 会先检查系统库，缺失时弹窗/提示安装并退出。
-#   lite 只用于国内手动下载（Gitee 附件配额紧张），latest.json 仍只指向 full，
+#   lite 仅作为体积敏感场景的手动下载变体，latest.json 仍只指向 full，
 #   应用内自动更新下载的始终是 full 版。
 #
 # 用法:
@@ -38,7 +38,6 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-MAX_SIZE=$((100 * 1024 * 1024))
 LITE_MAX_SIZE=$((40 * 1024 * 1024))
 
 usage() {
@@ -280,15 +279,10 @@ cat "$WORKDIR/root.squashfs" >> "$WORKDIR/new.AppImage"
 chmod +x "$WORKDIR/new.AppImage"
 
 NEW_SIZE="$(stat -c %s "$WORKDIR/new.AppImage")"
-if (( LITE )); then
-    SIZE_LIMIT=$LITE_MAX_SIZE
-    SIZE_LIMIT_LABEL="lite 版 40MiB 上限"
-else
-    SIZE_LIMIT=$MAX_SIZE
-    SIZE_LIMIT_LABEL="Gitee 单附件 100MB 上限"
-fi
-if (( NEW_SIZE > SIZE_LIMIT )); then
-    echo -e "${RED}  ✗ 重打包后仍有 $(awk "BEGIN{printf \"%.1f\", $NEW_SIZE/1048576}")MB，超过 ${SIZE_LIMIT_LABEL}${NC}"
+# full 版体积只做提示，GitHub 单附件上限 2GB，不再硬性拦截；
+# lite 仍限制在 40MiB 内，保证「体积敏感场景」的定位不被破坏
+if (( LITE )) && (( NEW_SIZE > LITE_MAX_SIZE )); then
+    echo -e "${RED}  ✗ 重打包后仍有 $(awk "BEGIN{printf \"%.1f\", $NEW_SIZE/1048576}")MB，超过 lite 版 40MiB 上限${NC}"
     exit 1
 fi
 

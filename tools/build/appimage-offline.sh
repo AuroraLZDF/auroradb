@@ -147,7 +147,7 @@ BUNDLE_DIR="$TARGET_DIR/bundle/appimage"
 mkdir -p "$BUNDLE_DIR"
 mv "${GENERATED[0]}" "$BUNDLE_DIR/"
 
-# linuxdeploy 默认压缩率会超过 Gitee 100MB 上限，重压缩并重新签名
+# linuxdeploy 默认压缩率偏大，重压缩并重新签名
 BUNDLED="$BUNDLE_DIR/$(basename "${GENERATED[0]}")"
 "$ROOT/tools/build/appimage-repack.sh" "$BUNDLED"
 

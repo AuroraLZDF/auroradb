@@ -63,6 +63,8 @@
 │   ├── check-version.mjs   # 版本号一致性校验
 │   ├── check-release.sh    # 发布前产物检查
 │   ├── merge-latest.py     # latest.json 合并
+│   ├── commit-brief.sh     # 汇总本次改动，供归纳提交信息（私有，公开仓不含）
+│   ├── ship.sh             # 提交 → 推私有仓 → 导出并推公开仓（私有，公开仓不含）
 │   ├── export-public.sh    # 从私有主仓导出公开仓（私有，公开仓不含）
 │   └── license-gen/        # 激活码签发工具（私有，公开仓不含）
 ├── docs/EULA.md            # 官方发行包与专业版的最终用户许可协议
@@ -117,6 +119,17 @@ cargo check --offline --no-default-features
 
 发版前按 [发版冒烟清单](docs/smoke-checklist.md) 在 Linux 与 Windows 上各跑一遍。
 
+### 提交与推送
+
+```bash
+./tools/commit-brief.sh                 # 汇总改动、版本号与历史提交风格，用于归纳提交信息
+./tools/ship.sh -m "fix(release): 修正 latest.json 上传顺序"
+./tools/ship.sh -m "..." --dry-run      # 只打印计划，不改动仓库
+./tools/ship.sh -m "..." --no-public    # 只提交并推送私有主仓
+```
+
+提交信息按 `type(scope): 说明` 写，说明为什么改而不是罗列文件。`ship.sh` 会先拦截疑似敏感文件与超过 5MB 的文件、跑版本号一致性校验，私有仓推送成功后才导出公开仓，避免两仓版本错位。
+
 ## 打包
 
 构建与发布脚本都放在 `tools/` 下，按平台区分：Linux 用 `.sh`，Windows 用 `.ps1`。
@@ -157,31 +170,28 @@ npm run tauri signer generate -- -w ~/.config/auroradb/updater.key
 
 产物位于 `src-tauri/target/release/bundle/`。
 
-### 发布到 Gitee 发行版
+### 发布到 GitHub 发行版
 
-源码仓库保持私有，安装包发布到独立的**公开**仓库 `auroradb-releases`（私有仓库的发行版附件需要登录鉴权，终端用户无法下载）。
+源码仓库保持私有，安装包发布到**公开**仓库 `AuroraLZDF/auroradb`（私有仓库的发行版附件需要登录鉴权，终端用户无法下载）。AppImage、deb、NSIS、`.sig`、`SHA256SUMS` 与 `latest.json` 全部作为发行版附件上传，GitHub 单附件上限 2GB。
 
 ```bash
-export GITEE_TOKEN=<Gitee 私人令牌>   # 需勾选 projects 权限
+export GITHUB_TOKEN=<GitHub 令牌>   # 经典令牌勾选 repo；细粒度令牌授予 Contents: Read and write
 
 ./tools/publish/linux.sh              # 发布 Linux 产物
 ./tools/publish/linux.sh --tag v1.0.1 --notes "修复若干问题"
 ./tools/publish/linux.sh --repo owner/other-repo  # 指定其他公开发布仓库
+./tools/publish/linux.sh --dry-run    # 只在本机校验并预览发布计划
 ```
 
 ```powershell
-$env:GITEE_TOKEN = "<Gitee 私人令牌>"
+$env:GITHUB_TOKEN = "<GitHub 令牌>"
 .\tools\publish\windows.ps1
 .\tools\publish\windows.ps1 -Tag v1.0.1 -Notes "修复若干问题"
 ```
 
-两个平台的发布脚本都会显示当前分支、提交、工作区状态、tag 是否已创建并推送，需输入 `yes` 确认后才会上传；缺少 tag 或代码未推送时会给出对应命令提示，可先取消发布处理完再重跑。但两者预检范围不同：Linux 脚本在发布前强制调用 `tools/check-release.sh` 校验产物齐全、`.sig` 签名存在、单附件不超过 100MB、更新源指向发布仓库，并生成 `SHA256SUMS`；Windows 脚本不做产物预检，也不生成 `SHA256SUMS`，发布前需手工核对产物与签名。
+两个平台的发布脚本都会显示当前分支、提交、工作区状态、tag 是否已创建并推送，需输入 `yes` 确认后才会上传；缺少 tag 或代码未推送时会给出对应命令提示，可先取消发布处理完再重跑。Linux 脚本在发布前强制调用 `tools/check-release.sh` 校验产物齐全、`.sig` 签名存在、单附件不超过 2GB、更新源指向发布仓库，并生成 `SHA256SUMS`；Windows 脚本不做产物预检，也不生成 `SHA256SUMS`，发布前需手工核对产物与签名。两个平台的 `latest.json` 条目按平台 key 合并，先后发布互不覆盖。令牌只从环境变量读取，不要写入仓库。
 
-首次使用需先在 Gitee 创建公开仓库 `auroradb-releases` 并初始化 README，否则脚本会提示仓库不可访问。
-
-Linux 脚本会先调用 `tools/check-release.sh` 校验产物齐全、`.sig` 签名存在、单附件不超过 100MB、更新源指向发布仓库，再创建发行版并上传；Windows 脚本上传前不做上述预检。两个平台的 `latest.json` 条目按平台 key 合并，先后发布互不覆盖。令牌只从环境变量读取，不要写入仓库。
-
-Gitee 单个仓库的发行版附件总量上限为 **1GB**，历史版本会持续占用配额。任一附件上传失败（包括配额用尽）脚本都会立即中止，不会写入 `latest.json`，避免用户更新到不存在的地址；此时需先在 Gitee 删除旧版本的安装包附件再重发。Tauri 只为 AppImage 生成更新签名，构建脚本会额外为 deb 补签 `.sig`。
+应用内自动更新的固定入口为 `https://github.com/AuroraLZDF/auroradb/releases/latest/download/latest.json`（`latest.json` 作为发行版附件随每次发布更新）。任一附件上传失败脚本都会立即中止，不会写入 `latest.json`，避免用户更新到不存在的地址。Tauri 只为 AppImage 生成更新签名，构建脚本会额外为 deb 补签 `.sig`。
 
 ### 手工发版步骤
 

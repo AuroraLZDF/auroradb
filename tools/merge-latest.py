@@ -20,12 +20,10 @@ Windows 分别构建、分别发布时，不能直接用后发布平台的清单
 缺省不写，保持与旧清单、旧发布脚本的兼容。deb 的 `sha256` 供应用内手动下载后校验
 （见 src-tauri/src/commands/update.rs 的 download_update_package）。
 
---existing 可为：Gitee contents API 的响应（含 content 字段，自动 base64 解码）、
-纯 latest.json、空文件，或文件不存在（按全新清单处理）。
+--existing 可为：从发行版附件下载的 latest.json、空文件，或文件不存在（按全新清单处理）。
 """
 
 import argparse
-import base64
 import datetime
 import json
 import os
@@ -50,7 +48,7 @@ def normalize_sha256(value):
 
 
 def load_existing(path):
-    """读取旧清单；兼容 Gitee API 响应与纯 JSON，读不到时返回 None。"""
+    """读取旧清单；读不到或格式不符时返回 None。"""
     if not path or not os.path.exists(path):
         return None
     with open(path, encoding='utf-8') as f:
@@ -63,15 +61,6 @@ def load_existing(path):
         return None
     if not isinstance(data, dict):
         return None
-    # Gitee contents API：正文在 content 字段里，base64 编码
-    if 'content' in data and 'platforms' not in data:
-        try:
-            decoded = base64.b64decode(data['content']).decode('utf-8')
-            data = json.loads(decoded)
-        except (ValueError, json.JSONDecodeError):
-            return None
-        if not isinstance(data, dict):
-            return None
     if 'platforms' not in data:
         return None
     return data

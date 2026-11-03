@@ -223,7 +223,7 @@ else
     cargo tauri build --bundles "$BUNDLE_TYPE"
 fi
 
-# AppImage 默认压缩率下超过 100MB，会被 Gitee 发行版拒收；重打包后再签名
+# AppImage 默认压缩率偏大，重压缩后再签名（同时去掉多余符号，减小下载体积）
 if [[ "$BUNDLE_TYPE" == *"appimage"* ]]; then
     echo -e "${YELLOW}[5.5/5] 重新压缩 AppImage...${NC}"
     shopt -s nullglob
