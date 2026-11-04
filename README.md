@@ -110,7 +110,7 @@ Tauri 不支持交叉编译，Linux 包需在 Linux 构建，Windows 包需在 W
 
 产物位于 `src-tauri/target/release/bundle/`。构建前需准备更新包签名私钥（不入库），默认读取 `~/.config/auroradb/updater.key`，也可用环境变量 `TAURI_SIGNING_PRIVATE_KEY` 提供；首次生成时在 `src-ui/` 下执行 `npm run tauri signer generate -- -w ~/.config/auroradb/updater.key`。`cargo tauri build` 下载 bundler 失败时，可用 `./tools/build/appimage-offline.sh` 复用已有产物。
 
-产物发布到 GitHub Releases，应用内更新的固定入口是 `https://github.com/AuroraLZDF/auroradb/releases/latest/download/latest.json`，随每次发布更新。令牌配置、发布命令、发版检查与常见报错见 [构建、发布与发版手册](docs/RELEASING.md)。
+产物发布到 GitHub Releases，应用内更新的固定入口是 `https://github.com/AuroraLZDF/auroradb/releases/latest/download/latest.json`，随每次发布更新。升版本并打 tag 用 `./tools/release-tag.sh 2.1.0`（同步 7 个版本文件、校验、提交并创建 `v2.1.0`，支持 `--dry-run` 预览与 `--push` 推送）。令牌配置、发布命令、发版检查与常见报错见 [构建、发布与发版手册](docs/RELEASING.md)。
 
 ## 项目结构
 
@@ -135,6 +135,7 @@ Tauri 不支持交叉编译，Linux 包需在 Linux 构建，Windows 包需在 W
 │   ├── check-version.mjs   # 版本号一致性校验
 │   ├── check-release.sh    # 发布前产物检查
 │   ├── merge-latest.py     # latest.json 合并
+│   ├── release-tag.sh      # 升版本 + 校验 + 提交 + 打 tag
 │   ├── commit-brief.sh     # 汇总改动供归纳提交信息（维护者工具）
 │   └── ship.sh             # 提交 → 推送 origin（维护者工具）
 ├── docs/
