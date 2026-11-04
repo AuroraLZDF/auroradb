@@ -17,7 +17,7 @@
 
 ## 下载安装
 
-安装包统一发布在公开仓库的[发行版页面](https://github.com/AuroraLZDF/auroradb/releases/latest)，源码同样开源（AGPL-3.0）。当前版本为 v2.0.2。
+安装包统一发布在本仓库的[发行版页面](https://github.com/AuroraLZDF/auroradb/releases/latest)，源码同仓开源（AGPL-3.0）。当前版本为 v2.0.2。
 
 | 平台 | 文件名 | 安装方式 |
 | --- | --- | --- |
@@ -44,7 +44,13 @@
 
 - **GitHub Sponsors**：<https://github.com/sponsors/auroraLZDF>（占位链接，待填写）
 - **爱发电**：<https://afdian.com/a/auroradb>（占位链接，待填写）
-- **微信 / 支付宝收款码**：将 `wechat.png`、`alipay.png` 两张图片放入本仓库 `assets/donate/` 目录后即可在此展示（当前尚未提供；目录说明见 [assets/donate/README.md](assets/donate/README.md)）。
+- **微信 / 支付宝**：直接扫码，金额随意：
+
+| 微信支付 | 支付宝 |
+| --- | --- |
+| <img src="assets/donate/wechat.jpg" alt="微信收款码" width="220"> | <img src="assets/donate/alipay.jpg" alt="支付宝收款码" width="220"> |
+
+收款码原图见 [assets/donate/](assets/donate/)（`wechat.jpg`、`alipay.jpg`）。
 
 打赏完全自愿，不提供付费特权，也不影响功能可用性；所有赞助用于服务器、签名与开发投入。代码贡献、Issue 反馈、给仓库点 Star 同样是支持。
 
@@ -81,8 +87,7 @@
 │   ├── check-release.sh    # 发布前产物检查
 │   ├── merge-latest.py     # latest.json 合并
 │   ├── commit-brief.sh     # 汇总本次改动，供归纳提交信息（维护者工具）
-│   ├── ship.sh             # 提交 → 推主仓 → 同步公开仓（维护者工具）
-│   └── export-public.sh    # 从主仓导出公开仓（维护者工具）
+│   └── ship.sh             # 提交 → 推送 origin（维护者工具）
 ├── docs/EULA.md            # 许可与免责声明（以根目录 LICENSE 为准）
 ├── LICENSE                 # AGPL-3.0
 ├── CLA.md                  # 贡献者许可协议
@@ -139,10 +144,9 @@ cargo check --offline
 ./tools/commit-brief.sh                 # 汇总改动、版本号与历史提交风格，用于归纳提交信息
 ./tools/ship.sh -m "fix(release): 修正 latest.json 上传顺序"
 ./tools/ship.sh -m "..." --dry-run      # 只打印计划，不改动仓库
-./tools/ship.sh -m "..." --no-public    # 只提交并推送主仓
 ```
 
-提交信息按 `type(scope): 说明` 写，说明为什么改而不是罗列文件。`ship.sh` 会先拦截疑似敏感文件与超过 5MB 的文件、跑版本号一致性校验，主仓推送成功后才同步公开仓，避免两仓版本错位。
+提交信息按 `type(scope): 说明` 写，说明为什么改而不是罗列文件。`ship.sh` 会先拦截疑似敏感文件与超过 5MB 的文件、跑版本号一致性校验，然后提交并推送 origin。
 
 ## 打包
 
@@ -186,7 +190,7 @@ npm run tauri signer generate -- -w ~/.config/auroradb/updater.key
 
 ### 发布到 GitHub 发行版
 
-源码已开源（AGPL-3.0）。安装包发布到公开仓库 `AuroraLZDF/auroradb` 的发行版，方便终端用户直接下载：AppImage、deb、rpm、NSIS、`.sig`、`SHA256SUMS` 与 `latest.json` 全部作为发行版附件上传，GitHub 单附件上限 2GB。
+源码已开源（AGPL-3.0）。安装包发布到本仓库 `AuroraLZDF/auroradb` 的发行版，方便终端用户直接下载：AppImage、deb、rpm、NSIS、`.sig`、`SHA256SUMS` 与 `latest.json` 全部作为发行版附件上传，GitHub 单附件上限 2GB。
 
 ```bash
 export GITHUB_TOKEN=<GitHub 令牌>   # 经典令牌勾选 repo；细粒度令牌授予 Contents: Read and write
@@ -209,7 +213,7 @@ $env:GITHUB_TOKEN = "<GitHub 令牌>"
 
 ### 手工发版步骤
 
-版本号以 `src-tauri/tauri.conf.json` 为准，需同步 `src-ui/package.json`、`src-ui/package-lock.json`、`src-tauri/Cargo.toml`、`crates/core/Cargo.toml`、`crates/pro/Cargo.toml` 与根目录 `Cargo.lock`（公开仓没有 `crates/pro`，`check-version.mjs` 会自动跳过），然后：
+版本号以 `src-tauri/tauri.conf.json` 为准，需同步 `src-ui/package.json`、`src-ui/package-lock.json`、`src-tauri/Cargo.toml`、`crates/core/Cargo.toml`、`crates/pro/Cargo.toml` 与根目录 `Cargo.lock`，然后：
 
 ```bash
 node tools/check-version.mjs
@@ -231,9 +235,9 @@ AuroraDB 以 [GNU AGPL-3.0](LICENSE) 开源，全部功能（含原增强功能�
 
 不再提供单独的「商业许可」或付费版本；商业场景同样可直接使用，只需遵守 AGPL-3.0。更完整的许可与免责声明见 [docs/EULA.md](docs/EULA.md)。
 
-### 公开仓与贡献
+### 贡献
 
-- 源码已开源，公开仓包含全部功能源码与安装包；
+- 源码已开源，本仓库包含全部功能源码与安装包；
 - 提交贡献前请阅读 [CLA](CLA.md)，首次提交需在 Pull Request 中签署；
 - 安装包中的第三方组件与许可证见 [NOTICE](NOTICE)。
 

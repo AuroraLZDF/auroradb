@@ -1,7 +1,7 @@
 ﻿# 将 Windows 构建产物上传到 GitHub 发行版，并把 windows-x86_64 条目合并进 latest.json
 #
 # 用法（在仓库根目录执行）:
-#   .\tools\publish\windows.ps1                          # 读 tauri.conf.json 的版本，默认发到 origin 同名公开仓库
+#   .\tools\publish\windows.ps1                          # 读 tauri.conf.json 的版本，默认发到 origin 同名仓库
 #   .\tools\publish\windows.ps1 -Tag v2.0.0 -Notes "..." # 指定 tag 与发行说明
 #   .\tools\publish\windows.ps1 -Repo owner/repo
 #

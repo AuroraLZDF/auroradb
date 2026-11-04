@@ -8,7 +8,7 @@
 #   ./tools/publish/linux.sh --repo owner/repo      # 指定公开发布仓库
 #   ./tools/publish/linux.sh --dry-run              # 只在本机校验并打印发布计划
 #
-# 发布目标默认为 origin 同名的 GitHub 公开仓库（如 AuroraLZDF/auroradb）。
+# 发布目标默认为 origin 同名的 GitHub 仓库（如 AuroraLZDF/auroradb）。
 # 安装包、deb、SHA256SUMS 与 latest.json 全部作为发行版附件上传，
 # latest.json 的固定入口为 https://github.com/<owner>/<repo>/releases/latest/download/latest.json
 #
@@ -77,7 +77,7 @@ if [[ -z "$OWNER" || -z "$REPO" ]]; then
     exit 1
 fi
 
-# 分发目标：默认与 origin 同名的公开仓库，可用 --repo 覆盖
+# 分发目标：默认与 origin 同名的 GitHub 仓库，可用 --repo 覆盖
 RELEASE_REPO="${RELEASE_REPO:-$OWNER/$REPO}"
 if [[ "$RELEASE_REPO" != */* ]]; then
     echo -e "${RED}错误: --repo 需为 owner/repo 格式，当前为 $RELEASE_REPO${NC}"
@@ -395,7 +395,7 @@ if (( DRY_RUN == 1 )); then
     exit 0
 fi
 
-# 0. 校验发布仓库可访问：私有仓库的发行版附件对终端用户不可见，必须发布到公开仓库
+# 0. 校验发布仓库可访问：发行版附件需对终端用户可见
 gh_api GET "$API"
 if [[ "$GH_CODE" != "200" ]]; then
     echo -e "${RED}错误: 无法访问发布仓库 $OWNER/$REPO (HTTP $GH_CODE)${NC}"

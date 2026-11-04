@@ -74,7 +74,7 @@ P1-3 备份还原 → P1-8 数据同步
 | D1 | **Windows 代码签名** | **暂不签名，v2.0 按内测版分发** | 发布页与安装向导需注明「未签名内测版」、提供 SHA256 校验值、给出「更多信息 → 仍要运行」指引；企业终端受组策略拦截属已知限制。v2.1 再评估 Azure Trusted Signing（要求组织成立约 3 年）或 OV/EV 云端签名 |
 | D2 | **macOS 支持** | **v2.0 不做，移入 v2.1+** | 无 Apple Developer 账号、无 macOS 构建机，即使出包也无法完成签名、公证与 Gatekeeper 验证，属于「发了也装不上」 |
 | D3 | **构建环境** | **Windows + Linux 本地构建**（现有两台机器）；CI 仅保留现有 Linux 质量门禁 | Tauri 不能交叉编译，Windows 包必须在 Windows 机器产出。风险：发布依赖本地环境，必须把 Windows 构建步骤脚本化，并保证两台机器步骤一致 |
-| D4 | **分发渠道** | **统一 GitHub Releases**（安装包发布到公开仓 `AuroraLZDF/auroradb`，源码同步以 AGPL-3.0 开源） | 原方案为「Gitee 主源 + GitHub 镜像」，因 Gitee 发行版附件总量仅 1GB 无法承载持续发版，2026-11-03 改为只发 GitHub；`tools/publish/` 下两个脚本统一走 GitHub API；更新清单 endpoint 单条指向 GitHub；老版本（≤v2.0.0）需手动下载一次新版本 |
+| D4 | **分发渠道** | **统一 GitHub Releases**（单仓维护：安装包发布到本仓库 `AuroraLZDF/auroradb` Releases，源码同仓以 AGPL-3.0 开源） | 原方案为「Gitee 主源 + GitHub 镜像」，因 Gitee 发行版附件总量仅 1GB 无法承载持续发版，2026-11-03 改为只发 GitHub；`tools/publish/` 下两个脚本统一走 GitHub API；更新清单 endpoint 单条指向 GitHub；老版本（≤v2.0.0）需手动下载一次新版本 |
 | D5 | **更新清单结构** | **按平台 key 合并回写，保留上一版本** | v2.0 清单平台：`linux-x86_64` + `windows-x86_64`；`darwin-*` 待 v2.1 启用。合并逻辑见 V2-3.2 |
 
 > 结论带来的范围变化：**v2.0 = Linux（存量）+ Windows（内测）+ GitHub 统一发布 + 三项体验补齐**，工作量比原方案减少约 30%。
@@ -109,7 +109,7 @@ P1-3 备份还原 → P1-8 数据同步
 |---|------|----------|----------|
 | V2-3.1 | 构建与发布解耦 | Linux、Windows 各自构建，产物汇总到一处发布 | 构建与发布分别收敛到 `tools/build/`、`tools/publish/`，Linux 用 `.sh`、Windows 用 `.ps1`，入口不再做跨平台分发 |
 | V2-3.2 | 清单合并 | 发布 Windows 不影响 Linux 已有版本，反之亦然 | `latest.json` 按平台读旧值→合并→回写；保留上一版本信息用于回滚；v2.0 平台 key：`linux-x86_64`、`windows-x86_64`（[linux.sh](tools/publish/linux.sh) 只写 Linux 条目，Windows 条目由 `windows.ps1` 写入） |
-| V2-3.3 | 统一 GitHub 发布 | 同一 tag 的 Linux / Windows 产物均发布到公开仓 `AuroraLZDF/auroradb` | `tools/publish/` 下两个脚本走 GitHub API：建发行版、删同名旧附件、`uploads.github.com` 上传（单附件 ≤2GB）；任一附件失败立即中止，不写 latest.json |
+| V2-3.3 | 统一 GitHub 发布 | 同一 tag 的 Linux / Windows 产物均发布到本仓库 `AuroraLZDF/auroradb` Releases | `tools/publish/` 下两个脚本走 GitHub API：建发行版、删同名旧附件、`uploads.github.com` 上传（单附件 ≤2GB）；任一附件失败立即中止，不写 latest.json |
 | V2-3.4 | 更新源单一入口 | 客户端从 GitHub 读取清单 | [tauri.conf.json](src-tauri/tauri.conf.json) `endpoints` 只保留 `https://github.com/AuroraLZDF/auroradb/releases/latest/download/latest.json` |
 | V2-3.5 | 版本单一来源 | 三处版本号一致 | `tauri.conf.json` 为准，构建时校验 `Cargo.toml` / `package.json` 一致，不一致直接失败 |
 | V2-3.6 | 发布前检查 | 防止漏发或发错 | 校验各平台 `.sig` 存在、单附件 ≤2GB、更新地址与配置一致、`SHA256SUMS` 已生成 |

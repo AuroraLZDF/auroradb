@@ -68,7 +68,7 @@ const targets = [
   }),
   check('src-tauri/Cargo.toml', () => cargoPackageVersion('src-tauri/Cargo.toml')),
   check('crates/core/Cargo.toml', () => cargoPackageVersion('crates/core/Cargo.toml')),
-  // 公开仓不包含 Pro crate，此处按实际存在的情况校验
+  // Pro crate 与仓库同源，存在即校验
   ...(existsSync(resolve(ROOT, 'crates/pro/Cargo.toml'))
     ? [check('crates/pro/Cargo.toml', () => cargoPackageVersion('crates/pro/Cargo.toml'))]
     : []),
