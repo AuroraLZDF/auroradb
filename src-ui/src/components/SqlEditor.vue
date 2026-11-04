@@ -408,13 +408,14 @@ const panelTab = ref<'history' | 'saved'>('history')
 const librarySearch = ref('')
 
 // 导出格式
-const exportFormat = ref<'csv' | 'json' | 'xlsx' | 'sql'>('csv')
+const exportFormat = ref<'csv' | 'json' | 'xlsx' | 'sql' | 'markdown'>('csv')
 
 const exportFormatOptions = [
   { label: 'CSV', value: 'csv' },
   { label: 'JSON', value: 'json' },
   { label: 'Excel', value: 'xlsx' },
   { label: 'SQL INSERT', value: 'sql' },
+  { label: 'Markdown', value: 'markdown' },
 ]
 
 function onExportFormatChange(value: string) {
@@ -1143,6 +1144,9 @@ async function exportResults() {
     case 'sql':
       exportToSQL(rows, columns, timestamp)
       break
+    case 'markdown':
+      exportToMarkdown(rows, columns, timestamp)
+      break
   }
 }
 
@@ -1241,6 +1245,25 @@ function exportToSQL(
   }).join('\n')
 
   downloadFile(insertStatements, `query-result-${timestamp}.sql`, 'text/plain;charset=utf-8;')
+}
+
+// 导出为 Markdown 表格
+function exportToMarkdown(
+  rows: unknown[][],
+  columns: { name: string; data_type: string }[],
+  timestamp: string
+) {
+  const escape = (cell: unknown): string => {
+    if (cell === null) return 'NULL'
+    // 竖线会破坏表格结构，换行压成空格
+    return String(cell).replace(/\|/g, '\\|').replace(/\r?\n/g, ' ')
+  }
+
+  const header = `| ${columns.map(col => escape(col.name)).join(' | ')} |`
+  const separator = `| ${columns.map(() => '---').join(' | ')} |`
+  const body = rows.map(row => `| ${row.map(escape).join(' | ')} |`).join('\n')
+
+  downloadFile(`${header}\n${separator}\n${body}\n`, `query-result-${timestamp}.md`, 'text/markdown;charset=utf-8;')
 }
 
 // 通用下载函数（使用 Tauri 文件对话框）
