@@ -1,7 +1,8 @@
 {
   "name": "src-ui",
-  "version": "2.0.2",
+  "version": "2.1.0",
   "private": true,
+  "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
     "dev": "vite",
