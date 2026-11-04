@@ -79,7 +79,7 @@
 ├── src-tauri/              # Tauri 应用（命令注册、窗口与更新）
 │   ├── src/commands/       # Tauri 命令层（pro.rs 为增强功能命令）
 │   └── src/password_store.rs
-├── assets/donate/          # 打赏收款码占位（wechat.png / alipay.png）
+├── assets/donate/          # 打赏收款码（wechat.jpg / alipay.jpg）
 ├── tools/
 │   ├── build/              # 构建实现（linux.sh / windows.ps1 / appimage-*.sh）
 │   ├── publish/            # 发布实现（linux.sh / windows.ps1）
