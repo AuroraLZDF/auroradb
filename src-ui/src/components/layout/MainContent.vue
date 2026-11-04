@@ -85,7 +85,7 @@
         <div class="content-area">
           <!-- 数据表视图（常驻挂载，用 v-show 隐藏而非销毁，避免切换视图时状态丢失与重复加载） -->
           <div v-show="activeTab?.type === 'table'" class="table-view">
-            <DataTable ref="dataTableRef" @table-closed="onTableClosed" />
+            <DataTable ref="dataTableRef" @table-closed="onTableClosed" @open-sql="openSqlWithContent" />
           </div>
 
           <!-- 对象列表视图 -->
@@ -537,6 +537,28 @@ function openSqlFile(fileName: string, content: string) {
   setActiveTab(tabId)
 }
 
+// 外键引用导航 / 历史重跑：带着现成 SQL 新建查询页（可选自动执行与预设参数）
+function openSqlWithContent(
+  sql: string,
+  title: string,
+  connectionId?: string,
+  params?: Record<string, string>,
+  autoRun = false,
+) {
+  const { id: tabId, index } = allocateSqlTabId()
+  const newTab: SqlTab = {
+    id: tabId,
+    type: 'sql',
+    title: title || `Query ${index}`,
+    connectionId: connectionId || props.currentConnection?.id || '',
+  }
+  editorTabs.setSql(tabId, sql)
+  editorTabs.markClean(tabId)
+  if (autoRun) editorTabs.scheduleRun(tabId, params)
+  tabs.value.push(newTab)
+  setActiveTab(tabId)
+}
+
 // 新建控制台
 function newConsole() {
   const tabId = `console-${consoleTabCounter.value++}`
@@ -672,6 +694,7 @@ defineExpose({
   openTable,
   newSqlQuery,
   openSqlFile,
+  openSqlWithContent,
   newConsole,
   openErDiagramTab,
   closeTab,

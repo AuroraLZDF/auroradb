@@ -16,6 +16,9 @@ export default {
     'tree.views': '视图',
     'tree.functions': '函数',
     'tree.procedures': '存储过程',
+    'tree.triggers': '触发器',
+    'tree.events': '事件',
+    'tree.noObjects': '暂无对象',
     'tree.tableHint': '单击查看表结构，双击查看数据，右键打开菜单',
   },
   'en-US': {
@@ -35,6 +38,9 @@ export default {
     'tree.views': 'Views',
     'tree.functions': 'Functions',
     'tree.procedures': 'Procedures',
+    'tree.triggers': 'Triggers',
+    'tree.events': 'Events',
+    'tree.noObjects': 'No objects',
     'tree.tableHint': 'Click to view table structure, double-click to view data, right-click to open menu',
   },
 }

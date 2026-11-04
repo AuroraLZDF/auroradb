@@ -14,6 +14,12 @@ export interface QueryHistoryEntry {
   durationMs?: number
   success: boolean
   error?: string
+  /** 参数化查询的实参（`:name` → 用户输入），便于重跑时复用 */
+  params?: Record<string, string>
+  /** SELECT 返回行数 */
+  rowsReturned?: number
+  /** DML 影响行数 */
+  rowsAffected?: number
 }
 
 /** 保存的查询 */
@@ -106,7 +112,12 @@ export const useQueryLibraryStore = defineStore('queryLibrary', () => {
     }
 
     const next = [record, ...history.value.filter(
-      item => !(item.connectionId === record.connectionId && item.sql === record.sql)
+      item =>
+        !(
+          item.connectionId === record.connectionId &&
+          item.sql === record.sql &&
+          JSON.stringify(item.params ?? null) === JSON.stringify(record.params ?? null)
+        )
     )]
 
     // 按连接裁剪：只保留该连接最近 N 条

@@ -104,6 +104,16 @@
             <button
               class="tools-item"
               role="menuitem"
+              :title="t('history.open')"
+              @click="openTool('openHistory')"
+            >
+              <History :size="16" />
+              <span>{{ t('history.open') }}</span>
+            </button>
+            <div class="tools-divider"></div>
+            <button
+              class="tools-item"
+              role="menuitem"
               :title="t('header.console')"
               :disabled="!currentConnection"
               @click="openTool('openNewConsoleTab')"
@@ -220,7 +230,7 @@ import { useConnectionStore } from '@/stores/connection'
 import { useUpdaterStore } from '@/stores/updater'
 import { t, locale, toggleLocale } from '@/i18n'
 import { confirmAction } from '@/composables/useConfirm'
-import { Menu, Plug, FileCode, Moon, Sun, PanelRight, Terminal, RefreshCw, GitCompare, Activity, Languages, Network, HardDrive, Search, Wrench, Settings, ChevronDown, Info } from 'lucide-vue-next'
+import { Menu, Plug, FileCode, Moon, Sun, PanelRight, Terminal, RefreshCw, GitCompare, Activity, Languages, Network, HardDrive, Search, Wrench, Settings, ChevronDown, Info, History } from 'lucide-vue-next'
 
 const themeStore = useThemeStore()
 const connStore = useConnectionStore()
@@ -248,6 +258,7 @@ const emit = defineEmits<{
   openBackup: []
   openGlobalSearch: []
   openAbout: []
+  openHistory: []
 }>()
 
 const currentConnection = computed(() => connStore.currentConnection)
@@ -281,6 +292,7 @@ type ToolEvent =
   | 'openGlobalSearch'
   | 'openNewConsoleTab'
   | 'openAbout'
+  | 'openHistory'
 
 const toolActions: Record<ToolEvent, () => void> = {
   openSchemaDiff: () => emit('openSchemaDiff'),
@@ -289,7 +301,8 @@ const toolActions: Record<ToolEvent, () => void> = {
   openBackup: () => emit('openBackup'),
   openGlobalSearch: () => emit('openGlobalSearch'),
   openNewConsoleTab: () => emit('openNewConsoleTab'),
-  openAbout: () => emit('openAbout')
+  openAbout: () => emit('openAbout'),
+  openHistory: () => emit('openHistory')
 }
 
 function openTool(name: ToolEvent) {

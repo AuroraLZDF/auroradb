@@ -13,6 +13,7 @@
       @open-monitor="handleOpenMonitor"
       @open-backup="handleOpenBackup"
       @open-global-search="handleOpenGlobalSearch"
+      @open-history="showHistory = true"
       @open-about="showAbout = true"
     />
 
@@ -46,6 +47,8 @@
           @select-table="selectTable"
           @dblclick-table="openTable"
           @show-table-menu="showTableContextMenu"
+          @select-object="selectObject"
+          @dblclick-object="openObjectDefinition"
           @new-database="handleNewDatabase"
         />
       </div>
@@ -291,6 +294,9 @@
       </div>
     </div>
 
+    <!-- 全局执行历史（跨标签页） -->
+    <HistoryDialog :open="showHistory" @close="showHistory = false" @rerun="rerunHistory" />
+
     <!-- 跨库全局搜索弹窗 -->
     <div v-if="showGlobalSearch" class="modal-overlay">
       <div class="modal-content modal-large">
@@ -366,6 +372,8 @@ import AboutDialog from '@/components/AboutDialog.vue'
 import ToastNotification from '@/components/ui/Toast.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import CommandPalette from '@/components/CommandPalette.vue'
+import HistoryDialog from '@/components/HistoryDialog.vue'
+import type { QueryHistoryEntry } from '@/stores/queryLibrary'
 import ImportProgressDialog from '@/components/ImportProgressDialog.vue'
 import { ProUi } from '@/utils/pro'
 import { useCommandRegistryStore } from '@/stores/commandRegistry'
@@ -537,6 +545,21 @@ const IMPORT_LOG_LIMIT = 2000
 
 // 跨库全局搜索
 const showGlobalSearch = ref(false)
+
+// 全局执行历史
+const showHistory = ref(false)
+
+/** 从历史重跑：新建查询页、带原参数并自动执行 */
+function rerunHistory(entry: QueryHistoryEntry) {
+  showHistory.value = false
+  mainContentRef.value?.openSqlWithContent(
+    entry.sql,
+    t('history.rerunTitle'),
+    entry.connectionId,
+    entry.params,
+    true,
+  )
+}
 
 // 关于
 const showAbout = ref(false)
@@ -1068,6 +1091,29 @@ function openTable(connectionId: string, dbName: string, tableName: string) {
   // 调用 MainContent 的 openTable 来管理 Tab
   if (mainContentRef.value?.openTable) {
     mainContentRef.value.openTable(connectionId, dbName, tableName)
+  }
+}
+
+// 单击选中视图/存储过程/函数/触发器/事件：仅同步当前数据库
+function selectObject(connectionId: string, dbName: string) {
+  selectedDatabase.value = `${connectionId}.${dbName}`
+  browserStore.currentDatabase = dbName
+}
+
+// 双击对象：读取创建语句并在新 SQL 标签页打开，可直接修改后执行
+async function openObjectDefinition(connectionId: string, dbName: string, object: DatabaseObject) {
+  try {
+    browserStore.currentDatabase = dbName
+    const definition = await invoke<string>('get_object_definition', {
+      connectionId,
+      database: dbName,
+      schema: object.schema ?? null,
+      name: object.name,
+      objectType: object.object_type,
+    })
+    mainContentRef.value?.openSqlWithContent(definition, object.name, connectionId)
+  } catch (e) {
+    showError(`${object.name}: ${e}`)
   }
 }
 

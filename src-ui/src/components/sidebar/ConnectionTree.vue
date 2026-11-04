@@ -126,6 +126,8 @@
             @select-table="(db, table) => emit('selectTable', item.active!.id, db, table)"
             @dblclick-table="(db, table) => emit('dblclickTable', item.active!.id, db, table)"
             @show-table-menu="(e, db, table) => emit('showTableMenu', e, item.active!.id, db, table)"
+            @select-object="(db, obj) => emit('selectObject', item.active!.id, db, obj)"
+            @dblclick-object="(db, obj) => emit('dblclickObject', item.active!.id, db, obj)"
             @new-database="emit('newDatabase', item.active!.id)"
           />
         </template>
@@ -254,6 +256,8 @@ const emit = defineEmits<{
   selectTable: [connectionId: string, dbName: string, tableName: string]
   dblclickTable: [connectionId: string, dbName: string, tableName: string]
   showTableMenu: [event: MouseEvent, connectionId: string, dbName: string, tableName: string]
+  selectObject: [connectionId: string, dbName: string, object: DatabaseObject]
+  dblclickObject: [connectionId: string, dbName: string, object: DatabaseObject]
   newDatabase: [connectionId: string]
 }>()
 

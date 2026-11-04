@@ -55,6 +55,28 @@
               <span class="object-name">{{ table.name }}</span>
             </div>
           </div>
+
+          <!-- 视图 / 存储过程 / 函数 / 触发器 / 事件：双击打开创建语句 -->
+          <div
+            v-else-if="category.objectType && isCategoryExpanded(db.name, category.type)"
+            class="object-list"
+          >
+            <div
+              v-for="object in objectsOfType(db.name, category.objectType)"
+              :key="object.id"
+              class="object-item"
+              :title="object.name"
+              @click="emit('selectObject', db.name, object)"
+              @dblclick="emit('dblclickObject', db.name, object)"
+            >
+              <component :is="category.icon" class="object-icon" :size="12" />
+              <span class="object-name">{{ object.name }}</span>
+            </div>
+            <div
+              v-if="objectsOfType(db.name, category.objectType).length === 0"
+              class="object-empty"
+            >{{ t('tree.noObjects') }}</div>
+          </div>
         </div>
       </div>
     </div>
@@ -69,16 +91,18 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Table2, Database, LayoutGrid, Wrench, Cog, ChevronDown, ChevronRight, Plus } from 'lucide-vue-next'
+import { Table2, Database, LayoutGrid, Wrench, Cog, Zap, CalendarClock, ChevronDown, ChevronRight, Plus } from 'lucide-vue-next'
 import type { DatabaseObject } from '@/stores/dataBrowser'
 import { t } from '@/i18n'
 
 const objectCategories = computed(() => [
-  { type: 'tables', label: t('tree.tables'), icon: Table2 },
-  { type: 'views', label: t('tree.views'), icon: LayoutGrid },
-  { type: 'functions', label: t('tree.functions'), icon: Wrench },
-  { type: 'procedures', label: t('tree.procedures'), icon: Cog },
-])
+  { type: 'tables', label: t('tree.tables'), icon: Table2, objectType: '' },
+  { type: 'views', label: t('tree.views'), icon: LayoutGrid, objectType: 'View' },
+  { type: 'functions', label: t('tree.functions'), icon: Wrench, objectType: 'Function' },
+  { type: 'procedures', label: t('tree.procedures'), icon: Cog, objectType: 'Procedure' },
+  { type: 'triggers', label: t('tree.triggers'), icon: Zap, objectType: 'Trigger' },
+  { type: 'events', label: t('tree.events'), icon: CalendarClock, objectType: 'Event' },
+] as const)
 
 interface Props {
   connectionId: string
@@ -104,6 +128,8 @@ const emit = defineEmits<{
   selectTable: [dbName: string, tableName: string]
   dblclickTable: [dbName: string, tableName: string]
   showTableMenu: [event: MouseEvent, dbName: string, tableName: string]
+  selectObject: [dbName: string, object: DatabaseObject]
+  dblclickObject: [dbName: string, object: DatabaseObject]
   newDatabase: []
 }>()
 
@@ -112,12 +138,19 @@ const keyword = computed(() => (props.filter ?? '').trim().toLowerCase())
 const filtering = computed(() => keyword.value.length > 0)
 
 function tablesOf(dbName: string): DatabaseObject[] {
-  return props.connectionDatabaseTables[dbName] || []
+  return (props.connectionDatabaseTables[dbName] || []).filter(item => item.object_type === 'Table')
 }
 
 function visibleTables(dbName: string): DatabaseObject[] {
   if (!filtering.value || dbName.toLowerCase().includes(keyword.value)) return tablesOf(dbName)
   return tablesOf(dbName).filter(table => table.name.toLowerCase().includes(keyword.value))
+}
+
+/** 按对象类型取出视图/存储过程/函数/触发器/事件 */
+function objectsOfType(dbName: string, objectType: string): DatabaseObject[] {
+  return (props.connectionDatabaseTables[dbName] || []).filter(
+    item => item.object_type === objectType
+  )
 }
 
 const visibleDatabases = computed(() => {
@@ -282,6 +315,12 @@ function isCategoryExpanded(dbName: string, categoryType: string): boolean {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.object-empty {
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
 }
 
 .expand-icon {
