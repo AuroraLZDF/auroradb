@@ -90,6 +90,35 @@
               @update:model-value="(value) => (form.safetyMode = value as SafetyMode)"
             />
           </div>
+
+          <div class="form-group col-6">
+            <label>{{ t('connectionForm.group') }}</label>
+            <input v-model="form.group" type="text" :placeholder="t('connectionForm.groupPlaceholder')" />
+          </div>
+          <div class="form-group col-6">
+            <label>{{ t('connectionForm.color') }}</label>
+            <div class="color-picker-row">
+              <button
+                v-for="preset in COLOR_PRESETS"
+                :key="preset"
+                type="button"
+                class="color-dot"
+                :class="{ active: form.color === preset }"
+                :style="{ background: preset }"
+                :title="t('connectionForm.color')"
+                @click="form.color = form.color === preset ? '' : preset"
+              ></button>
+              <button
+                v-if="form.color"
+                type="button"
+                class="color-clear"
+                :title="t('common.clear')"
+                @click="form.color = ''"
+              >
+                ×
+              </button>
+            </div>
+          </div>
         </div>
 
         <p v-if="form.driver === 'postgres'" class="form-hint">{{ t('connectionForm.postgresHint') }}</p>
@@ -264,6 +293,9 @@ const activeTab = ref<'basic' | 'advanced'>('basic')
 /** 各驱动的默认端口：切换驱动时若端口仍是旧默认值则自动跟随 */
 const DEFAULT_PORTS: Record<DriverKind, number> = { mysql: 3306, postgres: 5432 }
 
+/** 连接颜色标识预设色板 */
+const COLOR_PRESETS = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#a855f7', '#06b6d4', '#ec4899']
+
 const form = reactive({
   driver: 'mysql' as DriverKind,
   name: '',
@@ -273,6 +305,8 @@ const form = reactive({
   username: '',
   password: '',
   safetyMode: 'off' as SafetyMode,
+  group: '',
+  color: '',
   sslMode: 'preferred' as SslMode,
   sslCaPath: '',
   sslCertPath: '',
@@ -346,6 +380,8 @@ onMounted(async () => {
     form.database = props.editConnection.database || ''
     form.username = props.editConnection.username
     form.safetyMode = props.editConnection.safetyMode ?? 'off'
+    form.group = props.editConnection.group || ''
+    form.color = props.editConnection.color || ''
     form.sslMode = props.editConnection.sslMode ?? 'preferred'
     form.sslCaPath = props.editConnection.sslCaPath || ''
     form.sslCertPath = props.editConnection.sslCertPath || ''
@@ -497,6 +533,8 @@ async function handleSubmit() {
         sslCertPath: form.sslCertPath,
         sslKeyPath: form.sslKeyPath,
         safetyMode: form.safetyMode,
+        group: form.group,
+        color: form.color,
         ...sshSaved,
       })
 
@@ -553,6 +591,8 @@ async function handleSubmit() {
         sslCertPath: form.sslCertPath,
         sslKeyPath: form.sslKeyPath,
         safetyMode: form.safetyMode,
+        group: form.group,
+        color: form.color,
         ...sshSaved,
       })
     }
@@ -789,6 +829,43 @@ async function handleSubmit() {
   font-size: 12px;
   line-height: 1.5;
   color: var(--color-text-secondary);
+}
+
+/* 连接颜色标识色板 */
+.color-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 38px;
+}
+
+.color-dot {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.color-dot.active {
+  border-color: var(--color-text);
+  box-shadow: 0 0 0 2px var(--color-background), 0 0 0 3px var(--color-border);
+}
+
+.color-clear {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--color-border);
+  color: var(--color-text);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
 }
 
 button {

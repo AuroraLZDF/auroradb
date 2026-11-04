@@ -14,14 +14,24 @@
     </div>
     <div class="section">
       <div
-        v-for="item in visibleItems"
-        :key="item.key"
+        v-for="group in groupedItems"
+        :key="group.name || '__ungrouped__'"
         class="connection-group"
       >
+        <!-- 分组标题：未分组不显示标题，保持原有平铺外观 -->
+        <div v-if="group.name" class="group-header">
+          <span class="group-name">{{ group.name }}</span>
+          <span class="group-count">{{ group.items.length }}</span>
+        </div>
         <!-- 离线：已保存但未连接 -->
+        <div
+          v-for="item in group.items"
+          :key="item.key"
+        >
         <div
           v-if="item.type === 'saved'"
           class="connection-item saved"
+          :style="colorStyleOf(item)"
           @dblclick="emit('openSavedConnection', item.saved!)"
           @contextmenu.prevent="emit('showSavedConnectionMenu', $event, item.saved!)"
           :title="t('tree.openSavedHint')"
@@ -35,6 +45,16 @@
                 class="mode-badge driver"
                 :title="t('tree.postgresHint')"
               >{{ t('tree.postgresBadge') }}</span>
+              <span
+                v-if="item.saved!.safetyMode === 'read-only'"
+                class="mode-badge readonly"
+                :title="t('tree.readonlyHint')"
+              >{{ t('tree.readonly') }}</span>
+              <span
+                v-else-if="item.saved!.safetyMode === 'safe'"
+                class="mode-badge safe"
+                :title="t('tree.safeModeHint')"
+              >{{ t('tree.safeMode') }}</span>
             </span>
             <span class="host">{{ item.host }}:{{ item.port }}</span>
             <span v-if="driverOf(item) === 'postgres' && item.saved!.database" class="database-hint">
@@ -47,10 +67,11 @@
         <template v-else>
           <div
             class="connection-item"
-            :class="{ 
-              active: currentConnection?.id === item.active!.id, 
+            :style="colorStyleOf(item)"
+            :class="{
+              active: currentConnection?.id === item.active!.id,
               expanded: expandedConnections.has(item.active!.id),
-              'viewing-info': selectedInfoType === 'connection' && selectedInfoData.connectionId === item.active!.id 
+              'viewing-info': selectedInfoType === 'connection' && selectedInfoData.connectionId === item.active!.id
             }"
             @click="emit('selectConnection', item.active!)"
             @contextmenu.prevent="emit('showActiveConnectionMenu', $event, item.active!)"
@@ -108,6 +129,7 @@
             @new-database="emit('newDatabase', item.active!.id)"
           />
         </template>
+        </div>
       </div>
 
       <div v-if="visibleItems.length === 0" class="empty">
@@ -123,6 +145,7 @@ import { ChevronDown, ChevronRight, Search } from 'lucide-vue-next'
 import StatusDot from '@/components/icons/StatusDot.vue'
 import DatabaseTree from './DatabaseTree.vue'
 import { t } from '@/i18n'
+import { useSavedConnectionsStore } from '@/stores/savedConnections'
 import type { ConnectionStatus } from '@/stores/connection'
 import type { SavedConnection } from '@/stores/savedConnections'
 import type { DatabaseObject } from '@/stores/dataBrowser'
@@ -173,6 +196,50 @@ function connectionMatches(item: TreeItem): boolean {
 }
 
 const visibleItems = computed(() => props.treeItems.filter(connectionMatches))
+
+// 分组 / 颜色来自已保存连接配置；活跃连接与已保存记录共用同一 id
+const savedStore = useSavedConnectionsStore()
+
+const savedMetaById = computed(() => {
+  const map = new Map<string, SavedConnection>()
+  for (const conn of savedStore.savedConnections) {
+    map.set(conn.id, conn)
+  }
+  return map
+})
+
+function groupOf(item: TreeItem): string {
+  return item.saved?.group || savedMetaById.value.get(item.key)?.group || ''
+}
+
+function colorOf(item: TreeItem): string {
+  return item.saved?.color || savedMetaById.value.get(item.key)?.color || ''
+}
+
+/** 连接颜色标识：渲染为条目左侧色条 */
+function colorStyleOf(item: TreeItem): Record<string, string> | undefined {
+  const color = colorOf(item)
+  return color ? { borderLeft: `3px solid ${color}` } : undefined
+}
+
+/** 按分组聚合可见连接：未分组排最前（无标题），其余按名称排序 */
+const groupedItems = computed(() => {
+  const groups = new Map<string, TreeItem[]>()
+  for (const item of visibleItems.value) {
+    const group = groupOf(item)
+    const list = groups.get(group) ?? []
+    list.push(item)
+    groups.set(group, list)
+  }
+
+  const ungrouped = groups.get('') ?? []
+  groups.delete('')
+  const named = [...groups.entries()]
+    .sort(([a], [b]) => a.localeCompare(b, 'zh-CN'))
+    .map(([name, items]) => ({ name, items }))
+
+  return ungrouped.length > 0 ? [{ name: '', items: ungrouped }, ...named] : named
+})
 
 const emit = defineEmits<{
   openSavedConnection: [conn: SavedConnection]
@@ -269,6 +336,24 @@ function getConnectionStatus(state: string): 'online' | 'offline' | 'reconnectin
 
 .connection-group {
   margin-bottom: var(--space-1);
+}
+
+/* 分组标题行 */
+.group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.group-count {
+  font-weight: 400;
+  color: var(--text-tertiary);
 }
 
 .connection-item {

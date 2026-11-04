@@ -46,6 +46,10 @@ export interface SavedConnection extends SshSavedFields {
   sslKeyPath?: string
   /** 访问模式，旧数据无此字段时按 off 处理 */
   safetyMode?: SafetyMode
+  /** 连接分组名（如 dev/test/prod），旧数据无此字段时归入未分组 */
+  group?: string
+  /** 连接颜色标识（CSS 颜色值），用于侧栏与编辑器 Tab 边框着色 */
+  color?: string
 }
 
 interface StoredPassword {
@@ -159,6 +163,10 @@ export const useSavedConnectionsStore = defineStore('savedConnections', () => {
     sshPrivateKeyPath?: string
     sshSecret?: string
     safetyMode?: SafetyMode
+    /** 连接分组名，空串视为清除分组 */
+    group?: string
+    /** 连接颜色标识，空串视为清除 */
+    color?: string
   }): Promise<SavedConnection> {
     const now = new Date().toISOString()
 
@@ -202,6 +210,8 @@ export const useSavedConnectionsStore = defineStore('savedConnections', () => {
         ...ssh,
         hasSshSecret: config.sshSecret ? true : (ssh.sshEnabled ? edited.hasSshSecret : undefined),
         safetyMode: config.safetyMode ?? edited.safetyMode ?? 'off',
+        group: config.group?.trim() || undefined,
+        color: config.color || undefined,
       }
       const index = savedConnections.value.findIndex(c => c.id === edited.id)
       savedConnections.value[index] = updated
@@ -238,6 +248,8 @@ export const useSavedConnectionsStore = defineStore('savedConnections', () => {
         ...ssh,
         hasSshSecret: config.sshSecret ? true : (ssh.sshEnabled ? existing.hasSshSecret : undefined),
         safetyMode: config.safetyMode ?? existing.safetyMode ?? 'off',
+        group: config.group?.trim() || undefined,
+        color: config.color || undefined,
       }
 
       const index = savedConnections.value.findIndex(c => c.id === existing.id)
@@ -282,6 +294,8 @@ export const useSavedConnectionsStore = defineStore('savedConnections', () => {
       ...ssh,
       hasSshSecret: !!config.sshSecret,
       safetyMode: config.safetyMode ?? 'off',
+      group: config.group?.trim() || undefined,
+      color: config.color || undefined,
     }
 
     savedConnections.value.push(newConnection)

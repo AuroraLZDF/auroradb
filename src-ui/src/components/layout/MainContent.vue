@@ -36,6 +36,7 @@
             :key="tab.id"
             class="tab-item"
             :class="{ active: activeTab?.id === tab.id }"
+            :style="tabColorStyle(tab.connectionId)"
             @click="switchTab(tab.id)"
             @mousedown.middle="closeTab(tab.id)"
           >
@@ -52,6 +53,7 @@
             :key="tab.id"
             class="tab-item"
             :class="{ active: activeTab?.id === tab.id }"
+            :style="tabColorStyle(tab.connectionId)"
             @click="switchTab(tab.id)"
             @mousedown.middle="closeTab(tab.id)"
           >
@@ -178,6 +180,7 @@ import { confirmDanger } from '@/composables/useConfirm'
 import { globalToast } from '@/composables/useToast'
 import { t } from '@/i18n'
 import { useConnectionStore, type ConnectionStatus } from '@/stores/connection'
+import { useSavedConnectionsStore } from '@/stores/savedConnections'
 import type { DatabaseObject } from '@/stores/dataBrowser'
 import { nextSqlTabId, nextTabCounter, resolveTabConnectionId } from '@/utils/tabConnection'
 
@@ -264,6 +267,15 @@ const sqlTabs = computed(() => {
 const consoleTabs = computed(() => {
   return tabs.value.filter(t => t.type === 'console') as ConsoleTab[]
 })
+
+// SQL / 控制台 Tab 按连接颜色标识着色（A3）：顶部色条 + 标题着色
+const tabColorStyle = (connectionId: string): Record<string, string> | undefined => {
+  const color = savedStore.savedConnections.find(c => c.id === connectionId)?.color
+  if (!color) return undefined
+  return {
+    boxShadow: `inset 0 2px 0 0 ${color}`,
+  }
+}
 
 const erTabs = computed(() => {
   return tabs.value.filter(t => t.type === 'er') as ErTab[]
@@ -378,6 +390,7 @@ function switchTab(tabId: string) {
 const browserStore = useDataBrowserStore()
 const editorTabs = useEditorTabsStore()
 const connStore = useConnectionStore()
+const savedStore = useSavedConnectionsStore()
 
 // 激活 Tab 时同步全局连接：Tab 绑定了连接就切回它自己的连接，
 // 否则（对象 Tab / 旧数据无绑定）保持当前连接不动
