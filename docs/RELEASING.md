@@ -62,29 +62,16 @@ $env:GITHUB_TOKEN = "<令牌>"
 3. `./tools/publish/linux.sh --dry-run` 预览上传集
 4. 需要时用 `./tools/check-release.sh` 单独核对产物
 
-## 升版本与打 tag
+## 手工发版
 
-用脚本一次完成版本同步、校验、提交与打 tag：
-
-```bash
-./tools/release-tag.sh 2.1.0             # 升到 2.1.0，提交并打 tag v2.1.0
-./tools/release-tag.sh v2.1.0            # 版本号可带 v 前缀
-./tools/release-tag.sh 2.1.0 --dry-run   # 只预览改动，不落盘
-./tools/release-tag.sh 2.1.0 --push      # 完成后推送到 origin
-```
-
-脚本同步 `src-tauri/tauri.conf.json`、`src-ui/package.json`、`src-ui/package-lock.json`、`src-tauri/Cargo.toml`、`crates/core/Cargo.toml`、`crates/pro/Cargo.toml`、`Cargo.lock` 与 README 的版本展示，随后跑 `node tools/check-version.mjs`。要求工作区干净、新版本高于当前版本、同名 tag 不存在；并校验两个锁定文件只改了本仓库的版本行，避免依赖版本被误改。
-
-手工等价操作（版本号以 `src-tauri/tauri.conf.json` 为准）：
+版本号以 `src-tauri/tauri.conf.json` 为准，需同步 `src-ui/package.json`、`src-ui/package-lock.json`、`src-tauri/Cargo.toml`、`crates/core/Cargo.toml`、`crates/pro/Cargo.toml` 与根目录 `Cargo.lock`：
 
 ```bash
 node tools/check-version.mjs
 git add -A && git commit -m "chore(release): v2.1.0"
-git tag -a v2.1.0 -m "AuroraDB 2.1.0"
+git tag v2.1.0
 git push origin main --tags
 ```
-
-手工改版本号时注意：`src-ui/package-lock.json` 里依赖自身也有 `version` 字段，只能改文件头部的根字段与 `packages[""]`；`Cargo.lock` 只改 `auroradb`、`auroradb-core`、`auroradb-pro` 三处。
 
 ## 维护者工具
 

@@ -275,7 +275,10 @@ if (-not $ReleaseId) { Fail "无法解析发行版 id" }
 $Existing = @{}
 Invoke-Api "GET" "$ApiUrl/releases/$ReleaseId/assets?per_page=100"
 if ($script:LastCode -eq "200") {
-    foreach ($Item in @(Read-Utf8 $Tmp | ConvertFrom-Json)) {
+    # PS 5.1 的 ConvertFrom-Json 把 JSON 数组当作单个对象输出，直接 @() 包管道会得到
+    # 一个「元素是数组」的 1 元数组，导致所有附件都匹配不到、重复上传报 422。
+    $Assets = Read-Utf8 $Tmp | ConvertFrom-Json
+    foreach ($Item in $Assets) {
         if ($Item.name) { $Existing[$Item.name] = $Item.id }
     }
 }
@@ -365,6 +368,8 @@ $Doc = [ordered]@{
     platforms = $Platforms
 }
 if ($PreviousDoc) { $Doc.Add("previous", $PreviousDoc) }
+# Linux 先发布时清单里有 deb 条目，Windows 单独重发时不能把它丢掉
+if ($ExistingDoc -and $ExistingDoc.deb) { $Doc.Add("deb", $ExistingDoc.deb) }
 
 $LatestPath = Join-Path ([IO.Path]::GetTempPath()) "auroradb-latest.json"
 $Utf8NoBom = New-Object Text.UTF8Encoding($false)
