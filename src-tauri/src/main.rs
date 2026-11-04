@@ -117,6 +117,8 @@ fn main() {
             commands::connection::query_table_data,
             commands::connection::get_object_tree,
             commands::connection::get_table_structure,
+            commands::connection::get_referencing_foreign_keys,
+            commands::connection::get_object_definition,
             commands::connection::get_schema_snapshot,
             commands::pro::compare_schemas,
             commands::pro::apply_schema_diff,

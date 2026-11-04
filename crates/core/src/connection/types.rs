@@ -222,6 +222,8 @@ pub enum ObjectType {
     View,
     Procedure,
     Function,
+    Trigger,
+    Event,
 }
 
 /// 数据库对象
@@ -279,6 +281,12 @@ pub struct DataQueryRequest {
     pub table: String,
     pub columns: Option<Vec<String>>,
     pub filter: Option<FilterCondition>,
+    /// 多条件过滤：非空时优先于 `filter`，条件之间按 `filter_logic` 组合
+    #[serde(default)]
+    pub filters: Option<Vec<FilterCondition>>,
+    /// 多条件逻辑关系：`and`（默认）/ `or`
+    #[serde(default)]
+    pub filter_logic: Option<String>,
     /// 关键字搜索：在所有可比较列上做 LIKE '%keyword%' 的包含匹配
     pub search: Option<String>,
     pub sort_column: Option<String>,
@@ -416,12 +424,26 @@ pub struct SchemaColumnInfo {
     pub data_type: String,
 }
 
+/// schema 快照中的外键（供 JOIN 补全与引用导航使用）
+#[derive(Debug, Clone, Serialize)]
+pub struct SchemaForeignKeyInfo {
+    pub name: String,
+    /// 本表中的外键列
+    pub column: String,
+    /// 被引用的表
+    pub ref_table: String,
+    /// 被引用的列
+    pub ref_column: String,
+}
+
 /// schema 快照中的表/视图
 #[derive(Debug, Clone, Serialize)]
 pub struct SchemaTableInfo {
     pub name: String,
     pub object_type: ObjectType,
     pub columns: Vec<SchemaColumnInfo>,
+    /// 本表指向其它表的外键
+    pub foreign_keys: Vec<SchemaForeignKeyInfo>,
 }
 
 /// 数据库 schema 快照：一次查询拿到所有表与列，供编辑器补全使用

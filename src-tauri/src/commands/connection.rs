@@ -255,6 +255,51 @@ pub async fn get_table_structure(
     }
 }
 
+/// 查询引用了指定列的外键（结果集右键「查引用它的行」）
+#[command]
+pub async fn get_referencing_foreign_keys(
+    state: State<'_, ConnectionManagerState>,
+    connection_id: String,
+    database: String,
+    table: String,
+    column: String,
+) -> Result<Vec<auroradb_core::connection::TableForeignKeyInfo>, String> {
+    let manager = state.manager.read().await;
+    match manager
+        .get_referencing_foreign_keys(&connection_id, &database, &table, &column)
+        .await
+    {
+        Ok(keys) => Ok(keys),
+        Err(e) => Err(fail(&e)),
+    }
+}
+
+/// 读取存储过程/函数/触发器/事件的创建语句
+#[command]
+pub async fn get_object_definition(
+    state: State<'_, ConnectionManagerState>,
+    connection_id: String,
+    database: String,
+    schema: Option<String>,
+    name: String,
+    object_type: auroradb_core::connection::ObjectType,
+) -> Result<String, String> {
+    let manager = state.manager.read().await;
+    match manager
+        .get_object_definition(
+            &connection_id,
+            &database,
+            schema.as_deref(),
+            &name,
+            object_type,
+        )
+        .await
+    {
+        Ok(definition) => Ok(definition),
+        Err(e) => Err(fail(&e)),
+    }
+}
+
 /// 获取 schema 快照（表/视图 + 列），供 SQL 编辑器补全
 #[command]
 pub async fn get_schema_snapshot(

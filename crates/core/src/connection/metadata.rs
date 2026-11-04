@@ -19,6 +19,12 @@ const METADATA_QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 /// INFORMATION_SCHEMA.TABLES 的一行：表名、自增值、最后修改时间、占用空间
 type TableMetaRow = (String, Option<i64>, Option<String>, Option<i64>);
 
+/// 引用外键查询的一行：约束名、子表、子表列、DELETE_RULE、UPDATE_RULE
+type ReferencingFkRow = (String, String, String, Option<String>, Option<String>);
+
+/// PG 引用外键查询的一行：约束名、子 schema、子表、子表列、DELETE_RULE、UPDATE_RULE
+type PgReferencingFkRow = (String, String, String, String, Option<String>, Option<String>);
+
 /// 元数据查询兜底：包一层超时，把超时与底层错误统一转为 anyhow 错误（不吞错）
 pub async fn with_metadata_timeout<T, E, F>(fut: F) -> Result<T>
 where
@@ -148,6 +154,84 @@ impl ConnectionManager {
                     size_bytes: None,
                 });
             }
+
+            // 存储过程 / 函数：缺少权限时返回空列表而不是让整棵树失败
+            let routines: Vec<(String, String)> = sqlx::query_as(
+                "SELECT ROUTINE_NAME, ROUTINE_TYPE FROM INFORMATION_SCHEMA.ROUTINES
+                 WHERE ROUTINE_SCHEMA = ?
+                 ORDER BY ROUTINE_NAME ASC",
+            )
+            .bind(db)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+
+            for (routine_name, routine_type) in routines {
+                let object_type = if routine_type.eq_ignore_ascii_case("FUNCTION") {
+                    ObjectType::Function
+                } else {
+                    ObjectType::Procedure
+                };
+                let prefix = if object_type == ObjectType::Function { "func" } else { "proc" };
+                objects.push(DatabaseObject {
+                    id: format!("{}:{}.{}", prefix, db, routine_name),
+                    name: routine_name,
+                    object_type,
+                    schema: Some(db.to_string()),
+                    children: None,
+                    auto_increment: None,
+                    updated_at: None,
+                    size_bytes: None,
+                });
+            }
+
+            // 触发器
+            let triggers: Vec<(String,)> = sqlx::query_as(
+                "SELECT TRIGGER_NAME FROM INFORMATION_SCHEMA.TRIGGERS
+                 WHERE TRIGGER_SCHEMA = ?
+                 ORDER BY TRIGGER_NAME ASC",
+            )
+            .bind(db)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+
+            for (trigger_name,) in triggers {
+                objects.push(DatabaseObject {
+                    id: format!("trigger:{}.{}", db, trigger_name),
+                    name: trigger_name,
+                    object_type: ObjectType::Trigger,
+                    schema: Some(db.to_string()),
+                    children: None,
+                    auto_increment: None,
+                    updated_at: None,
+                    size_bytes: None,
+                });
+            }
+
+            // 定时事件（需要 EVENT 权限，缺少时同样降级为空列表）
+            let events: Vec<(String,)> = sqlx::query_as(
+                "SELECT EVENT_NAME FROM INFORMATION_SCHEMA.EVENTS
+                 WHERE EVENT_SCHEMA = ?
+                 ORDER BY EVENT_NAME ASC",
+            )
+            .bind(db)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+
+            for (event_name,) in events {
+                objects.push(DatabaseObject {
+                    id: format!("event:{}.{}", db, event_name),
+                    name: event_name,
+                    object_type: ObjectType::Event,
+                    schema: Some(db.to_string()),
+                    children: None,
+                    auto_increment: None,
+                    updated_at: None,
+                    size_bytes: None,
+                });
+            }
         } else {
             // 获取数据库列表 - 按字母顺序排序
             let databases: Vec<(String,)> = with_metadata_timeout(sqlx::query_as(
@@ -251,6 +335,54 @@ impl ConnectionManager {
                 for (schema, view_name) in views {
                     objects.push(pg_object(db, &schema, &view_name, ObjectType::View));
                 }
+
+                // 存储过程 / 函数（同名重载只展示一个节点）
+                let routines: Vec<(String, String, String)> = sqlx::query_as(
+                    "SELECT DISTINCT ON (n.nspname, p.proname)
+                            n.nspname, p.proname,
+                            CASE WHEN p.prokind = 'p' THEN 'PROCEDURE' ELSE 'FUNCTION' END
+                     FROM pg_proc p
+                     JOIN pg_namespace n ON n.oid = p.pronamespace
+                     WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+                       AND n.nspname NOT LIKE 'pg\\_%'
+                     ORDER BY n.nspname, p.proname",
+                )
+                .fetch_all(&pool)
+                .await
+                .unwrap_or_default();
+
+                for (schema, routine_name, routine_type) in routines {
+                    let object_type = if routine_type == "PROCEDURE" {
+                        ObjectType::Procedure
+                    } else {
+                        ObjectType::Function
+                    };
+                    objects.push(pg_object(db, &schema, &routine_name, object_type));
+                }
+
+                // 触发器：展示为「表.触发器」，避免同 schema 下重名冲突
+                let triggers: Vec<(String, String, String)> = sqlx::query_as(
+                    "SELECT n.nspname, c.relname, t.tgname
+                     FROM pg_trigger t
+                     JOIN pg_class c ON c.oid = t.tgrelid
+                     JOIN pg_namespace n ON n.oid = c.relnamespace
+                     WHERE NOT t.tgisinternal
+                       AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+                       AND n.nspname NOT LIKE 'pg\\_%'
+                     ORDER BY n.nspname, c.relname, t.tgname",
+                )
+                .fetch_all(&pool)
+                .await
+                .unwrap_or_default();
+
+                for (schema, table_name, trigger_name) in triggers {
+                    objects.push(pg_object(
+                        db,
+                        &schema,
+                        &format!("{}.{}", table_name, trigger_name),
+                        ObjectType::Trigger,
+                    ));
+                }
             }
             None => {
                 // 第一层为真实数据库：排除模板库与不允许连接的库
@@ -287,6 +419,129 @@ impl ConnectionManager {
         }
 
         Ok(objects)
+    }
+
+    /// 读取存储过程/函数/触发器/事件的创建语句，供「在编辑器中打开定义」
+    ///
+    /// MySQL 走 `SHOW CREATE ...`，PostgreSQL 走 `pg_get_functiondef` / `pg_get_triggerdef`。
+    pub async fn get_object_definition(
+        &self,
+        connection_id: &str,
+        database: &str,
+        schema: Option<&str>,
+        name: &str,
+        object_type: ObjectType,
+    ) -> Result<String> {
+        validate_identifier(database)?;
+
+        if self.driver_of(connection_id).await? == DriverKind::Postgres {
+            return self
+                .get_postgres_object_definition(
+                    connection_id,
+                    database,
+                    schema.unwrap_or("public"),
+                    name,
+                    object_type,
+                )
+                .await;
+        }
+
+        validate_identifier(name)?;
+        let connections = self.connections.read().await;
+        let conn = connections
+            .get(connection_id)
+            .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
+        let pool = conn
+            .pool
+            .as_ref()
+            .ok_or_else(|| anyhow!("连接不可用: {}", connection_id))?
+            .as_mysql("读取对象定义")?;
+
+        let keyword = match object_type {
+            ObjectType::Procedure => "PROCEDURE",
+            ObjectType::Function => "FUNCTION",
+            ObjectType::Trigger => "TRIGGER",
+            ObjectType::Event => "EVENT",
+            _ => return Err(anyhow!("不支持的对象类型")),
+        };
+
+        let sql = format!(
+            "SHOW CREATE {} {}.`{}`",
+            keyword,
+            quote_identifier(database)?,
+            name
+        );
+        let row = with_metadata_timeout(sqlx::query(&sql).fetch_optional(pool))
+            .await?
+            .ok_or_else(|| anyhow!("对象不存在: {}", name))?;
+
+        // SHOW CREATE 的列名和顺序随版本变化，取列名含 "Create" 的那一列
+        use sqlx::{Column, Row};
+        let mut fallback: Option<String> = None;
+        for (index, column) in row.columns().iter().enumerate() {
+            let value: Option<String> = row.try_get(index).ok();
+            let Some(value) = value else { continue };
+            if column.name().to_ascii_lowercase().contains("create") {
+                return Ok(value);
+            }
+            if index == 1 {
+                fallback = Some(value);
+            }
+        }
+        fallback.ok_or_else(|| anyhow!("未能读取 {} {} 的定义", keyword, name))
+    }
+
+    /// PostgreSQL 对象定义
+    async fn get_postgres_object_definition(
+        &self,
+        connection_id: &str,
+        database: &str,
+        schema: &str,
+        name: &str,
+        object_type: ObjectType,
+    ) -> Result<String> {
+        validate_identifier(schema)?;
+        validate_identifier(name)?;
+        let pool = self.pg_pool_for(connection_id, database).await?;
+
+        match object_type {
+            ObjectType::Procedure | ObjectType::Function => {
+                let definition: Option<String> = sqlx::query_scalar(
+                    "SELECT pg_get_functiondef(p.oid)
+                     FROM pg_proc p
+                     JOIN pg_namespace n ON n.oid = p.pronamespace
+                     WHERE n.nspname = $1 AND p.proname = $2
+                     ORDER BY p.oid
+                     LIMIT 1",
+                )
+                .bind(schema)
+                .bind(name)
+                .fetch_optional(&pool)
+                .await?;
+                definition.ok_or_else(|| anyhow!("对象不存在: {}.{}", schema, name))
+            }
+            ObjectType::Trigger => {
+                // 树节点展示名为「表.触发器」，这里拆回两部分
+                let (table, trigger) = name
+                    .rsplit_once('.')
+                    .ok_or_else(|| anyhow!("触发器名称格式应为 表.触发器: {}", name))?;
+                let definition: Option<String> = sqlx::query_scalar(
+                    "SELECT pg_get_triggerdef(t.oid)
+                     FROM pg_trigger t
+                     JOIN pg_class c ON c.oid = t.tgrelid
+                     JOIN pg_namespace n ON n.oid = c.relnamespace
+                     WHERE n.nspname = $1 AND c.relname = $2 AND t.tgname = $3
+                     LIMIT 1",
+                )
+                .bind(schema)
+                .bind(table)
+                .bind(trigger)
+                .fetch_optional(&pool)
+                .await?;
+                definition.ok_or_else(|| anyhow!("触发器不存在: {}.{}", schema, name))
+            }
+            _ => Err(anyhow!("PostgreSQL 不支持该对象类型")),
+        }
     }
 
     /// 获取数据库 schema 快照（表/视图 + 列），供 SQL 编辑器补全使用
@@ -351,6 +606,7 @@ impl ConnectionManager {
                             ObjectType::Table
                         },
                         columns: Vec::new(),
+                        foreign_keys: Vec::new(),
                     });
                     index_by_name.insert(table_name, idx);
                     idx
@@ -361,6 +617,31 @@ impl ConnectionManager {
                 tables[idx].columns.push(SchemaColumnInfo {
                     name: column_name,
                     data_type,
+                });
+            }
+        }
+
+        // 外键关系单独查一次，避免和列查询的笛卡尔积放大结果集
+        let fk_rows = with_metadata_timeout(
+            sqlx::query_as::<_, (String, String, String, String, String)>(
+                "SELECT TABLE_NAME, CONSTRAINT_NAME, COLUMN_NAME, REFERENCED_TABLE_NAME, \
+                        REFERENCED_COLUMN_NAME
+                 FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+                 WHERE TABLE_SCHEMA = ? AND REFERENCED_TABLE_NAME IS NOT NULL
+                 ORDER BY TABLE_NAME ASC, ORDINAL_POSITION ASC",
+            )
+            .bind(database)
+            .fetch_all(pool),
+        )
+        .await?;
+
+        for (table_name, constraint, column, ref_table, ref_column) in fk_rows {
+            if let Some(idx) = index_by_name.get(&table_name) {
+                tables[*idx].foreign_keys.push(SchemaForeignKeyInfo {
+                    name: constraint,
+                    column,
+                    ref_table,
+                    ref_column,
                 });
             }
         }
@@ -654,6 +935,131 @@ impl ConnectionManager {
         );
 
         Ok(structure)
+    }
+
+    /// 查询引用了指定列的外键（子表 → 当前表），供结果集「查引用它的行」导航使用。
+    ///
+    /// 返回项的语义与 [`TableForeignKeyInfo`] 一致：`column` 是子表中的外键列，
+    /// `ref_table` / `ref_column` 是当前（被引用的）表与列。
+    pub async fn get_referencing_foreign_keys(
+        &self,
+        connection_id: &str,
+        database: &str,
+        table: &str,
+        column: &str,
+    ) -> Result<Vec<TableForeignKeyInfo>> {
+        validate_identifier(database)
+            .map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
+        validate_identifier(table)
+            .map_err(|e| anyhow!("表名验证失败: {}", e))?;
+        validate_identifier(column)
+            .map_err(|e| anyhow!("列名验证失败: {}", e))?;
+
+        if self.driver_of(connection_id).await? == DriverKind::Postgres {
+            return self
+                .get_postgres_referencing_foreign_keys(connection_id, database, table, column)
+                .await;
+        }
+
+        let connections = self.connections.read().await;
+        let conn = connections
+            .get(connection_id)
+            .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
+        let pool = conn
+            .pool
+            .as_ref()
+            .ok_or_else(|| anyhow!("连接尚未建立"))?
+            .as_mysql("外键引用查询")?;
+
+        let rows: Vec<ReferencingFkRow> =
+            with_metadata_timeout(sqlx::query_as(
+                "SELECT kcu.CONSTRAINT_NAME, kcu.TABLE_NAME, kcu.COLUMN_NAME,
+                        rc.DELETE_RULE, rc.UPDATE_RULE
+                 FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+                 LEFT JOIN INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS rc
+                   ON rc.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA
+                  AND rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
+                 WHERE kcu.REFERENCED_TABLE_SCHEMA = ?
+                   AND kcu.REFERENCED_TABLE_NAME = ?
+                   AND kcu.REFERENCED_COLUMN_NAME = ?
+                 ORDER BY kcu.TABLE_NAME ASC, kcu.COLUMN_NAME ASC",
+            )
+            .bind(database)
+            .bind(table)
+            .bind(column)
+            .fetch_all(pool))
+            .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(name, child_table, child_column, on_delete, on_update)| TableForeignKeyInfo {
+                    name,
+                    column: child_column,
+                    ref_table: child_table,
+                    ref_column: column.to_string(),
+                    on_delete: on_delete.unwrap_or_else(|| "RESTRICT".to_string()),
+                    on_update: on_update.unwrap_or_else(|| "RESTRICT".to_string()),
+                },
+            )
+            .collect())
+    }
+
+    /// PostgreSQL 版本的引用外键查询（表标识支持 `schema.table` 展示名）
+    async fn get_postgres_referencing_foreign_keys(
+        &self,
+        connection_id: &str,
+        database: &str,
+        table: &str,
+        column: &str,
+    ) -> Result<Vec<TableForeignKeyInfo>> {
+        let (schema, table_name) = match table.split_once('.') {
+            Some((schema, name)) => (schema.to_string(), name.to_string()),
+            None => ("public".to_string(), table.to_string()),
+        };
+        let pool = self.pg_pool_for(connection_id, database).await?;
+
+        let rows: Vec<PgReferencingFkRow> =
+            with_metadata_timeout(sqlx::query_as(
+                "SELECT tc.constraint_name, kcu.table_schema, kcu.table_name, kcu.column_name,
+                        rc.delete_rule, rc.update_rule
+                 FROM information_schema.table_constraints tc
+                 JOIN information_schema.key_column_usage kcu
+                   ON kcu.constraint_name = tc.constraint_name
+                  AND kcu.constraint_schema = tc.constraint_schema
+                 JOIN information_schema.constraint_column_usage ccu
+                   ON ccu.constraint_name = tc.constraint_name
+                  AND ccu.constraint_schema = tc.constraint_schema
+                 LEFT JOIN information_schema.referential_constraints rc
+                   ON rc.constraint_name = tc.constraint_name
+                  AND rc.constraint_schema = tc.constraint_schema
+                 WHERE tc.constraint_type = 'FOREIGN KEY'
+                   AND ccu.table_schema = $1
+                   AND ccu.table_name = $2
+                   AND ccu.column_name = $3
+                 ORDER BY kcu.table_schema ASC, kcu.table_name ASC, kcu.column_name ASC",
+            )
+            .bind(&schema)
+            .bind(&table_name)
+            .bind(column)
+            .fetch_all(&pool))
+            .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(name, child_schema, child_table, child_column, on_delete, on_update)| {
+                    TableForeignKeyInfo {
+                        name,
+                        column: child_column,
+                        ref_table: pg_display_name(&child_schema, &child_table),
+                        ref_column: column.to_string(),
+                        on_delete: on_delete.unwrap_or_else(|| "RESTRICT".to_string()),
+                        on_update: on_update.unwrap_or_else(|| "RESTRICT".to_string()),
+                    }
+                },
+            )
+            .collect())
     }
 
     /// 获取数据库信息

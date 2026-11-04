@@ -1257,44 +1257,7 @@ impl ConnectionManager {
 
         // WHERE 子句单独构建，SELECT 与 COUNT 复用，保证带过滤/搜索时分页总数正确
         let mut conditions: Vec<String> = Vec::new();
-        if let Some(filter) = &request.filter {
-            let mut cond = format!("`{}` ", filter.column);
-            match filter.operator {
-                FilterOperator::Eq => {
-                    let val = quote_value(&filter.value, DriverKind::MySql)?;
-                    cond.push_str(&format!("= {}", val));
-                }
-                FilterOperator::Ne => {
-                    let val = quote_value(&filter.value, DriverKind::MySql)?;
-                    cond.push_str(&format!("!= {}", val));
-                }
-                FilterOperator::Gt => {
-                    let val = quote_value(&filter.value, DriverKind::MySql)?;
-                    cond.push_str(&format!("> {}", val));
-                }
-                FilterOperator::Gte => {
-                    let val = quote_value(&filter.value, DriverKind::MySql)?;
-                    cond.push_str(&format!(">= {}", val));
-                }
-                FilterOperator::Lt => {
-                    let val = quote_value(&filter.value, DriverKind::MySql)?;
-                    cond.push_str(&format!("< {}", val));
-                }
-                FilterOperator::Lte => {
-                    let val = quote_value(&filter.value, DriverKind::MySql)?;
-                    cond.push_str(&format!("<= {}", val));
-                }
-                FilterOperator::Like => {
-                    let val = quote_value(&filter.value, DriverKind::MySql)?;
-                    cond.push_str(&format!("LIKE {}", val));
-                }
-                FilterOperator::IsNull => {
-                    cond.push_str("IS NULL");
-                }
-                FilterOperator::IsNotNull => {
-                    cond.push_str("IS NOT NULL");
-                }
-            }
+        if let Some(cond) = build_filter_conditions(&request, build_mysql_filter_condition)? {
             conditions.push(cond);
         }
 
@@ -1587,21 +1550,7 @@ impl ConnectionManager {
 
         // WHERE 子句单独构建，SELECT 与 COUNT 复用，保证带过滤/搜索时分页总数正确
         let mut conditions: Vec<String> = Vec::new();
-        if let Some(filter) = &request.filter {
-            let mut cond = format!("{} ", quote_pg_identifier(&filter.column)?);
-            match filter.operator {
-                FilterOperator::Eq => cond.push_str(&format!("= {}", quote_value(&filter.value, DriverKind::Postgres)?)),
-                FilterOperator::Ne => cond.push_str(&format!("!= {}", quote_value(&filter.value, DriverKind::Postgres)?)),
-                FilterOperator::Gt => cond.push_str(&format!("> {}", quote_value(&filter.value, DriverKind::Postgres)?)),
-                FilterOperator::Gte => cond.push_str(&format!(">= {}", quote_value(&filter.value, DriverKind::Postgres)?)),
-                FilterOperator::Lt => cond.push_str(&format!("< {}", quote_value(&filter.value, DriverKind::Postgres)?)),
-                FilterOperator::Lte => cond.push_str(&format!("<= {}", quote_value(&filter.value, DriverKind::Postgres)?)),
-                FilterOperator::Like => {
-                    cond.push_str(&format!("LIKE {}", quote_value(&filter.value, DriverKind::Postgres)?))
-                }
-                FilterOperator::IsNull => cond.push_str("IS NULL"),
-                FilterOperator::IsNotNull => cond.push_str("IS NOT NULL"),
-            }
+        if let Some(cond) = build_filter_conditions(request, build_pg_filter_condition)? {
             conditions.push(cond);
         }
 
@@ -2366,6 +2315,80 @@ fn escape_like_keyword(keyword: &str) -> String {
         .replace('\'', "''")
 }
 
+/// 构造单条 MySQL 过滤条件（列名经过标识符校验，值走字面量转义）。
+fn build_mysql_filter_condition(filter: &FilterCondition) -> Result<String> {
+    let mut cond = format!("{} ", quote_identifier(&filter.column)?);
+    let value = |operator: &str| -> Result<String> {
+        Ok(format!(
+            "{} {}",
+            operator,
+            quote_value(&filter.value, DriverKind::MySql)?
+        ))
+    };
+    match filter.operator {
+        FilterOperator::Eq => cond.push_str(&value("=")?),
+        FilterOperator::Ne => cond.push_str(&value("!=")?),
+        FilterOperator::Gt => cond.push_str(&value(">")?),
+        FilterOperator::Gte => cond.push_str(&value(">=")?),
+        FilterOperator::Lt => cond.push_str(&value("<")?),
+        FilterOperator::Lte => cond.push_str(&value("<=")?),
+        FilterOperator::Like => cond.push_str(&value("LIKE")?),
+        FilterOperator::IsNull => cond.push_str("IS NULL"),
+        FilterOperator::IsNotNull => cond.push_str("IS NOT NULL"),
+    }
+    Ok(cond)
+}
+
+/// 构造单条 PostgreSQL 过滤条件，语义同 `build_mysql_filter_condition`。
+fn build_pg_filter_condition(filter: &FilterCondition) -> Result<String> {
+    let mut cond = format!("{} ", quote_pg_identifier(&filter.column)?);
+    let value = |operator: &str| -> Result<String> {
+        Ok(format!(
+            "{} {}",
+            operator,
+            quote_value(&filter.value, DriverKind::Postgres)?
+        ))
+    };
+    match filter.operator {
+        FilterOperator::Eq => cond.push_str(&value("=")?),
+        FilterOperator::Ne => cond.push_str(&value("!=")?),
+        FilterOperator::Gt => cond.push_str(&value(">")?),
+        FilterOperator::Gte => cond.push_str(&value(">=")?),
+        FilterOperator::Lt => cond.push_str(&value("<")?),
+        FilterOperator::Lte => cond.push_str(&value("<=")?),
+        FilterOperator::Like => cond.push_str(&value("LIKE")?),
+        FilterOperator::IsNull => cond.push_str("IS NULL"),
+        FilterOperator::IsNotNull => cond.push_str("IS NOT NULL"),
+    }
+    Ok(cond)
+}
+
+/// 把请求中的过滤条件合并成单个 WHERE 片段。
+///
+/// `filters` 非空时忽略旧的单条件 `filter`；多条件按 `filter_logic` 组合后整体加括号，
+/// 这样后续追加的搜索/游标条件仍然是 AND 关系，不会破坏优先级。
+fn build_filter_conditions(
+    request: &DataQueryRequest,
+    build: fn(&FilterCondition) -> Result<String>,
+) -> Result<Option<String>> {
+    if let Some(filters) = request.filters.as_deref().filter(|f| !f.is_empty()) {
+        let joined = filters
+            .iter()
+            .map(build)
+            .collect::<Result<Vec<_>>>()?
+            .join(if request.filter_logic.as_deref().is_some_and(|l| l.eq_ignore_ascii_case("or")) {
+                " OR "
+            } else {
+                " AND "
+            });
+        return Ok(Some(format!("({})", joined)));
+    }
+    match &request.filter {
+        Some(filter) => Ok(Some(build(filter)?)),
+        None => Ok(None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2518,6 +2541,8 @@ mod tests {
                 operator: FilterOperator::Eq,
                 value: serde_json::json!(1),
             }),
+            filters: None,
+            filter_logic: None,
             search: None,
             sort_column: None,
             sort_direction: None,
