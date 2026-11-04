@@ -2195,7 +2195,9 @@ async fn export_columns(
     table: &str,
 ) -> Vec<ExportColumn> {
     let meta: Vec<(String, String)> = match sqlx::query_as(
-        "SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS \
+        // COLUMN_TYPE 返回完整类型串（如 `int unsigned`）；DATA_TYPE 只有基础类型
+        // `int`，会让无符号列被误分类成有符号，二进制协议解码时报类型不匹配
+        "SELECT COLUMN_NAME, COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS \
          WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
     )
     .bind(database)
