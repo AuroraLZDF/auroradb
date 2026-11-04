@@ -4,7 +4,6 @@ use auroradb_core::connection::{
     ConnectionConfig, ConnectionManager, ConnectionRequest, ConnectionStatus, DataQueryRequest,
     SshConfig,
 };
-use auroradb_core::license::{LicenseManager, FEATURE_SSH_TUNNEL};
 use tauri::{command, Emitter, State};
 use tauri_plugin_dialog::{DialogExt, FilePath};
 use std::sync::Arc;
@@ -17,11 +16,8 @@ pub struct ConnectionManagerState {
 
 impl ConnectionManagerState {
     pub fn new() -> Self {
-        // SSH 隧道实现位于专业版 crate，启动时注入工厂；免费构建保持 None
-        #[cfg(feature = "pro")]
+        // SSH 隧道与直连均内置
         let manager = ConnectionManager::with_tunnel_factory(auroradb_pro::tunnel::factory());
-        #[cfg(not(feature = "pro"))]
-        let manager = ConnectionManager::new();
         Self {
             manager: Arc::new(RwLock::new(manager)),
         }
@@ -84,14 +80,10 @@ pub(crate) async fn execute_with_audit(
 #[command]
 pub async fn connect(
     state: State<'_, ConnectionManagerState>,
-    license: State<'_, LicenseManager>,
     config: ConnectionConfig,
     ssh_config: Option<SshConfig>,
 ) -> Result<ConnectionStatus, String> {
-    // SSH 隧道属于专业版能力；直连不受限制
-    if ssh_config.is_some() {
-        license.ensure(FEATURE_SSH_TUNNEL, "SSH 隧道").await?;
-    }
+    // SSH 隧道与直连均可用，不再做授权校验
     let manager = state.manager.read().await;
 
     let request = ConnectionRequest {

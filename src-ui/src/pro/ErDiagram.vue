@@ -277,7 +277,6 @@ import {
 } from 'lucide-vue-next'
 import { invoke } from '@tauri-apps/api/core'
 import { useConnectionStore } from '@/stores/connection'
-import { useLicenseStore } from '@/stores/license'
 import { globalToast } from '@/composables/useToast'
 import { t } from '@/i18n'
 
@@ -426,11 +425,6 @@ async function loadData() {
 }
 
 onMounted(async () => {
-  const license = useLicenseStore()
-  if (!license.allows('er-diagram')) {
-    license.openDialog()
-    return
-  }
   loadData()
   try {
     showTip.value = localStorage.getItem(TIP_STORAGE_KEY) !== '1'

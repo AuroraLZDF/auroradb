@@ -296,7 +296,6 @@ import {
   type ServerMetrics
 } from '@/stores/dataBrowser'
 import type { ConnectionStatus } from '@/stores/connection'
-import { useLicenseStore } from '@/stores/license'
 import { confirmDanger } from '@/composables/useConfirm'
 import { t } from '@/i18n'
 
@@ -312,7 +311,6 @@ const emit = defineEmits<{
 }>()
 
 const dataBrowser = useDataBrowserStore()
-const licenseStore = useLicenseStore()
 
 const tab = ref<'process' | 'audit'>('process')
 const connectionOptions = computed(() =>
@@ -467,10 +465,6 @@ async function loadAuditEntries() {
   } catch (err) {
     if (seq !== auditSeq) return
     auditEntries.value = []
-    if (licenseStore.handleError(err)) {
-      auditError.value = ''
-      return
-    }
     auditError.value = t('monitor.auditLoadFailed', { message: String(err) })
   } finally {
     if (seq === auditSeq) auditLoading.value = false
@@ -490,7 +484,6 @@ async function clearAudit() {
     auditEntries.value = []
     auditMessage.value = t('monitor.auditCleared', { count: files })
   } catch (err) {
-    if (licenseStore.handleError(err)) return
     auditError.value = t('monitor.clearAuditFailed', { message: String(err) })
   } finally {
     clearingAudit.value = false

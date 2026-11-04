@@ -1,11 +1,6 @@
 pub mod audit;
 pub mod connection;
 pub mod file;
-pub mod license;
-#[cfg(feature = "pro")]
-pub mod pro;
-#[cfg(not(feature = "pro"))]
-#[path = "pro_stub.rs"]
 pub mod pro;
 pub mod sql_file;
 pub mod update;

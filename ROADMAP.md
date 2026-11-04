@@ -1,11 +1,11 @@
 # AuroraDB 功能路线图
 
 生成日期：2026-10-26
-项目状态：v1.0.8 已发布，MySQL/PostgreSQL 支持、SSH 隧道、表/库设计器、结构对比、监控、审计、导入导出、离线激活体系已就绪；v1.x 功能路线图已全部落地，v2.0 规划见文末。
+项目状态：v1.0.8 已发布，MySQL/PostgreSQL 支持、SSH 隧道、表/库设计器、结构对比、监控、审计、导入导出等能力已就绪；全部功能永久免费，源码以 AGPL-3.0 全量开源；v1.x 功能路线图已全部落地，v2.0 规划见文末。
 
 ---
 
-## P0 · 基础体验补齐（2 周内，免费版也应享受）
+## P0 · 基础体验补齐（2 周内）
 
 | # | 功能 | 验收标准 | 技术要点 |
 |---|------|----------|----------|
@@ -15,18 +15,18 @@
 | P0-4 | **命令面板 + 快捷键体系** | Ctrl+K 呼出命令菜单，支持"执行查询 / 格式化 / 新建 Tab / 关闭 Tab / 切换连接 / 跳转到表"等；快捷键全量可配置 | 集中式 command registry，Editor/Footer 监听快捷键 |
 | P0-5 | **大结果集体验** | 虚拟滚动已实现，补：复制选中、复制整列、列宽自动适应、冻结前 N 列 | DataTable.vue 改造，避免 DOM 爆炸 |
 
-## P1 · Pro 专业能力（付费版核心卖点）
+## P1 · 增强能力（原 Pro 模块，全部免费开放）
 
 | # | 功能 | 验收标准 | 技术要点 |
 |---|------|----------|----------|
 | P1-1 | **EXPLAIN 可视化** | 选中 SQL 一键 Explain，树形计划 + 耗时/扫描行数高亮；MySQL 与 PostgreSQL 分别适配 | MySQL EXPLAIN JSON、PostgreSQL EXPLAIN (ANALYZE, FORMAT JSON)；前端组件渲染 |
 | P1-2 | **ER 图自动生成** | 选中数据库一键生成关系图，表字段 + 外键连线 + 导出 PNG/SVG | 后端返回表列表与 FK 关系，前端用 dagre/elk 布局 |
-| P1-3 | **备份 / 还原 / 定时任务** | 基于 mysqldump / pg_dump；定时策略（每天/每周/自定义 Cron）；备份历史与一键还原 | Rust 侧 spawn 子进程；定时用 chrono + tokio interval；Pro 门禁 |
+| P1-3 | **备份 / 还原 / 定时任务** | 基于 mysqldump / pg_dump；定时策略（每天/每周/自定义 Cron）；备份历史与一键还原 | Rust 侧 spawn 子进程；定时用 chrono + tokio interval；无需授权门禁，全部功能直接可用 |
 | P1-4 | **跨库全局搜索** | 按表名 / 字段名 / 数据内容搜索，支持 LIKE 与正则；返回匹配表 + 行数 | 后端拼接 `information_schema` 查询 + `SELECT * FROM t WHERE col LIKE`；限制结果数 |
 | P1-5 | **会话与锁管理** | 活动会话列表 + 慢查询 + KILL；MySQL `show processlist`、PostgreSQL `pg_stat_activity` | 后端 connection pool 复用或独立短连接；KILL 需鉴权 |
 | P1-6 | **用户与权限管理** | 图形化创建用户 / GRANT / REVOKE，替代手写 SQL | 后端读 `mysql.user` / `pg_roles` + DDL 生成 |
 | P1-7 | **存储过程 / 函数 / 触发器 / 事件编辑器** | 与表设计器并列的对象类型；支持 CREATE / ALTER / DROP | 后端返回 `information_schema.routines` 等；前端 Monaco 复用 |
-| P1-8 | **数据同步（表→表 / 库→库）** | 在现有 SchemaDiff 基础上扩：结构同步 + 数据同步；支持 upsert、按主键匹配 | 后端 src-tauri/src/commands/sync.rs；Pro 门禁 |
+| P1-8 | **数据同步（表→表 / 库→库）** | 在现有 SchemaDiff 基础上扩：结构同步 + 数据同步；支持 upsert、按主键匹配 | 后端 src-tauri/src/commands/sync.rs；无需授权门禁，全部功能直接可用 |
 
 ## P2 · 扩大用户面
 
@@ -35,7 +35,7 @@
 | P2-1 | **SQLite 驱动** | 接入成本最低，覆盖本地开发场景；用 rusqlite |
 | P2-2 | **Redis 驱动** | 用 redis-rs；支持 key/string/hash/list/set/zset 可视化 |
 | P2-3 | **SQL Server 驱动** | tiberius 或 ODBC；优先级较低 |
-| P2-4 | **单元格查看器** | JSON 格式化、图片预览、大文本独立窗口；免费版即可 |
+| P2-4 | **单元格查看器** | JSON 格式化、图片预览、大文本独立窗口 |
 | P2-5 | **导出增强** | Excel (xlsx)、带格式 CSV、按查询结果批量导出 |
 
 ## 必须先解决的基础闭环
@@ -44,8 +44,7 @@
 |----|------|--------|
 | **AppImage 体积超限** | ✅ 已解决：`tools/build/appimage-repack.sh` 复用原 runtime，strip 符号后用 zstd 重压包；full 实测 103,709,176 B（约 98.9 MiB），另提供 `--lite` 变体（约 30.2 MiB，依赖系统 webkit2gtk-4.1），构建脚本自动调用并重新签名 | 已解决 |
 | **Linux 应用内更新** | ✅ 已解决：updater endpoint 指向 `https://github.com/AuroraLZDF/auroradb/releases/latest/download/latest.json`，`tools/publish/linux.sh` 上传 AppImage 后自动合并并上传 latest.json；deb 不支持原地更新，仅 AppImage 生效 | 已解决 |
-| **免费版 / Pro 边界细化** | 免费版：多连接 + 查询 + 导入导出 + 表设计器；Pro：结构同步 + 定时备份 + 审计 + SSH 多跳 + 跨库搜索 | 产品 |
-| **试用期** | 14 天全功能；实现：激活码带 trial 标记，或首次启动开始倒计时 | 变现 |
+| **打赏与社区** | README 与首页提供 GitHub Sponsors、爱发电、微信/支付宝收款码入口；打赏自愿，不设付费档位、不影响功能 | 社区 |
 
 ## 实施顺序建议
 
@@ -58,14 +57,14 @@ P0-2 格式化 → P0-4 命令面板
     ↓
 P1-1 EXPLAIN 可视化 → P1-2 ER 图（演示用）
     ↓
-P1-3 备份还原 → P1-8 数据同步（Pro 变现）
+P1-3 备份还原 → P1-8 数据同步
 ```
 
 ---
 
-# v2.0 · 平台扩张（目标：Linux + Windows 双平台可售，macOS 延后到 v2.1）
+# v2.0 · 平台扩张（目标：Linux + Windows 双平台可用，macOS 延后到 v2.1）
 
-> 定位：v1.x 已把功能面铺满（MySQL/PG、多 Tab、Explain、ER 图、Schema 同步、监控审计、备份还原、全局搜索、i18n、离线激活、自动更新）。
+> 定位：v1.x 已把功能面铺满（MySQL/PG、多 Tab、Explain、ER 图、Schema 同步、监控审计、备份还原、全局搜索、i18n、自动更新）。
 > v2.0 不再堆功能，只解决「装不上、不敢用、用不动」三类问题：先让 Windows 用户能装能用，再补大库与日常操作体验，最后把交付流程工程化。
 
 ## V2-0 前置决策结论（2026-10-30 已拍板）
@@ -75,7 +74,7 @@ P1-3 备份还原 → P1-8 数据同步（Pro 变现）
 | D1 | **Windows 代码签名** | **暂不签名，v2.0 按内测版分发** | 发布页与安装向导需注明「未签名内测版」、提供 SHA256 校验值、给出「更多信息 → 仍要运行」指引；企业终端受组策略拦截属已知限制。v2.1 再评估 Azure Trusted Signing（要求组织成立约 3 年）或 OV/EV 云端签名 |
 | D2 | **macOS 支持** | **v2.0 不做，移入 v2.1+** | 无 Apple Developer 账号、无 macOS 构建机，即使出包也无法完成签名、公证与 Gatekeeper 验证，属于「发了也装不上」 |
 | D3 | **构建环境** | **Windows + Linux 本地构建**（现有两台机器）；CI 仅保留现有 Linux 质量门禁 | Tauri 不能交叉编译，Windows 包必须在 Windows 机器产出。风险：发布依赖本地环境，必须把 Windows 构建步骤脚本化，并保证两台机器步骤一致 |
-| D4 | **分发渠道** | **统一 GitHub Releases**（源码仍留 Gitee 私有库，安装包发布到公开仓 `AuroraLZDF/auroradb`） | 原方案为「Gitee 主源 + GitHub 镜像」，因 Gitee 发行版附件总量仅 1GB 无法承载持续发版，2026-11-03 改为只发 GitHub；`tools/publish/` 下两个脚本统一走 GitHub API；更新清单 endpoint 单条指向 GitHub；老版本（≤v2.0.0）需手动下载一次新版本 |
+| D4 | **分发渠道** | **统一 GitHub Releases**（安装包发布到公开仓 `AuroraLZDF/auroradb`，源码同步以 AGPL-3.0 开源） | 原方案为「Gitee 主源 + GitHub 镜像」，因 Gitee 发行版附件总量仅 1GB 无法承载持续发版，2026-11-03 改为只发 GitHub；`tools/publish/` 下两个脚本统一走 GitHub API；更新清单 endpoint 单条指向 GitHub；老版本（≤v2.0.0）需手动下载一次新版本 |
 | D5 | **更新清单结构** | **按平台 key 合并回写，保留上一版本** | v2.0 清单平台：`linux-x86_64` + `windows-x86_64`；`darwin-*` 待 v2.1 启用。合并逻辑见 V2-3.2 |
 
 > 结论带来的范围变化：**v2.0 = Linux（存量）+ Windows（内测）+ GitHub 统一发布 + 三项体验补齐**，工作量比原方案减少约 30%。
@@ -84,7 +83,7 @@ P1-3 备份还原 → P1-8 数据同步（Pro 变现）
 
 | # | 任务 | 验收标准 | 技术要点 |
 |---|------|----------|----------|
-| V2-1.1 | 打包目标 | 产出 NSIS 安装包，干净 Win10/11 可安装、卸载、覆盖升级 | [tauri.conf.json](file:///home/code/sqlcustomer/mysql-client/src-tauri/tauri.conf.json#L50-L51) 按平台配置 `nsis`；**应用内更新只支持 NSIS，MSI 不支持**；校验 `icon.ico` 各尺寸 |
+| V2-1.1 | 打包目标 | 产出 NSIS 安装包，干净 Win10/11 可安装、卸载、覆盖升级 | [tauri.conf.json](src-tauri/tauri.conf.json#L50-L51) 按平台配置 `nsis`；**应用内更新只支持 NSIS，MSI 不支持**；校验 `icon.ico` 各尺寸 |
 | V2-1.2 | 平台差异适配 | 日志、下载目录、临时凭据文件、外部工具调用均正常 | 临时凭据文件 Linux 用 0600，Windows 需改用受限 ACL 或改为 stdin 传参；`mysqldump`/`mysql` 缺失时给出 Windows 版安装指引（MySQL Shell 或官方客户端） |
 | V2-1.3 | 后端平台分支 | 无 Linux 专属逻辑泄漏到 Windows | `WEBKIT_DISABLE_DMABUF_RENDERER`、AppImage 重打包、deb 手动升级分支全部 `#[cfg(target_os)]` 隔离 |
 | V2-1.4 | 更新链路 | 老版本能收到并完成 NSIS 静默升级 | updater 清单增加 `windows-x86_64`；NSIS 参数与安装目录保持一致 |
@@ -109,9 +108,9 @@ P1-3 备份还原 → P1-8 数据同步（Pro 变现）
 | # | 任务 | 验收标准 | 技术要点 |
 |---|------|----------|----------|
 | V2-3.1 | 构建与发布解耦 | Linux、Windows 各自构建，产物汇总到一处发布 | 构建与发布分别收敛到 `tools/build/`、`tools/publish/`，Linux 用 `.sh`、Windows 用 `.ps1`，入口不再做跨平台分发 |
-| V2-3.2 | 清单合并 | 发布 Windows 不影响 Linux 已有版本，反之亦然 | `latest.json` 按平台读旧值→合并→回写；保留上一版本信息用于回滚；v2.0 平台 key：`linux-x86_64`、`windows-x86_64`（[linux.sh](file:///home/code/sqlcustomer/mysql-client/tools/publish/linux.sh) 只写 Linux 条目，Windows 条目由 `windows.ps1` 写入） |
+| V2-3.2 | 清单合并 | 发布 Windows 不影响 Linux 已有版本，反之亦然 | `latest.json` 按平台读旧值→合并→回写；保留上一版本信息用于回滚；v2.0 平台 key：`linux-x86_64`、`windows-x86_64`（[linux.sh](tools/publish/linux.sh) 只写 Linux 条目，Windows 条目由 `windows.ps1` 写入） |
 | V2-3.3 | 统一 GitHub 发布 | 同一 tag 的 Linux / Windows 产物均发布到公开仓 `AuroraLZDF/auroradb` | `tools/publish/` 下两个脚本走 GitHub API：建发行版、删同名旧附件、`uploads.github.com` 上传（单附件 ≤2GB）；任一附件失败立即中止，不写 latest.json |
-| V2-3.4 | 更新源单一入口 | 客户端从 GitHub 读取清单 | [tauri.conf.json](file:///home/code/sqlcustomer/mysql-client/src-tauri/tauri.conf.json) `endpoints` 只保留 `https://github.com/AuroraLZDF/auroradb/releases/latest/download/latest.json` |
+| V2-3.4 | 更新源单一入口 | 客户端从 GitHub 读取清单 | [tauri.conf.json](src-tauri/tauri.conf.json) `endpoints` 只保留 `https://github.com/AuroraLZDF/auroradb/releases/latest/download/latest.json` |
 | V2-3.5 | 版本单一来源 | 三处版本号一致 | `tauri.conf.json` 为准，构建时校验 `Cargo.toml` / `package.json` 一致，不一致直接失败 |
 | V2-3.6 | 发布前检查 | 防止漏发或发错 | 校验各平台 `.sig` 存在、单附件 ≤2GB、更新地址与配置一致、`SHA256SUMS` 已生成 |
 
@@ -119,7 +118,7 @@ P1-3 备份还原 → P1-8 数据同步（Pro 变现）
 
 | # | 任务 | 验收标准 | 技术要点 |
 |---|------|----------|----------|
-| V2-4.1 | 服务端分批拉取 | 千万行表可连续滚动，不一次性载入 | 游标/keyset 分页替代 `MAX_RESULT_ROWS = 10_000` 硬截断（[executor.rs](file:///home/code/sqlcustomer/mysql-client/src-tauri/src/core/connection/executor.rs#L83)）；前端 `useVirtualRows` 触底预取 |
+| V2-4.1 | 服务端分批拉取 | 千万行表可连续滚动，不一次性载入 | 游标/keyset 分页替代 `MAX_RESULT_ROWS = 10_000` 硬截断（[executor.rs](crates/core/src/connection/executor.rs#L81)）；前端 `useVirtualRows` 触底预取 |
 | V2-4.2 | 流式导出 | 500 万行导出内存平稳 | CSV/XLSX 边读边写，不再整表入内存；超限时明确提示而非静默截断 |
 | V2-4.3 | 按需列加载 | 宽表（200+ 列）打开不卡 | 先取列元数据，勾选列后再查询；默认展示前 N 列 |
 | V2-4.4 | BLOB 导入补全 | Base64/文件导入可还原二进制 | 补齐导入侧 Base64 反向解码（导出侧已支持） |
@@ -130,7 +129,7 @@ P1-3 备份还原 → P1-8 数据同步（Pro 变现）
 |---|------|----------|----------|
 | V2-5.1 | `.sql` 文件关联 | Windows/Linux 双击 `.sql` 打开新查询页 | `bundle.fileAssociations`；启动参数解析 + 单实例锁把二次打开转发给已运行实例 |
 | V2-5.2 | 拖拽打开 | 拖 `.sql` 到窗口即打开 | Tauri drag-drop 事件；与未保存内容守卫联动 |
-| V2-5.3 | 多语句结果分栏 | 一次执行多条语句，结果按语句分栏 | 后端返回多结果集（当前只保留第一个，见 [executor.rs](file:///home/code/sqlcustomer/mysql-client/src-tauri/src/core/connection/executor.rs#L53)）；前端 tab store 扩展 |
+| V2-5.3 | 多语句结果分栏 | 一次执行多条语句，结果按语句分栏 | 后端返回多结果集（当前只保留第一个，见 [executor.rs](crates/core/src/connection/executor.rs#L51)）；前端 tab store 扩展 |
 
 ## V2-6 单元格查看器（P1，免费版可用）
 
@@ -147,7 +146,7 @@ P1-3 备份还原 → P1-8 数据同步（Pro 变现）
 | V2-7.1 | 前端测试 | 核心链路有自动化用例 | Vitest 覆盖 store 与工具函数；Playwright E2E：连接→查询→编辑保存→导出 |
 | V2-7.2 | CI 质量门禁 | PR 不绿不合 | `cargo test` + `clippy` + 前端 `typecheck` / `lint` / 单测 |
 | V2-7.3 | 清理存量告警 | lint 归零 | 清掉遗留 eslint 错误；编译 warning 只减不增 |
-| V2-7.4 | 平台兼容冒烟清单 | 每次发版可照着跑 | Linux/Windows 统一清单：安装、升级、连接、查询、备份、导入导出、激活（见 [smoke-checklist.md](docs/smoke-checklist.md)） |
+| V2-7.4 | 平台兼容冒烟清单 | 每次发版可照着跑 | Linux/Windows 统一清单：安装、升级、连接、查询、备份、导入导出（见 [smoke-checklist.md](docs/smoke-checklist.md)） |
 
 ## v2.0 范围外（明确不做，留给 v2.1+）
 
@@ -210,3 +209,4 @@ V2-7 质量门禁随每批并行推进
 - 2026-10-30：V2-7.1 Playwright E2E 落地 — 新增 `playwright.config.ts` 与 `e2e/`（`support/tauri-mock.ts` 注入伪造 `__TAURI_INTERNALS__`、`support/app.ts` 封装页面操作、`connect-query-edit-export.spec.ts` 覆盖连接→查询→编辑保存→导出），无需 Tauri 运行时与真实数据库；`npm run test:e2e` 3 条用例通过，Vitest 用例收敛到 `src/**/*.test.ts`
 - 2026-11-02：构建/发布脚本收敛 — 入口只剩 `build.sh`（按平台分发，`--windows` 转 PowerShell）与 `release.sh`（`--platform linux|windows`）；平台实现下沉 `tools/build/`（`linux.sh`、`windows.ps1`、`appimage-repack.sh`、`appimage-offline.sh`）与 `tools/publish/windows.ps1`；`build-appimage-offline.sh` 内联吸收 `download-offline.sh`（已删除），Windows 构建不再内置发布步骤；删除只发 Linux 的 `release-all.sh`，版本号同步改为手工流程并写入 README
 - 2026-11-03：分发渠道改为只发 GitHub — Gitee 发行版附件总量仅 1GB，无法承载持续发版；`tools/publish/linux.sh`、`windows.ps1` 重写为 GitHub API 版（建发行版、覆盖同名附件、latest.json 作为发行版附件上传），删除双通道补丁 `github-full.sh`；updater endpoint 收敛为单条 GitHub 地址；`check-release.sh` 附件上限改为 2GB。v2.0.1 起见新版本走 GitHub 自动更新，≤v2.0.0 老客户端需手动下载一次
+- 2026-11-04：取消买断 / 试用 / 激活等商业授权 — 全部功能永久免费开放，源码（含原增强功能模块）以 AGPL-3.0 全量开源；收益模式改为打赏与赞助，相关文档与 README 同步更新

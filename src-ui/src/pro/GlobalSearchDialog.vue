@@ -198,7 +198,6 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { t } from '@/i18n'
 import { useConnectionStore } from '@/stores/connection'
-import { useLicenseStore } from '@/stores/license'
 import Select from '@/components/ui/Select.vue'
 import Button from '@/components/ui/Button.vue'
 import {
@@ -226,7 +225,6 @@ const emit = defineEmits<{
 }>()
 
 const connStore = useConnectionStore()
-const licenseStore = useLicenseStore()
 
 interface TableMatch { database: string; table: string; object_type: string }
 interface ColumnMatch { database: string; table: string; column: string; data_type: string }
@@ -338,7 +336,6 @@ async function runSearch() {
       },
     })
   } catch (e) {
-    if (licenseStore.handleError(e)) return
     error.value = t('search.failed', { error: String(e) })
     result.value = null
   } finally {

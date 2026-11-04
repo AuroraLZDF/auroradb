@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# 从私有主仓导出发行开源公开仓（AGPL-3.0 部分）
+# 从私有主仓导出发行开源公开仓（AGPL-3.0 全量源码）
 #
 # 用法:
 #   ./tools/export-public.sh <目标目录>
@@ -10,15 +10,14 @@
 #   ./tools/export-public.sh ../auroradb-public --push git@github.com:owner/auroradb-public.git
 #   ./tools/export-public.sh ../auroradb-public --push https://gitee.com/owner/auroradb-public.git
 #
-# 导出内容：crates/core、免费的 src-tauri 命令层、免费前端与构建发布脚本
-# 排除：crates/pro、src-ui/src/pro、src-tauri/src/commands/pro.rs、
-#       tools/license-gen（激活码签发）、tools/ship.sh 与 tools/commit-brief.sh
-#       （私有提交工作流）、docs/EULA.md 以及全部构建产物
+# 导出内容：完整源码（crates/core、crates/pro、src-tauri、src-ui 含 pro 组件）与构建发布脚本。
+# 排除：tools/ship.sh 与 tools/commit-brief.sh（私有提交工作流）、docs/EULA.md、
+#       node_modules、target、dist 等全部构建产物。
 # 保留目标目录自有内容：README.md、ROADMAP.md 与 .github/（公开仓独立维护，
 #       不会被私有仓版本覆盖；目标目录必须先准备好这三项）。
-# 导出后自动移除专业版 workspace 成员与 Cargo feature，并重新生成 Cargo.lock。
 # 导出后做公开内容检查：README/ROADMAP/docs 不得出现内部词，Markdown 相对链接
 #       指向的文件必须存在，且必须保留公开仓自己的 .github/workflows/ci.yml；任一失败即中止。
+# 导出后重新生成 Cargo.lock，并校验 pro 源码存在与版本号一致性。
 # 加 --push 时会在导出后自动 init git、提交并推送到给定远端地址的 main 分支。
 
 set -euo pipefail
@@ -113,14 +112,10 @@ EXCLUDES=(
     --exclude=/.tauri-tools/
     --exclude=/target/
     --exclude=/src-tauri/target/
-    --exclude=/tools/license-gen/
     --exclude=/src-ui/node_modules/
     --exclude=/src-ui/dist/
     --exclude=/src-ui/playwright-report/
     --exclude=/src-ui/test-results/
-    --exclude=/crates/pro/
-    --exclude=/src-ui/src/pro/
-    --exclude=/src-tauri/src/commands/pro.rs
     --exclude=/tools/export-public.sh
     --exclude=/tools/ship.sh           # 提交/双仓发布工作流，仅私有仓使用
     --exclude=/tools/commit-brief.sh   # 提交信息采集器，仅私有仓使用
@@ -159,55 +154,11 @@ mkdir -p "$TARGET"
 # 既不参与复制，也不会被 --delete 删除。
 rsync -a --delete "${EXCLUDES[@]}" "$ROOT/" "$TARGET/"
 
-# 目标目录中历史导出残留的专业版文件（被 exclude 后 rsync 不会删除）
-rm -rf "$TARGET/crates/pro" \
-       "$TARGET/src-ui/src/pro" \
-       "$TARGET/src-tauri/src/commands/pro.rs" \
-       "$TARGET/tools/license-gen"
+# 目标目录中历史导出残留的私有文件（被 exclude 后 rsync 不会删除）
 rm -f "$TARGET/tools/export-public.sh" \
       "$TARGET/tools/ship.sh" \
       "$TARGET/tools/commit-brief.sh" \
       "$TARGET/docs/EULA.md"
-
-# 移除专业版依赖、feature 与 workspace 成员，失败即中止（结构变更时需同步本脚本）
-python3 - "$TARGET" <<'PY'
-import pathlib
-import re
-import sys
-
-root = pathlib.Path(sys.argv[1])
-
-
-def edit(path, transform):
-    file = root / path
-    text = file.read_text(encoding="utf-8")
-    updated = transform(text)
-    if updated == text:
-        raise SystemExit(f"导出失败：{path} 未匹配到预期内容，请同步更新 tools/export-public.sh")
-    file.write_text(updated, encoding="utf-8")
-
-
-def root_members(text):
-    return re.sub(r'"crates/core",\s*"crates/pro",\s*', '"crates/core", ', text, count=1)
-
-
-def tauri_manifest(text):
-    # 1. 删掉 auroradb-pro 依赖行
-    text = re.sub(r"^auroradb-pro = .*\r?\n", "", text, count=1, flags=re.M)
-    # 2. 删掉"专业版：..."注释行
-    text = re.sub(r"^# 专业版：.*\r?\n", "", text, count=1, flags=re.M)
-    # 3. 保留 pro 作为**空 feature**，但不再绑定 dep:auroradb-pro
-    #    —— 代码里的 #[cfg(feature = "pro")] 仍能匹配到合法 feature 名称，
-    #       不会触发 unexpected-cfgs lint；启用后无任何依赖被拉入，编译器行为和免费版一致
-    text = re.sub(r'^pro = \["dep:auroradb-pro"\]\r?\n', 'pro = []\n', text, count=1, flags=re.M)
-    # 4. default 里去掉 pro（公开仓默认免费版）
-    return text.replace('default = ["custom-protocol", "pro"]', 'default = ["custom-protocol"]')
-
-
-edit("Cargo.toml", root_members)
-edit("src-tauri/Cargo.toml", tauri_manifest)
-PY
-ok "已移除专业版 workspace 成员与 Cargo feature"
 
 # 公开内容检查：内部词 + Markdown 相对链接。
 # 目标目录的 README/ROADMAP/docs 由公开仓独立维护，必须保证不含内部信息；
@@ -218,7 +169,7 @@ import re
 import sys
 
 root = pathlib.Path(sys.argv[1])
-INTERNAL_WORDS = ["私有", "主仓", "export-public", "license-gen", "Gitee 私有"]
+INTERNAL_WORDS = ["私有", "主仓", "export-public", "Gitee 私有"]
 
 files = [root / "README.md", root / "ROADMAP.md"]
 files += sorted((root / "docs").glob("*.md"))
@@ -256,7 +207,7 @@ ok "公开文档检查通过（无内部词、相对链接均存在）"
     || fail "导出后缺少公开仓 CI：$TARGET/.github/workflows/ci.yml（该文件不应被导出覆盖，请检查）"
 ok "已保留公开仓 CI（.github/workflows/ci.yml）"
 
-# 重新解析依赖：移除 auroradb-pro 及其独占的传递依赖
+# 重新生成 Cargo.lock：公开仓与私有仓 Cargo.toml 完全一致，只重新解析锁文件
 rm -f "$TARGET/Cargo.lock"
 if command -v cargo >/dev/null 2>&1; then
     if ( cd "$TARGET" && cargo generate-lockfile --offline >/dev/null 2>&1 ); then
@@ -270,12 +221,18 @@ else
     warn "未找到 cargo，导出目录缺少 Cargo.lock，请在构建机上执行 cargo generate-lockfile"
 fi
 
-# 导出结果自检
-[[ ! -e "$TARGET/crates/pro" ]] || fail "导出目录仍包含 crates/pro"
-[[ ! -e "$TARGET/src-ui/src/pro" ]] || fail "导出目录仍包含 src-ui/src/pro"
-[[ ! -e "$TARGET/src-tauri/src/commands/pro.rs" ]] || fail "导出目录仍包含 commands/pro.rs"
-grep -q 'auroradb-pro' "$TARGET/src-tauri/Cargo.toml" && fail "src-tauri/Cargo.toml 仍引用 auroradb-pro"
-grep -q '"crates/pro"' "$TARGET/Cargo.toml" && fail "Cargo.toml 仍包含 crates/pro 成员"
+# 导出结果自检：完整源码必须齐全（公开仓与私有仓源码一致，不再剔除 Pro）
+[[ -e "$TARGET/crates/pro" ]] \
+    || fail "导出目录缺少 crates/pro（完整源码导出失败）"
+[[ -e "$TARGET/src-ui/src/pro" ]] \
+    || fail "导出目录缺少 src-ui/src/pro（完整源码导出失败）"
+[[ -f "$TARGET/src-tauri/src/commands/pro.rs" ]] \
+    || fail "导出目录缺少 src-tauri/src/commands/pro.rs（完整源码导出失败）"
+grep -q 'auroradb-pro' "$TARGET/src-tauri/Cargo.toml" \
+    || fail "src-tauri/Cargo.toml 缺少 auroradb-pro 依赖（应保留完整源码结构）"
+grep -q '"crates/pro"' "$TARGET/Cargo.toml" \
+    || fail "Cargo.toml 缺少 crates/pro 成员（应保留完整 workspace）"
+ok "完整源码校验通过（crates/pro、src-ui/src/pro、commands/pro.rs 均在）"
 
 if command -v node >/dev/null 2>&1 && [[ -f "$TARGET/Cargo.lock" ]]; then
     ( cd "$TARGET" && node tools/check-version.mjs >/dev/null ) \

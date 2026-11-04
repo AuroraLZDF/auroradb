@@ -4,7 +4,6 @@ mod commands;
 mod password_store;
 
 use auroradb_core::audit::AuditLog;
-use auroradb_core::license::LicenseManager;
 use commands::connection::ConnectionManagerState;
 use commands::sql_file::PendingSqlFiles;
 use password_store::PasswordStore;
@@ -90,7 +89,6 @@ fn main() {
         .manage(ConnectionManagerState::new())
         .manage(password_store)
         .manage(AuditLog::new())
-        .manage(LicenseManager::new())
         .manage(PendingSqlFiles::default())
         // 单实例必须最先注册：第二次双击 .sql 时不再新开进程，
         // 而是把命令行里的文件路径转发给已运行实例并聚焦窗口
@@ -152,10 +150,6 @@ fn main() {
             commands::file::pick_file_path,
             commands::file::export_to_excel,
             commands::file::export_table_to_excel,
-            commands::license::get_license_status,
-            commands::license::activate_license,
-            commands::license::deactivate_license,
-            commands::license::start_trial,
             commands::update::get_update_install_kind,
             commands::update::download_update_package,
             commands::sql_file::take_pending_sql_files,

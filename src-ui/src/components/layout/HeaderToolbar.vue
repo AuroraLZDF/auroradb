@@ -141,15 +141,6 @@
               <RefreshCw :class="{ spinning: updateStore.busy }" :size="16" />
               <span>{{ updateStore.label }}</span>
             </button>
-            <button
-              class="tools-item"
-              role="menuitem"
-              :title="t('header.licenseHint')"
-              @click="openTool('openLicense')"
-            >
-              <KeyRound :size="16" />
-              <span>{{ licenseLabel }}</span>
-            </button>
             <div class="tools-divider"></div>
             <button
               class="tools-item"
@@ -227,15 +218,13 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useThemeStore } from '@/stores/theme'
 import { useConnectionStore } from '@/stores/connection'
 import { useUpdaterStore } from '@/stores/updater'
-import { useLicenseStore } from '@/stores/license'
 import { t, locale, toggleLocale } from '@/i18n'
 import { confirmAction } from '@/composables/useConfirm'
-import { Menu, Plug, FileCode, Moon, Sun, PanelRight, Terminal, RefreshCw, GitCompare, Activity, Languages, KeyRound, Network, HardDrive, Search, Wrench, Settings, ChevronDown, Info } from 'lucide-vue-next'
+import { Menu, Plug, FileCode, Moon, Sun, PanelRight, Terminal, RefreshCw, GitCompare, Activity, Languages, Network, HardDrive, Search, Wrench, Settings, ChevronDown, Info } from 'lucide-vue-next'
 
 const themeStore = useThemeStore()
 const connStore = useConnectionStore()
 const updateStore = useUpdaterStore()
-const licenseStore = useLicenseStore()
 
 interface Props {
   activeTool?: 'connection' | 'query'
@@ -258,17 +247,10 @@ const emit = defineEmits<{
   openMonitor: []
   openBackup: []
   openGlobalSearch: []
-  openLicense: []
   openAbout: []
 }>()
 
 const currentConnection = computed(() => connStore.currentConnection)
-
-/** 设置菜单里的授权入口文案：试用中 / 专业版 / 免费版（激活） */
-const licenseLabel = computed(() => {
-  if (licenseStore.isTrial) return t('header.licenseTrial')
-  return licenseStore.activated ? t('header.licensePro') : t('header.license')
-})
 
 // 「工具」「设置」下拉菜单
 const toolsMenuRef = ref<HTMLElement | null>(null)
@@ -298,7 +280,6 @@ type ToolEvent =
   | 'openBackup'
   | 'openGlobalSearch'
   | 'openNewConsoleTab'
-  | 'openLicense'
   | 'openAbout'
 
 const toolActions: Record<ToolEvent, () => void> = {
@@ -308,7 +289,6 @@ const toolActions: Record<ToolEvent, () => void> = {
   openBackup: () => emit('openBackup'),
   openGlobalSearch: () => emit('openGlobalSearch'),
   openNewConsoleTab: () => emit('openNewConsoleTab'),
-  openLicense: () => emit('openLicense'),
   openAbout: () => emit('openAbout')
 }
 

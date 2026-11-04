@@ -10,18 +10,20 @@
 - **数据表格**：虚拟滚动、单元格编辑、变更暂存与批量提交
 - **表设计器 / 数据库设计器**：可视化查看与修改表结构
 - **导入导出**：CSV / JSON / SQL / Excel
+- **增强功能（全部免费）**：SSH 隧道、结构对比、服务器监控、审计日志、执行计划可视化、ER 图、备份还原、跨库全局搜索
 - **其他**：明暗主题、中英文切换、自动更新
 
-专业版需激活码解锁，另含：SSH 隧道、结构对比、服务器监控、审计日志、执行计划可视化、ER 图、备份还原、跨库全局搜索。
+所有功能均永久免费开放：无功能限制、无广告、无需激活码、无需联网校验。源码以 [AGPL-3.0](LICENSE) 全量开源（含原增强功能模块），欢迎自建、二次开发与分发。
 
 ## 下载安装
 
-安装包统一发布在公开仓库的[发行版页面](https://github.com/AuroraLZDF/auroradb/releases/latest)（源码仓保持私有）。当前版本为 v2.0.2。
+安装包统一发布在公开仓库的[发行版页面](https://github.com/AuroraLZDF/auroradb/releases/latest)，源码同样开源（AGPL-3.0）。当前版本为 v2.0.2。
 
 | 平台 | 文件名 | 安装方式 |
 | --- | --- | --- |
 | Debian / Ubuntu | `AuroraDB_<版本>_amd64.deb` | `sudo apt install ./AuroraDB_<版本>_amd64.deb` |
-| 通用 Linux | `AuroraDB_<版本>_amd64.AppImage` | `chmod +x` 后直接运行，支持应用内更新 |
+| 通用 Linux（full，推荐自动更新） | `AuroraDB_<版本>_amd64.AppImage` | `chmod +x` 后直接运行，自包含，支持应用内更新 |
+| 通用 Linux（lite，体积小） | `AuroraDB_<版本>_amd64-lite.AppImage` | `chmod +x` 后直接运行，依赖系统 `libwebkit2gtk-4.1-0`，需手动更新 |
 | Fedora / RHEL | `AuroraDB-<版本>-1.x86_64.rpm` | `sudo rpm -i AuroraDB-<版本>-1.x86_64.rpm` |
 | Windows | `AuroraDB_<版本>_x64-setup.exe` | 双击安装（未签名，SmartScreen 会提示） |
 
@@ -29,23 +31,22 @@
 
 应用内自动更新的固定入口是 `https://github.com/AuroraLZDF/auroradb/releases/latest/download/latest.json`，`latest.json` 随每次发布更新，无需随版本改动。
 
-## 定价与购买
+## 免费与开源
 
-免费版可直接使用。专业版为**买断制**（离线激活、不联网校验），一次付费永久使用 v2.x；v3 大版本升级享 5 折优惠，不承诺终身免费升级。
+- **全部功能免费**：连接、查询、表编辑、导入导出，以及 SSH 隧道、结构对比、监控、审计、执行计划、ER 图、备份还原、跨库搜索，全部直接可用。
+- **无功能限制、无广告、无账号**：不需要注册、登录或激活码，不联网校验；应用不含任何广告或使用限制。
+- **源码全量开源**：包括原增强功能模块在内的完整源码以 [GNU AGPL-3.0](LICENSE) 发布，可自由使用、修改和分发（分发修改版需按 AGPL-3.0 提供对应源码）。
+- **可持续方式**：项目依靠打赏与赞助维持开发，不销售授权、不做功能订阅。
 
-| 版本 | 价格 | 适用 | 说明 |
-| --- | --- | --- | --- |
-| 个人版 | ¥199（早鸟 ¥149，前 100 单 / 30 天） | 1 台机器 | 全部专业版功能 |
-| 团队版 | ¥499 / 3 台机器（早鸟 ¥399） | 3 台机器 | 3 个激活码（seat 1–3），共享同一授权编号 |
-| 企业版 | ¥3,999 / 10 台机器 + 1 年维护（早鸟 ¥2,999） | 10 台机器 | 第 2 年起维护 ¥799/年 |
-| 教育 / 开源 | ¥99 | 1 台机器 | 全部专业版功能 |
-| 14 天试用 | 免费 | 1 台机器 | 应用内一键开启（无需申请、无需联网），全功能试用 14 天，每台机器限一次，到期自动回落免费版 |
+## 支持开发（打赏）
 
-**团队 / 企业购买流程**：客户在每台机器上复制机器码并一起提交（N 个机器码）→ 我们签发 N 个激活码（同一授权编号、seat 1…N）→ 每台机器输入对应的激活码。激活码与机器一一绑定，不能在多台机器上复用。
+如果 AuroraDB 对你有帮助，欢迎自愿打赏支持后续开发（金额随意，不影响任何功能）：
 
-**换机**：12 个月内可免费重签 1 次，之后按 ¥29/次重签（需提供订单号与旧机器码）。
+- **GitHub Sponsors**：<https://github.com/sponsors/auroraLZDF>（占位链接，待填写）
+- **爱发电**：<https://afdian.com/a/auroradb>（占位链接，待填写）
+- **微信 / 支付宝收款码**：将 `wechat.png`、`alipay.png` 两张图片放入本仓库 `assets/donate/` 目录后即可在此展示（当前尚未提供；目录说明见 [assets/donate/README.md](assets/donate/README.md)）。
 
-**退款 / 发票**：退款、发票与对公付款请联系【购买咨询：联系邮箱 / 微信（占位，待填）】。
+打赏完全自愿，不提供付费特权，也不影响功能可用性；所有赞助用于服务器、签名与开发投入。代码贡献、Issue 反馈、给仓库点 Star 同样是支持。
 
 ## 技术栈
 
@@ -54,35 +55,35 @@
 | 桌面框架 | Tauri 2 |
 | 前端 | Vue 3 + TypeScript + Vite + Pinia |
 | 后端 | Rust（sqlx、tokio、sqlparser、russh） |
-| 授权 | 开源核心 AGPL-3.0 + 专业版商业许可；离线 Ed25519 激活码（一码一机） |
+| 授权 | AGPL-3.0 全量开源（含增强功能） |
 
 ## 目录结构
 
 ```
 .
 ├── crates/
-│   ├── core/               # 开源核心库 auroradb-core（连接、执行、导入导出、授权校验）
-│   └── pro/                # 专业版库 auroradb-pro（私有，公开仓不含）
+│   ├── core/               # 核心库 auroradb-core（连接、执行、导入导出等）
+│   └── pro/                # 增强功能库 auroradb-pro（结构对比、监控、备份还原、ER 图、全局搜索、执行计划、SSH 隧道）
 ├── src-ui/                 # Vue 3 前端
-│   ├── src/components/     # 免费版业务组件与基础 UI 组件
-│   ├── src/pro/            # 专业版页面（私有，公开仓不含，缺失时自动退化为无入口）
-│   ├── src/stores/         # Pinia 状态（连接、数据浏览、授权、更新等）
+│   ├── src/components/     # 业务组件与基础 UI 组件
+│   ├── src/pro/            # 增强功能页面（Schema 对比、监控、ER 图、全局搜索等）
+│   ├── src/stores/         # Pinia 状态（连接、数据浏览、更新等）
 │   ├── src/i18n/           # 轻量 i18n（中/英）
-│   └── src/utils/          # SQL、表格变更与专业版界面注册表
+│   └── src/utils/          # SQL、表格变更与界面扩展注册表
 ├── src-tauri/              # Tauri 应用（命令注册、窗口与更新）
-│   ├── src/commands/       # Tauri 命令层（pro.rs 为专业版，公开仓以 pro_stub.rs 占位）
+│   ├── src/commands/       # Tauri 命令层（pro.rs 为增强功能命令）
 │   └── src/password_store.rs
+├── assets/donate/          # 打赏收款码占位（wechat.png / alipay.png）
 ├── tools/
 │   ├── build/              # 构建实现（linux.sh / windows.ps1 / appimage-*.sh）
 │   ├── publish/            # 发布实现（linux.sh / windows.ps1）
 │   ├── check-version.mjs   # 版本号一致性校验
 │   ├── check-release.sh    # 发布前产物检查
 │   ├── merge-latest.py     # latest.json 合并
-│   ├── commit-brief.sh     # 汇总本次改动，供归纳提交信息（私有，公开仓不含）
-│   ├── ship.sh             # 提交 → 推私有仓 → 导出并推公开仓（私有，公开仓不含）
-│   ├── export-public.sh    # 从私有主仓导出公开仓（私有，公开仓不含）
-│   └── license-gen/        # 激活码签发工具（私有，公开仓不含）
-├── docs/EULA.md            # 官方发行包与专业版的最终用户许可协议
+│   ├── commit-brief.sh     # 汇总本次改动，供归纳提交信息（维护者工具）
+│   ├── ship.sh             # 提交 → 推主仓 → 同步公开仓（维护者工具）
+│   └── export-public.sh    # 从主仓导出公开仓（维护者工具）
+├── docs/EULA.md            # 许可与免责声明（以根目录 LICENSE 为准）
 ├── LICENSE                 # AGPL-3.0
 ├── CLA.md                  # 贡献者许可协议
 ├── NOTICE                  # 第三方组件许可声明
@@ -127,9 +128,7 @@ npm test            # vitest
 
 cd ../src-tauri
 cargo test --offline
-
-# 校验免费版构建（不启用 pro feature，对应公开仓）
-cargo check --offline --no-default-features
+cargo check --offline
 ```
 
 发版前按 [发版冒烟清单](docs/smoke-checklist.md) 在 Linux 与 Windows 上各跑一遍。
@@ -140,10 +139,10 @@ cargo check --offline --no-default-features
 ./tools/commit-brief.sh                 # 汇总改动、版本号与历史提交风格，用于归纳提交信息
 ./tools/ship.sh -m "fix(release): 修正 latest.json 上传顺序"
 ./tools/ship.sh -m "..." --dry-run      # 只打印计划，不改动仓库
-./tools/ship.sh -m "..." --no-public    # 只提交并推送私有主仓
+./tools/ship.sh -m "..." --no-public    # 只提交并推送主仓
 ```
 
-提交信息按 `type(scope): 说明` 写，说明为什么改而不是罗列文件。`ship.sh` 会先拦截疑似敏感文件与超过 5MB 的文件、跑版本号一致性校验，私有仓推送成功后才导出公开仓，避免两仓版本错位。
+提交信息按 `type(scope): 说明` 写，说明为什么改而不是罗列文件。`ship.sh` 会先拦截疑似敏感文件与超过 5MB 的文件、跑版本号一致性校验，主仓推送成功后才同步公开仓，避免两仓版本错位。
 
 ## 打包
 
@@ -187,7 +186,7 @@ npm run tauri signer generate -- -w ~/.config/auroradb/updater.key
 
 ### 发布到 GitHub 发行版
 
-源码仓库保持私有，安装包发布到**公开**仓库 `AuroraLZDF/auroradb`（私有仓库的发行版附件需要登录鉴权，终端用户无法下载）。AppImage、deb、rpm、NSIS、`.sig`、`SHA256SUMS` 与 `latest.json` 全部作为发行版附件上传，GitHub 单附件上限 2GB。
+源码已开源（AGPL-3.0）。安装包发布到公开仓库 `AuroraLZDF/auroradb` 的发行版，方便终端用户直接下载：AppImage、deb、rpm、NSIS、`.sig`、`SHA256SUMS` 与 `latest.json` 全部作为发行版附件上传，GitHub 单附件上限 2GB。
 
 ```bash
 export GITHUB_TOKEN=<GitHub 令牌>   # 经典令牌勾选 repo；细粒度令牌授予 Contents: Read and write
@@ -221,34 +220,22 @@ git push origin main --tags
 
 ## 授权与许可
 
-AuroraDB 采用 open core 双许可：开源核心以 AGPL-3.0 发布，专业版功能以商业许可提供。
+AuroraDB 以 [GNU AGPL-3.0](LICENSE) 开源，全部功能（含原增强功能模块）使用同一许可证，免费使用，无激活码、无订阅、无商业授权限制。
 
-### 开源部分（AGPL-3.0）
+### 开源许可（AGPL-3.0）
 
-`crates/core`、`src-tauri` 中的免费命令层与 `src-ui` 的免费界面依据 [GNU AGPL-3.0](LICENSE) 授权。您可以自由使用、修改和分发，但：
+`crates/core`、`crates/pro`、`src-tauri` 与 `src-ui` 均依据 GNU AGPL-3.0 授权。您可以自由使用、修改和分发，但：
 
 - 分发修改后的版本时，需按 AGPL-3.0 提供完整的对应源码；
 - 通过网络向用户提供修改版本的服务时，同样需要提供源码（AGPL 第 13 条）。
 
-### 专业版（商业许可）
-
-免费版可直接使用连接管理与日常查询；专业版需激活码解锁，包含：
-
-- SSH 隧道、结构对比、服务器监控、审计日志
-- 执行计划可视化、ER 图、备份还原、跨库全局搜索
-
-应用采用**离线买断**模式：激活码由发行方离线签名（Ed25519），客户端本地验签，无需联网。激活码与机器码绑定（一码一机），机器码可在「激活」对话框中复制。
-
-专业版源码不在公开仓中，安装与使用受 [最终用户许可协议](docs/EULA.md) 约束。如需基于专业版功能二次开发或商业分发，请联系【联系邮箱】获取商业许可。
+不再提供单独的「商业许可」或付费版本；商业场景同样可直接使用，只需遵守 AGPL-3.0。更完整的许可与免责声明见 [docs/EULA.md](docs/EULA.md)。
 
 ### 公开仓与贡献
 
-- 公开仓由 `tools/export-public.sh` 从私有主仓导出，只包含上述开源部分；
-- 公开仓保留专业版入口占位，点击时提示安装专业版，构建产物中不包含任何专业版代码；
+- 源码已开源，公开仓包含全部功能源码与安装包；
 - 提交贡献前请阅读 [CLA](CLA.md)，首次提交需在 Pull Request 中签署；
 - 安装包中的第三方组件与许可证见 [NOTICE](NOTICE)。
-
-激活码签发工具位于私有主仓的 `tools/license-gen`，仅供发行方构建与使用。
 
 ## 已知限制
 
@@ -256,12 +243,9 @@ AuroraDB 采用 open core 双许可：开源核心以 AGPL-3.0 发布，专业�
 - 查询结果最多保留前 10,000 行（`MAX_RESULT_ROWS`），超出部分截断并提示；单次查询超时 300 秒，导出超时 1800 秒，单条 SQL 不超过 10MB；一次执行多条语句时只处理第一个结果集。
 - Linux 应用内更新仅支持 AppImage；deb / rpm 需手动下载安装新版本。
 - Windows 安装包暂未签名（内测分发），SmartScreen 会提示；应用内更新只支持 NSIS，不支持 MSI。
-- 离线激活无在线吊销；激活码有效期以本机时间为准，未做防回拨校验。
 - 暂不支持 macOS；数据源目前仅 MySQL 与 PostgreSQL（SQLite / Redis / SQL Server 在路线图中）。
-- 商业版定位为「买断 v2.x」：v3 大版本升级享 5 折，不承诺终身免费升级。
-- 团队 / 企业授权按机器码一对一签发（seat），同一激活码不能在多台机器复用；换机需重签（12 个月内 1 次免费，之后 ¥29/次）。
-- 14 天试用为应用内自助开启（`edition=trial`，与机器码绑定，记录在 5 处位置冗余存放并带 HMAC 校验与时间回拨检测），每台机器限一次，到期自动回落免费版；离线方案无法做到绝对防重置（删除全部 5 处记录、或修改源码重算校验值即可重开），需要强管控时使用发行方签发的试用码。
 - AppImage 的 lite 版依赖系统 `libwebkit2gtk-4.1-0`，且不提供应用内自动更新；需要自动更新请使用 full 版。
+- 全部功能免费、无激活与联网校验，因此不存在「离线授权/试用期/换机」等限制。
 
 ## 日志
 

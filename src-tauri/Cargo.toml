@@ -5,13 +5,14 @@ description = "A MySQL / PostgreSQL database client with connection stability"
 authors = ["Developer"]
 edition = "2021"
 rust-version = "1.77.2"
+license = "AGPL-3.0-or-later"
 
 [build-dependencies]
 tauri-build = { version = "2.0", features = [] }
 
 [dependencies]
 auroradb-core = { path = "../crates/core" }
-auroradb-pro = { path = "../crates/pro", optional = true }
+auroradb-pro = { path = "../crates/pro" }
 tauri = { version = "2.0", features = [] }
 tauri-plugin-dialog = "2.0"
 # 自动更新：检查/下载/安装更新包，安装后需要重启进程
@@ -34,8 +35,7 @@ tracing-subscriber = "0.3"
 tracing-appender = "0.2"
 dirs = "5.0"
 base64 = "0.21"
-# 离线许可证：Ed25519 验签 + 机器指纹哈希
-ed25519-dalek = "2"
+# 更新包完整性校验（SHA-256）
 sha2 = "0.10"
 sqlparser = { version = "0.63", features = ["visitor"] }
 # constant_memory：大表导出 Excel 时逐行落盘，内存占用与行数无关
@@ -44,7 +44,5 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "sync-s
 tauri-plugin-single-instance = "2.4.5"
 
 [features]
-default = ["custom-protocol", "pro"]
+default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
-# 专业版：结构对比、实例监控、备份还原、ER 图、全局搜索、执行计划与 SSH 隧道
-pro = ["dep:auroradb-pro"]

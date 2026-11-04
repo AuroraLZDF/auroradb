@@ -5,10 +5,6 @@ use super::connection::{
 };
 use auroradb_core::audit::AuditLog;
 use auroradb_core::connection::transfer::{ImportProgress, ImportReporter};
-use auroradb_core::license::{
-    LicenseManager, FEATURE_BACKUP, FEATURE_ER_DIAGRAM, FEATURE_GLOBAL_SEARCH, FEATURE_MONITOR,
-    FEATURE_QUERY_PLAN, FEATURE_SCHEMA_DIFF,
-};
 use auroradb_pro::er_diagram::{get_er_diagram_data as fetch_er_diagram, ErDiagramData};
 use auroradb_pro::explain::{explain as explain_sql_plan, ExplainPlan};
 use auroradb_pro::global_search::{
@@ -29,13 +25,11 @@ use tauri_plugin_dialog::{DialogExt, FilePath};
 #[command]
 pub async fn compare_schemas(
     state: State<'_, ConnectionManagerState>,
-    license: State<'_, LicenseManager>,
     source_connection_id: String,
     source_database: String,
     target_connection_id: String,
     target_database: String,
 ) -> Result<SchemaDiff, String> {
-    license.ensure(FEATURE_SCHEMA_DIFF, "结构对比").await?;
     let manager = state.manager.read().await;
 
     diff_schemas(
@@ -54,12 +48,10 @@ pub async fn compare_schemas(
 pub async fn apply_schema_diff(
     state: State<'_, ConnectionManagerState>,
     audit: State<'_, AuditLog>,
-    license: State<'_, LicenseManager>,
     connection_id: String,
     database: String,
     statements: Vec<String>,
 ) -> Result<ApplySchemaDiffResult, String> {
-    license.ensure(FEATURE_SCHEMA_DIFF, "结构对比").await?;
 
     let mut applied = 0usize;
     for (idx, sql) in statements.iter().enumerate() {
@@ -84,10 +76,8 @@ pub async fn apply_schema_diff(
 #[command]
 pub async fn get_process_list(
     state: State<'_, ConnectionManagerState>,
-    license: State<'_, LicenseManager>,
     connection_id: String,
 ) -> Result<Vec<ProcessInfo>, String> {
-    license.ensure(FEATURE_MONITOR, "实例监控").await?;
     let manager = state.manager.read().await;
 
     fetch_process_list(&manager, &connection_id)
@@ -99,11 +89,9 @@ pub async fn get_process_list(
 #[command]
 pub async fn kill_process(
     state: State<'_, ConnectionManagerState>,
-    license: State<'_, LicenseManager>,
     connection_id: String,
     process_id: u64,
 ) -> Result<(), String> {
-    license.ensure(FEATURE_MONITOR, "实例监控").await?;
     let manager = state.manager.read().await;
 
     kill_server_process(&manager, &connection_id, process_id)
@@ -115,10 +103,8 @@ pub async fn kill_process(
 #[command]
 pub async fn get_server_metrics(
     state: State<'_, ConnectionManagerState>,
-    license: State<'_, LicenseManager>,
     connection_id: String,
 ) -> Result<ServerMetrics, String> {
-    license.ensure(FEATURE_MONITOR, "实例监控").await?;
     let manager = state.manager.read().await;
 
     fetch_server_metrics(&manager, &connection_id)
@@ -132,12 +118,10 @@ pub async fn get_server_metrics(
 #[command]
 pub async fn explain_sql(
     state: State<'_, ConnectionManagerState>,
-    license: State<'_, LicenseManager>,
     connection_id: String,
     database: String,
     sql: String,
 ) -> Result<ExplainPlan, String> {
-    license.ensure(FEATURE_QUERY_PLAN, "执行计划解释").await?;
     let manager = state.manager.read().await;
 
     explain_sql_plan(&manager, &connection_id, &database, &sql)
@@ -151,11 +135,9 @@ pub async fn explain_sql(
 #[command]
 pub async fn get_er_diagram_data(
     state: State<'_, ConnectionManagerState>,
-    license: State<'_, LicenseManager>,
     connection_id: String,
     database: String,
 ) -> Result<ErDiagramData, String> {
-    license.ensure(FEATURE_ER_DIAGRAM, "ER 图").await?;
     let manager = state.manager.read().await;
 
     fetch_er_diagram(&manager, &connection_id, &database)
@@ -170,12 +152,10 @@ pub async fn get_er_diagram_data(
 pub async fn backup_database(
     window: tauri::Window,
     state: State<'_, ConnectionManagerState>,
-    license: State<'_, LicenseManager>,
     connection_id: String,
     database: String,
     default_filename: String,
 ) -> Result<String, String> {
-    license.ensure(FEATURE_BACKUP, "数据库备份").await?;
 
     let (tx, rx) = tokio::sync::oneshot::channel::<Option<FilePath>>();
     window
@@ -211,12 +191,10 @@ pub async fn backup_database(
 pub async fn restore_database(
     window: tauri::Window,
     state: State<'_, ConnectionManagerState>,
-    license: State<'_, LicenseManager>,
     connection_id: String,
     database: String,
     dump_path: String,
 ) -> Result<(), String> {
-    license.ensure(FEATURE_BACKUP, "数据库还原").await?;
     let manager = state.manager.read().await;
 
     let reporter: ImportReporter = Arc::new(move |progress: ImportProgress| {
@@ -246,12 +224,8 @@ pub async fn restore_database(
 #[command]
 pub async fn global_search(
     state: State<'_, ConnectionManagerState>,
-    license: State<'_, LicenseManager>,
     request: GlobalSearchRequest,
 ) -> Result<GlobalSearchResult, String> {
-    license
-        .ensure(FEATURE_GLOBAL_SEARCH, "跨库全局搜索")
-        .await?;
     let manager = state.manager.read().await;
     run_global_search(&manager, request)
         .await

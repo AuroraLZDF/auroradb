@@ -1,11 +1,10 @@
 import type { Component } from 'vue'
 
 /**
- * 专业版界面注册表。
+ * 功能界面注册表。
  *
- * `src/pro` 只在私有主仓中存在，公开仓导出时会被剔除；这里用 glob 扫描该目录，
- * 目录缺失时得到空表，免费构建无需替换任何文件即可编译。入口仍由 App.vue
- * 通过 license store 统一提示升级。
+ * 各功能界面统一从 `src/pro` 目录按需加载；这里用 glob 扫描该目录，
+ * 目录缺失时得到空表，公开构建无需替换任何文件即可编译。
  */
 const modules = import.meta.glob<{ default: Component }>('../pro/*.vue', { eager: true })
 
@@ -21,6 +20,3 @@ export const ProUi = {
   GlobalSearchDialog: pick('GlobalSearchDialog'),
   ExplainTree: pick('ExplainTree'),
 }
-
-/** 当前构建是否包含专业版界面（免费构建为 false） */
-export const hasProUi = Object.values(ProUi).every((component) => component !== null)

@@ -232,7 +232,6 @@ import { Eye, EyeOff } from 'lucide-vue-next'
 import Select from '@/components/ui/Select.vue'
 import { useConnectionStore } from '@/stores/connection'
 import { useSavedConnectionsStore } from '@/stores/savedConnections'
-import { useLicenseStore } from '@/stores/license'
 import { t } from '@/i18n'
 import type { DriverKind, SavedConnection, SafetyMode, SshAuthType, SslMode } from '@/stores/savedConnections'
 
@@ -247,7 +246,6 @@ const emit = defineEmits<{
 
 const store = useConnectionStore()
 const savedStore = useSavedConnectionsStore()
-const licenseStore = useLicenseStore()
 
 const loading = ref(false)
 const error = ref('')
@@ -427,10 +425,6 @@ function findMissingRequired(): { tab: 'basic' | 'advanced'; field: string } | n
 
 async function handleSubmit() {
   error.value = ''
-
-  if (form.sshEnabled && !licenseStore.requirePro('ssh-tunnel', t('license.feature.ssh-tunnel'))) {
-    return
-  }
 
   const missing = findMissingRequired()
   if (missing) {

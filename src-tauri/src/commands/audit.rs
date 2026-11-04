@@ -1,20 +1,17 @@
 //! 审计日志查询与清理命令（专业版功能）
 
 use auroradb_core::audit::{AuditEntry, AuditLog};
-use auroradb_core::license::{LicenseManager, FEATURE_AUDIT};
 use tauri::{command, State};
 
 /// 按时间倒序读取审计日志；空条件表示不过滤
 #[command]
 pub async fn list_audit_entries(
     audit: State<'_, AuditLog>,
-    license: State<'_, LicenseManager>,
     limit: Option<usize>,
     connection_id: Option<String>,
     success: Option<bool>,
     keyword: Option<String>,
 ) -> Result<Vec<AuditEntry>, String> {
-    license.ensure(FEATURE_AUDIT, "操作审计").await?;
     audit
         .list(
             limit.unwrap_or(200),
@@ -30,8 +27,6 @@ pub async fn list_audit_entries(
 #[command]
 pub async fn clear_audit_logs(
     audit: State<'_, AuditLog>,
-    license: State<'_, LicenseManager>,
 ) -> Result<usize, String> {
-    license.ensure(FEATURE_AUDIT, "操作审计").await?;
     audit.clear().await.map_err(|e| e.to_string())
 }

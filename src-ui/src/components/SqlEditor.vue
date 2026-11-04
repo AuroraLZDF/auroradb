@@ -339,7 +339,6 @@ import { useConnectionStore } from '@/stores/connection'
 import { resolveTabConnectionId } from '@/utils/tabConnection'
 import { useDataBrowserStore } from '@/stores/dataBrowser'
 import { useEditorTabsStore } from '@/stores/editorTabs'
-import { useLicenseStore } from '@/stores/license'
 import { useQueryLibraryStore, type QueryHistoryEntry, type SavedQuery } from '@/stores/queryLibrary'
 import { Play, FileText, Trash2, Download, XCircle, CheckCircle, Loader2, Square, History, X, Cpu } from 'lucide-vue-next'
 import { t } from '@/i18n'
@@ -356,7 +355,7 @@ import {
   type CompletionKind,
 } from '@/composables/useSqlCompletion'
 import type { ExplainPlan } from '@/utils/explain'
-import { ProUi, hasProUi } from '@/utils/pro'
+import { ProUi } from '@/utils/pro'
 import CellViewer from '@/components/CellViewer.vue'
 import Select from '@/components/ui/Select.vue'
 
@@ -364,7 +363,6 @@ const connStore = useConnectionStore()
 const browserStore = useDataBrowserStore()
 const editorTabs = useEditorTabsStore()
 const queryLibrary = useQueryLibraryStore()
-const licenseStore = useLicenseStore()
 const completionEngine = useSqlCompletion()
 
 // Props
@@ -798,17 +796,9 @@ async function cancelQuery() {
   }
 }
 
-// EXPLAIN 执行计划（Pro 功能）
+// EXPLAIN 执行计划
 async function explainSql() {
   if (!sql.value.trim() || !effectiveConnectionId.value) return
-  if (!hasProUi) {
-    globalToast.warning(t('license.proUnavailable'))
-    return
-  }
-  if (!licenseStore.allows('query-plan')) {
-    licenseStore.openDialog()
-    return
-  }
   explaining.value = true
   explainResult.value = null
   resultView.value = 'explain'
@@ -822,13 +812,8 @@ async function explainSql() {
     })
     explainResult.value = response
   } catch (e) {
-    const message = String(e)
-    if (message.includes('LICENSE_REQUIRED')) {
-      licenseStore.openDialog()
-    } else {
-      error.value = message
-      resultView.value = 'result'
-    }
+    error.value = String(e)
+    resultView.value = 'result'
   } finally {
     explaining.value = false
   }

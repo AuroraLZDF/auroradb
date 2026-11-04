@@ -13,7 +13,6 @@
       @open-monitor="handleOpenMonitor"
       @open-backup="handleOpenBackup"
       @open-global-search="handleOpenGlobalSearch"
-      @open-license="licenseStore.openDialog()"
       @open-about="showAbout = true"
     />
 
@@ -229,13 +228,6 @@
       </template>
     </div>
 
-    <!-- 授权激活弹窗 -->
-    <div v-if="licenseStore.dialogVisible" class="modal-overlay">
-      <div class="modal-content modal-license">
-        <LicenseDialog @close="licenseStore.closeDialog()" />
-      </div>
-    </div>
-
     <!-- 关于弹窗 -->
     <div v-if="showAbout" class="modal-overlay">
       <div class="modal-content modal-about">
@@ -363,7 +355,6 @@ import { useConnectionStore, type ConnectionStatus, type SshConfig } from '@/sto
 import { useSavedConnectionsStore, type SavedConnection } from '@/stores/savedConnections'
 import { useDataBrowserStore, type DatabaseObject } from '@/stores/dataBrowser'
 import { useThemeStore } from '@/stores/theme'
-import { useLicenseStore, type ProFeature } from '@/stores/license'
 import HeaderToolbar from '@/components/layout/HeaderToolbar.vue'
 import MainContent from '@/components/layout/MainContent.vue'
 import ConnectionTree from '@/components/sidebar/ConnectionTree.vue'
@@ -371,13 +362,12 @@ import ConnectionForm from '@/components/ConnectionForm.vue'
 import InfoPanel from '@/components/InfoPanel.vue'
 import TableDesigner from '@/components/TableDesigner.vue'
 import DatabaseDesigner from '@/components/DatabaseDesigner.vue'
-import LicenseDialog from '@/components/LicenseDialog.vue'
 import AboutDialog from '@/components/AboutDialog.vue'
 import ToastNotification from '@/components/ui/Toast.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import CommandPalette from '@/components/CommandPalette.vue'
 import ImportProgressDialog from '@/components/ImportProgressDialog.vue'
-import { ProUi, hasProUi } from '@/utils/pro'
+import { ProUi } from '@/utils/pro'
 import { useCommandRegistryStore } from '@/stores/commandRegistry'
 import { useToast } from '@/composables/useToast'
 import { confirmDanger } from '@/composables/useConfirm'
@@ -402,7 +392,6 @@ const store = useConnectionStore()
 const savedStore = useSavedConnectionsStore()
 const browserStore = useDataBrowserStore()
 const themeStore = useThemeStore()
-const licenseStore = useLicenseStore()
 const registry = useCommandRegistryStore()
 const mainContentRef = ref<InstanceType<typeof MainContent> | null>(null)
 const toastRef = ref<InstanceType<typeof ToastNotification> | null>(null)
@@ -437,7 +426,7 @@ watch(isMobile, (mobile) => {
 }, { immediate: true })
 
 // Toast 通知
-const { setToastRef, success: showToast, error: showError, warning: showWarning } = useToast()
+const { setToastRef, success: showToast, error: showError } = useToast()
 onMounted(() => {
   if (toastRef.value) {
     setToastRef(toastRef.value)
@@ -552,23 +541,12 @@ const showGlobalSearch = ref(false)
 // 关于
 const showAbout = ref(false)
 
-// 专业版入口：免费构建提示使用专业版，未激活时先弹出激活窗口
-function requireProEntry(feature: ProFeature, label: string): boolean {
-  if (!hasProUi) {
-    showWarning(t('license.proUnavailable'))
-    return false
-  }
-  return licenseStore.requirePro(feature, label)
-}
-
+// 功能入口：直接打开对应界面
 function handleOpenSchemaDiff() {
-  if (requireProEntry('schema-diff', t('license.feature.schema-diff'))) {
-    showSchemaDiff.value = true
-  }
+  showSchemaDiff.value = true
 }
 
 function handleOpenErDiagram() {
-  if (!requireProEntry('er-diagram', t('license.feature.er-diagram'))) return
   if (!selectedDatabase.value) {
     showError(t('erDiagram.needsDatabase'))
     return
@@ -577,18 +555,14 @@ function handleOpenErDiagram() {
 }
 
 function handleOpenMonitor() {
-  if (requireProEntry('monitor', t('license.feature.monitor'))) {
-    showMonitor.value = true
-  }
+  showMonitor.value = true
 }
 
 function handleOpenBackup() {
-  if (!requireProEntry('backup', t('license.feature.backup'))) return
   showBackup.value = true
 }
 
 function handleOpenGlobalSearch() {
-  if (!requireProEntry('global-search', t('license.feature.global-search'))) return
   showGlobalSearch.value = true
 }
 
@@ -609,7 +583,6 @@ const databaseDesignerData = ref({
 // 是否有弹层打开：用于隐藏背景区域的滚动条，避免其残影绘制在遮罩之上
 const hasOpenModal = computed(() =>
   showConnectionForm.value ||
-  licenseStore.dialogVisible ||
   showSchemaDiff.value ||
   showMonitor.value ||
   showBackup.value ||
@@ -764,11 +737,6 @@ async function openSavedConnection(savedConn: SavedConnection) {
     return
   }
 
-  // SSH 隧道为专业版功能，未激活时直接引导激活
-  if (savedConn.sshEnabled && !licenseStore.requirePro('ssh-tunnel', t('license.feature.ssh-tunnel'))) {
-    return
-  }
-
   // 获取密码
   const password = await savedStore.getPassword(savedConn.id)
 
@@ -838,7 +806,6 @@ async function openSavedConnection(savedConn: SavedConnection) {
     await loadConnectionDatabases(newConn.id)
   } catch (e) {
     console.error('Connection failed:', e)
-    if (licenseStore.handleError(e)) return
     showError(t('app.connectFailed', { error: String(e) }))
   }
 }
@@ -1695,12 +1662,6 @@ function registerCommands() {
     action: () => { toggleLocale(); registry.updateCommandTitle('toggle-language', t('commandPalette.switchLanguage')) },
   })
   registry.register({
-    id: 'open-activation',
-    title: t('commandPalette.openActivation'),
-    category: t('commandPalette.categoryApp'),
-    action: () => licenseStore.openDialog(),
-  })
-  registry.register({
     id: 'open-connection-form',
     title: t('commandPalette.openConnectionForm'),
     category: t('commandPalette.categoryApp'),
@@ -1869,8 +1830,6 @@ async function setupSqlFileOpeners() {
 onMounted(() => {
   // 初始化主题
   themeStore.init()
-  // 读取本地授权状态，供专业版入口做前置判断
-  void licenseStore.loadStatus()
 
   registerCommands()
   // 表列表加载/刷新后同步「跳转到表」命令
@@ -2486,11 +2445,6 @@ body {
 /* 导入进度：需要容纳逐条执行流水 */
 .modal-content.modal-import {
   max-width: 680px;
-  width: 92%;
-}
-
-.modal-content.modal-license {
-  max-width: 560px;
   width: 92%;
 }
 
