@@ -294,6 +294,31 @@
       <div class="menu-item" @click="viewResultCell">{{ t('dataTable.viewFullContent') }}</div>
     </div>
 
+    <!-- 参数化查询：收集 `:name` 实参 -->
+    <div v-if="paramDialog.show" class="param-mask" @click.self="cancelSqlParams">
+      <div class="param-dialog">
+        <div class="param-header">
+          <span>{{ t('sqlEditor.paramsTitle') }}</span>
+          <button class="param-close" @click="cancelSqlParams">×</button>
+        </div>
+        <p class="param-hint">{{ t('sqlEditor.paramsHint') }}</p>
+        <div class="param-list">
+          <label v-for="name in paramDialog.names" :key="name" class="param-row">
+            <span class="param-name">:{{ name }}</span>
+            <input
+              v-model="paramDialog.values[name]"
+              :placeholder="t('sqlEditor.paramsPlaceholder')"
+              @keydown.enter="confirmSqlParams"
+            />
+          </label>
+        </div>
+        <div class="param-actions">
+          <button @click="cancelSqlParams">{{ t('common.cancel') }}</button>
+          <button class="param-primary" @click="confirmSqlParams">{{ t('sqlEditor.paramsExecute') }}</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 单元格查看器（大文本 / JSON / BLOB） -->
     <CellViewer
       :open="cellViewer.show"
@@ -644,6 +669,151 @@ function setLoading(value: boolean) {
   }
 }
 
+// ---- 参数化查询（B4）：`:name` 占位符 ----
+const paramDialog = ref<{
+  show: boolean
+  names: string[]
+  values: Record<string, string>
+}>({ show: false, names: [], values: {} })
+let pendingParamResolve: ((values: Record<string, string> | null) => void) | null = null
+/** 一键重跑时携带的历史参数，用于填充参数弹窗 */
+const presetParams = ref<Record<string, string> | undefined>(undefined)
+
+/** 跳过一段引号包裹的内容，返回结束位置（支持 SQL 的重复引号转义） */
+function skipQuoted(text: string, start: number, quote: string): number {
+  let i = start + 1
+  while (i < text.length) {
+    if (text[i] === quote) {
+      if (text[i + 1] === quote) {
+        i += 2
+        continue
+      }
+      return i + 1
+    }
+    i++
+  }
+  return i
+}
+
+function skipLineComment(text: string, start: number): number {
+  const end = text.indexOf('\n', start)
+  return end === -1 ? text.length : end
+}
+
+function skipBlockComment(text: string, start: number): number {
+  const end = text.indexOf('*/', start + 2)
+  return end === -1 ? text.length : end + 2
+}
+
+/** 提取 SQL 中的命名参数，忽略字符串、注释与 `::` 类型转换 */
+function extractSqlParams(text: string): string[] {
+  const names: string[] = []
+  let i = 0
+  while (i < text.length) {
+    const ch = text[i]!
+    if (ch === "'" || ch === '"' || ch === '`') {
+      i = skipQuoted(text, i, ch)
+      continue
+    }
+    if ((ch === '-' && text[i + 1] === '-') || ch === '#') {
+      i = skipLineComment(text, i)
+      continue
+    }
+    if (ch === '/' && text[i + 1] === '*') {
+      i = skipBlockComment(text, i)
+      continue
+    }
+    if (ch === ':' && text[i + 1] !== ':') {
+      const match = /^:([A-Za-z_][A-Za-z0-9_]*)/.exec(text.slice(i))
+      if (match) {
+        const name = match[1]!
+        if (!names.includes(name)) names.push(name)
+        i += match[0].length
+        continue
+      }
+    }
+    i++
+  }
+  return names
+}
+
+/** 把用户输入按「数字/布尔/NULL 原样、其它按字符串转义」转成 SQL 字面量 */
+function sqlParamLiteral(raw: string, driver: 'mysql' | 'postgres'): string {
+  const value = raw.trim()
+  if (value === '') return "''"
+  if (/^null$/i.test(value)) return 'NULL'
+  if (/^true$/i.test(value)) return '1'
+  if (/^false$/i.test(value)) return '0'
+  if (/^-?\d+(\.\d+)?$/.test(value)) return value
+  return formatSqlValue(value, { driver })
+}
+
+/** 仅替换字符串/注释之外的 `:name`，避免误改字面量内容 */
+function substituteSqlParams(text: string, values: Record<string, string>): string {
+  const driver = isPostgres.value ? 'postgres' : 'mysql'
+  let out = ''
+  let i = 0
+  while (i < text.length) {
+    const ch = text[i]!
+    if (ch === "'" || ch === '"' || ch === '`') {
+      const next = skipQuoted(text, i, ch)
+      out += text.slice(i, next)
+      i = next
+      continue
+    }
+    if ((ch === '-' && text[i + 1] === '-') || ch === '#') {
+      const next = skipLineComment(text, i)
+      out += text.slice(i, next)
+      i = next
+      continue
+    }
+    if (ch === '/' && text[i + 1] === '*') {
+      const next = skipBlockComment(text, i)
+      out += text.slice(i, next)
+      i = next
+      continue
+    }
+    if (ch === ':' && text[i + 1] !== ':') {
+      const match = /^:([A-Za-z_][A-Za-z0-9_]*)/.exec(text.slice(i))
+      if (match && Object.prototype.hasOwnProperty.call(values, match[1]!)) {
+        out += sqlParamLiteral(values[match[1]!]!, driver)
+        i += match[0].length
+        continue
+      }
+    }
+    out += ch
+    i++
+  }
+  return out
+}
+
+function requestSqlParams(
+  names: string[],
+  preset?: Record<string, string>
+): Promise<Record<string, string> | null> {
+  paramDialog.value = {
+    show: true,
+    names,
+    values: Object.fromEntries(names.map(name => [name, preset?.[name] ?? '']))
+  }
+  return new Promise(resolve => {
+    pendingParamResolve = resolve
+  })
+}
+
+function confirmSqlParams() {
+  const values = { ...paramDialog.value.values }
+  paramDialog.value.show = false
+  pendingParamResolve?.(values)
+  pendingParamResolve = null
+}
+
+function cancelSqlParams() {
+  paramDialog.value.show = false
+  pendingParamResolve?.(null)
+  pendingParamResolve = null
+}
+
 // 执行 SQL
 async function executeQuery() {
   if (!sql.value.trim() || !effectiveConnectionId.value) return
@@ -659,9 +829,20 @@ async function executeQuery() {
     return
   }
 
+  // 参数化查询：执行前先弹窗收集 `:name` 的实参，取消则不执行
+  const templateSql = sql.value
+  const paramNames = extractSqlParams(templateSql)
+  let paramValues: Record<string, string> | null = null
+  if (paramNames.length > 0) {
+    paramValues = await requestSqlParams(paramNames, presetParams.value)
+    presetParams.value = undefined
+    if (!paramValues) return
+  }
+  const executedSql = paramValues ? substituteSqlParams(templateSql, paramValues) : templateSql
+
   // 安全模式下对高风险语句二次确认（无 WHERE 的 UPDATE/DELETE 由后端直接拦截）
   if (effectiveConnection.value?.safety_mode === 'safe') {
-    const dangerous = findDangerousStatements(sql.value)
+    const dangerous = findDangerousStatements(executedSql)
     if (
       dangerous.length > 0 &&
       !(await confirmDanger({
@@ -688,13 +869,13 @@ async function executeQuery() {
   // 拆开执行才能让每条语句都有自己的结果分栏。
   let statements: string[]
   try {
-    statements = await invoke<string[]>('split_sql_statements', { sql: sql.value })
+    statements = await invoke<string[]>('split_sql_statements', { sql: executedSql })
   } catch (e) {
     console.error('切分 SQL 语句失败，回退为整段执行:', e)
-    statements = [sql.value]
+    statements = [executedSql]
   }
-  if (statements.length === 0) statements = [sql.value]
-  const sourceSql = sql.value
+  if (statements.length === 0) statements = [executedSql]
+  const sourceSql = executedSql
   const statementOffsets = computeStatementOffsets(sourceSql, statements)
 
   let databaseName = resolveDatabase()
@@ -748,7 +929,13 @@ async function executeQuery() {
     }
 
     const totalMs = outcomes.reduce((sum, outcome) => sum + (outcome.result?.execution_time_ms ?? 0), 0)
-    recordHistory(!failure, failure?.error, totalMs)
+    const firstResult = outcomes.find(outcome => outcome.result)?.result
+    recordHistory(!failure, failure?.error, totalMs, {
+      sqlText: templateSql,
+      params: paramValues ?? undefined,
+      rowsReturned: firstResult?.rows_returned,
+      rowsAffected: firstResult?.rows_affected,
+    })
 
     if (props.tabId && outcomes.some(outcome => outcome.result)) {
       editorTabs.markExecuted(props.tabId)
@@ -943,16 +1130,29 @@ function loadSavedQuery(item: SavedQuery) {
 }
 
 /** 记录一次执行结果（成功/失败都留痕，便于回溯） */
-function recordHistory(success: boolean, errorMessage?: string, durationMs?: number) {
+function recordHistory(
+  success: boolean,
+  errorMessage?: string,
+  durationMs?: number,
+  extra: {
+    sqlText?: string
+    params?: Record<string, string>
+    rowsReturned?: number
+    rowsAffected?: number
+  } = {}
+) {
   const connectionId = effectiveConnectionId.value
   if (!connectionId) return
   queryLibrary.addHistory({
-    sql: sql.value,
+    sql: extra.sqlText ?? sql.value,
     connectionId,
     database: selectedDatabase.value,
     success,
     error: errorMessage,
     durationMs: success ? durationMs ?? result.value?.execution_time_ms : undefined,
+    params: extra.params,
+    rowsReturned: extra.rowsReturned ?? result.value?.rows_returned,
+    rowsAffected: extra.rowsAffected ?? result.value?.rows_affected,
   })
 }
 
@@ -1101,6 +1301,13 @@ onMounted(() => {
     if (cachedError) {
       error.value = cachedError
     }
+  }
+
+  // 历史重跑：打开后带预设参数自动执行一次
+  const pending = props.tabId ? editorTabs.consumePendingRun(props.tabId) : null
+  if (pending) {
+    presetParams.value = pending.params
+    void nextTick(() => executeQuery())
   }
 })
 
@@ -1916,5 +2123,95 @@ onUnmounted(() => {
 .history-time {
   color: var(--color-text-secondary);
   font-size: 11px;
+}
+
+/* 参数化查询弹窗 */
+.param-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.param-dialog {
+  width: 420px;
+  max-width: 90vw;
+  background: var(--surface-default, var(--color-background));
+  border: 1px solid var(--border-default, var(--color-border));
+  border-radius: 8px;
+  padding: 16px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25);
+}
+
+.param-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.param-close {
+  background: none;
+  border: none;
+  color: var(--text-secondary, var(--color-text-secondary));
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.param-hint {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--text-secondary, var(--color-text-secondary));
+}
+
+.param-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 45vh;
+  overflow: auto;
+}
+
+.param-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.param-name {
+  min-width: 110px;
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--color-primary);
+}
+
+.param-row input {
+  flex: 1;
+  padding: 6px 8px;
+  border: 1px solid var(--border-default, var(--color-border));
+  border-radius: 4px;
+  background: var(--bg-secondary, var(--color-background-soft));
+  color: var(--text-primary, var(--color-text));
+}
+
+.param-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.param-primary {
+  background: var(--color-primary);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 14px;
+  cursor: pointer;
 }
 </style>

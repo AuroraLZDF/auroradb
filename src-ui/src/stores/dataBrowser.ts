@@ -13,10 +13,25 @@ function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T>
   return invoke<T>(cmd, args)
 }
 
+/** 表数据过滤条件（与后端 FilterCondition 对应） */
+export interface DataFilterCondition {
+  column: string
+  operator: 'Eq' | 'Ne' | 'Gt' | 'Gte' | 'Lt' | 'Lte' | 'Like' | 'IsNull' | 'IsNotNull'
+  value: unknown
+}
+
 export interface DatabaseObject {
   id: string
   name: string
-  object_type: 'Connection' | 'Database' | 'Table' | 'View' | 'Procedure' | 'Function'
+  object_type:
+    | 'Connection'
+    | 'Database'
+    | 'Table'
+    | 'View'
+    | 'Procedure'
+    | 'Function'
+    | 'Trigger'
+    | 'Event'
   schema?: string
   children?: DatabaseObject[]
   /** 自增值（仅 MySQL 表；无自增列时为 null） */
@@ -52,10 +67,20 @@ interface SchemaColumnInfo {
   data_type: string
 }
 
+export interface SchemaForeignKeyInfo {
+  name: string
+  /** 本表中的外键列 */
+  column: string
+  ref_table: string
+  ref_column: string
+}
+
 export interface SchemaTableInfo {
   name: string
   object_type: 'Table' | 'View'
   columns: SchemaColumnInfo[]
+  /** 本表指向其它表的外键（JOIN 补全 / 引用导航用） */
+  foreign_keys?: SchemaForeignKeyInfo[]
 }
 
 export interface SchemaSnapshot {
@@ -361,6 +386,10 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
       sortDirection?: 'asc' | 'desc'
       /** 关键字：后端在所有可比较列上做 LIKE '%keyword%' 匹配 */
       search?: string
+      /** 多条件过滤（列/运算符/值），由后端拼接 WHERE */
+      filters?: DataFilterCondition[]
+      /** 多条件之间的逻辑关系，默认 and */
+      filterLogic?: 'and' | 'or'
       /** 只查询这些列（宽表按需加载）；为空则由后端 SELECT * */
       columns?: string[]
     } = {}
@@ -389,6 +418,8 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
           sort_column: options.sortColumn,
           sort_direction: sortDirection,
           search: options.search || undefined,
+          filters: options.filters && options.filters.length > 0 ? options.filters : undefined,
+          filter_logic: options.filterLogic,
         },
       })
       // 已有更新的请求发出，本次响应作废
@@ -420,6 +451,8 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
       sortColumn?: string
       sortDirection?: 'asc' | 'desc'
       search?: string
+      filters?: DataFilterCondition[]
+      filterLogic?: 'and' | 'or'
       columns?: string[]
     } = {}
   ) {
@@ -444,6 +477,8 @@ export const useDataBrowserStore = defineStore('dataBrowser', () => {
           sort_column: options.sortColumn,
           sort_direction: sortDirection,
           search: options.search || undefined,
+          filters: options.filters && options.filters.length > 0 ? options.filters : undefined,
+          filter_logic: options.filterLogic,
           after: current.next_cursor,
         },
       })

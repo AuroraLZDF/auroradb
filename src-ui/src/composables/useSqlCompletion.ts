@@ -110,6 +110,133 @@ function findTable(tables: SchemaTableInfo[], name: string): SchemaTableInfo | u
   return tables.find(t => t.name.toLowerCase() === lower)
 }
 
+/** 找到与开括号匹配的闭括号位置，未闭合返回 -1 */
+function findMatchingParen(text: string, open: number): number {
+  let depth = 0
+  for (let i = open; i < text.length; i++) {
+    const ch = text[i]
+    if (ch === '(') depth++
+    else if (ch === ')') {
+      depth--
+      if (depth === 0) return i
+    }
+  }
+  return -1
+}
+
+/** 从 SELECT 列表里提取输出列名（支持 `expr AS alias`） */
+function extractSelectColumns(inner: string): string[] {
+  const match = inner.match(/\bselect\s+(?:distinct\s+)?([\s\S]*?)\bfrom\b/i)
+  if (!match) return []
+  const list = match[1] ?? ''
+  const columns: string[] = []
+  let depth = 0
+  let start = 0
+
+  const push = (part: string) => {
+    const item = part.trim()
+    if (!item || item === '*') return
+    const alias = item.match(/\bas\s+`?([A-Za-z0-9_$]+)`?\s*$/i)
+    if (alias?.[1]) {
+      columns.push(alias[1])
+      return
+    }
+    // 无 AS 时取末尾标识符（`t.col` → `col`）
+    const tail = item.match(/([A-Za-z0-9_$]+)\s*$/)
+    if (tail?.[1]) columns.push(tail[1])
+  }
+
+  for (let i = 0; i < list.length; i++) {
+    const ch = list[i]
+    if (ch === '(') depth++
+    else if (ch === ')') depth--
+    else if (ch === ',' && depth === 0) {
+      push(list.slice(start, i))
+      start = i + 1
+    }
+  }
+  push(list.slice(start))
+  return columns
+}
+
+/** 收集 `WITH name AS (...)` 定义的 CTE 及其输出列，供 `name.` 补全 */
+function collectCtes(before: string): Map<string, string[]> {
+  const ctes = new Map<string, string[]>()
+  const re = /(?:\bwith\b|,)\s*`?([A-Za-z0-9_$]+)`?\s+as\s*\(/gi
+  for (const match of before.matchAll(re)) {
+    const name = match[1]
+    if (!name) continue
+    const open = (match.index ?? 0) + match[0].length - 1
+    const close = findMatchingParen(before, open)
+    if (close < 0) continue
+    ctes.set(name.toLowerCase(), extractSelectColumns(before.slice(open + 1, close)))
+  }
+  return ctes
+}
+
+interface JoinTarget {
+  table: string
+  alias: string
+}
+
+/** 解析语句中的 FROM/JOIN 目标（表名 + 别名） */
+function collectJoinTargets(statement: string): JoinTarget[] {
+  const targets: JoinTarget[] = []
+  const re = /\b(?:from|join)\s+`?([A-Za-z0-9_$]+)`?(?:\s+(?:as\s+)?`?([A-Za-z0-9_$]+)`?)?/gi
+  for (const match of statement.matchAll(re)) {
+    const table = match[1]
+    if (!table) continue
+    const rawAlias = match[2]
+    const alias = rawAlias && !ALIAS_STOP_WORDS.has(rawAlias.toUpperCase()) ? rawAlias : table
+    targets.push({ table, alias })
+  }
+  return targets
+}
+
+/**
+ * 光标停在 `JOIN <表> [别名]` 之后时，根据外键推断 ON 条件。
+ * 只在这一刻给出一条建议，避免用户还在输入表名时弹窗。
+ */
+function buildJoinOn(before: string, tables: SchemaTableInfo[]): string | null {
+  const match = before.match(
+    /\bjoin\s+`?([A-Za-z0-9_$]+)`?(?:\s+(?:as\s+)?`?([A-Za-z0-9_$]+)`?)?\s*$/i
+  )
+  if (!match) return null
+  const newTableName = match[1]
+  if (!newTableName) return null
+  const rawAlias = match[2]
+  const newAlias =
+    rawAlias && !ALIAS_STOP_WORDS.has(rawAlias.toUpperCase()) ? rawAlias : newTableName
+  const newTable = findTable(tables, newTableName)
+  if (!newTable) return null
+
+  const existing = collectJoinTargets(before.slice(0, match.index ?? 0))
+  if (existing.length === 0) return null
+
+  // 1) 新表通过外键指向已出现的表
+  for (const fk of newTable.foreign_keys ?? []) {
+    const target = existing.find(t => t.table.toLowerCase() === fk.ref_table.toLowerCase())
+    if (target) {
+      return `ON ${formatIdentifier(newAlias)}.${formatIdentifier(fk.column)} = ` +
+        `${formatIdentifier(target.alias)}.${formatIdentifier(fk.ref_column)}`
+    }
+  }
+
+  // 2) 已出现的表通过外键指向新表
+  for (const target of existing) {
+    const table = findTable(tables, target.table)
+    if (!table) continue
+    for (const fk of table.foreign_keys ?? []) {
+      if (fk.ref_table.toLowerCase() === newTableName.toLowerCase()) {
+        return `ON ${formatIdentifier(target.alias)}.${formatIdentifier(fk.column)} = ` +
+          `${formatIdentifier(newAlias)}.${formatIdentifier(fk.ref_column)}`
+      }
+    }
+  }
+
+  return null
+}
+
 function columnItems(tables: SchemaTableInfo[], tableName: string): CompletionItem[] {
   const table = findTable(tables, tableName)
   if (!table) return []
@@ -149,6 +276,7 @@ function getSqlCompletions(
 ): CompletionResult {
   const before = sql.slice(0, caret)
   const { prefix, prefixRaw, qualifiers } = splitIdentifierChain(before)
+  const ctes = collectCtes(before)
 
   let candidates: CompletionItem[]
   if (qualifiers.length >= 2) {
@@ -161,8 +289,15 @@ function getSqlCompletions(
     const tableName = collectAliases(before).get(qualifier.toLowerCase()) ?? qualifier
 
     const isTable = findTable(ctx.tables, tableName) !== undefined
+    const cteColumns = ctes.get(tableName.toLowerCase())
     if (isTable) {
       candidates = columnItems(ctx.tables, tableName)
+    } else if (cteColumns) {
+      candidates = cteColumns.map(col => ({
+        label: formatIdentifier(col),
+        name: col,
+        kind: 'column' as const
+      }))
     } else {
       // 限定符是库名：只有当前库有快照，其它库无从得知表名
       const isCurrentDatabase = qualifier.toLowerCase() === ctx.currentDatabase.toLowerCase()
@@ -204,6 +339,20 @@ function getSqlCompletions(
       return a.name.localeCompare(b.name)
     })
     .slice(0, MAX_ITEMS)
+
+  // JOIN 场景：光标停在表名/别名后时，补一条按外键推断的 ON 条件。
+  // 补全项会替换整个 token，所以把用户已输入的表名原样拼回 label。
+  if (qualifiers.length === 0) {
+    const onClause = buildJoinOn(before, ctx.tables)
+    if (onClause) {
+      const typed = before.slice(caret - prefixRaw.length)
+      items.unshift({
+        label: typed ? `${typed} ${onClause}` : onClause,
+        name: onClause,
+        kind: 'keyword'
+      })
+    }
+  }
 
   return {
     items,

@@ -69,6 +69,14 @@
               </div>
             </div>
           </div>
+          <button
+            @click="showGenerator = true"
+            :disabled="loading || !currentTab"
+            :title="t('dataGenerator.button')"
+          >
+            <Wand2 :size="14" />
+            {{ t('dataGenerator.button') }}
+          </button>
           <span class="toolbar-divider"></span>
           <!-- 事务控制按钮 -->
           <button
@@ -99,6 +107,15 @@
         </div>
       </div>
       <div class="toolbar-right">
+        <button
+          :class="{ active: showFilterPanel || activeFilters.length > 0 }"
+          :title="t('dataTable.filterToggle')"
+          @click="showFilterPanel = !showFilterPanel"
+        >
+          <Filter :size="14" />
+          {{ t('dataTable.filterToggle') }}
+          <span v-if="activeFilters.length > 0" class="filter-count">{{ activeFilters.length }}</span>
+        </button>
         <input
           v-model="searchText"
           type="text"
@@ -112,6 +129,71 @@
             total: currentTableData.total_count
           }) }}
         </span>
+      </div>
+    </div>
+
+    <!-- 过滤栏：列头筛选入口 + 多条件构建器 + 已存过滤器 -->
+    <div v-if="showFilterPanel && currentTab" class="filter-panel" @click.stop>
+      <div class="filter-panel-header">
+        <span class="filter-panel-title">{{ t('dataTable.filterTitle') }}</span>
+        <div class="filter-logic">
+          <button :class="{ active: filterLogic === 'AND' }" @click="filterLogic = 'AND'">AND</button>
+          <button :class="{ active: filterLogic === 'OR' }" @click="filterLogic = 'OR'">OR</button>
+        </div>
+        <button class="filter-close" @click="showFilterPanel = false" :title="t('common.close')">
+          <X :size="13" />
+        </button>
+      </div>
+
+      <div class="filter-rows">
+        <div v-for="(row, index) in filterRows" :key="row.id" class="filter-row">
+          <span v-if="index > 0" class="filter-join">{{ filterLogic }}</span>
+          <span v-else class="filter-join">{{ t('dataTable.filterTitle') }}</span>
+          <select v-model="row.column" class="filter-select">
+            <option value="" disabled>{{ t('dataTable.filterColumn') }}</option>
+            <option v-for="name in filterColumnOptions" :key="name" :value="name">{{ name }}</option>
+          </select>
+          <select v-model="row.operator" class="filter-select filter-op">
+            <option v-for="op in filterOperatorOptions" :key="op.value" :value="op.value">{{ op.label }}</option>
+          </select>
+          <input
+            v-if="!isNullOperator(row.operator)"
+            v-model="row.value"
+            class="filter-value"
+            :placeholder="t('dataTable.filterValue')"
+          />
+          <button class="filter-remove" @click="removeFilterRow(row.id)" :title="t('common.delete')">
+            <X :size="12" />
+          </button>
+        </div>
+        <div v-if="filterRows.length === 0" class="filter-empty">{{ t('dataTable.filterAdd') }}</div>
+      </div>
+
+      <div class="filter-actions">
+        <button @click="addFilterRow()">+ {{ t('dataTable.filterAdd') }}</button>
+        <button class="btn-primary" :disabled="filterRows.length === 0" @click="applyFilters">
+          {{ t('dataTable.filterApply') }}
+        </button>
+        <button @click="clearFilters">{{ t('dataTable.filterClear') }}</button>
+      </div>
+
+      <div class="filter-saved">
+        <select v-model="selectedSavedFilter" class="filter-select" @change="applySavedFilter(selectedSavedFilter)">
+          <option value="">{{ t('dataTable.filterSavedPlaceholder') }}</option>
+          <option v-for="item in savedFilters" :key="item.name" :value="item.name">{{ item.name }}</option>
+        </select>
+        <input v-model="newFilterName" class="filter-value" :placeholder="t('dataTable.filterSaveName')" />
+        <button :disabled="!newFilterName.trim() || filterRows.length === 0" @click="saveCurrentFilter">
+          {{ t('dataTable.filterSave') }}
+        </button>
+        <button :disabled="!selectedSavedFilter" @click="deleteSavedFilter">
+          {{ t('dataTable.filterDelete') }}
+        </button>
+      </div>
+
+      <div v-if="filterWherePreview" class="filter-preview">
+        <code>{{ filterWherePreview }}</code>
+        <button @click="copyWherePreview">{{ t('dataTable.filterCopyWhere') }}</button>
       </div>
     </div>
 
@@ -144,6 +226,14 @@
                     :size="12"
                   />
                 </span>
+                <button
+                  class="th-filter-btn"
+                  :class="{ active: activeFilters.some(f => f.column === col.name) }"
+                  :title="t('dataTable.filterColumnHint')"
+                  @click.stop="addFilterRow(col.name)"
+                >
+                  <Filter :size="11" />
+                </button>
               </div>
               <div
                 class="resize-handle"
@@ -375,6 +465,21 @@
       <div class="menu-divider"></div>
       <div class="menu-item" @click="setNull">{{ t('dataTable.setNull') }}</div>
       <div class="menu-item" @click="viewFullContent">{{ t('dataTable.viewFullContent') }}</div>
+      <template v-if="currentCellForeignKeys.length > 0 || foreignKeyMenu.keys.length > 0">
+        <div class="menu-divider"></div>
+        <div
+          v-for="fk in currentCellForeignKeys"
+          :key="`fk-parent-${fk.name}`"
+          class="menu-item"
+          @click="openForeignKeyQuery(fk.ref_table, fk.ref_column, t('dataTable.fkOpenReferenced', { table: fk.ref_table }))"
+        >{{ t('dataTable.fkQueryReferenced', { table: fk.ref_table }) }}</div>
+        <div
+          v-for="fk in foreignKeyMenu.keys"
+          :key="`fk-child-${fk.name}`"
+          class="menu-item"
+          @click="openForeignKeyQuery(fk.ref_table, fk.column, t('dataTable.fkOpenReferencing', { table: fk.ref_table }))"
+        >{{ t('dataTable.fkQueryReferencing', { table: fk.ref_table }) }}</div>
+      </template>
       <div class="menu-divider"></div>
       <div class="menu-item" @click="editCell">{{ t('common.edit') }}</div>
     </div>
@@ -496,19 +601,36 @@
         </div>
       </div>
     </div>
+
+    <!-- 数据生成器（B8） -->
+    <DataGeneratorDialog
+      v-if="currentTab"
+      :open="showGenerator"
+      :connection-id="currentTab.connectionId"
+      :database="currentTab.database"
+      :table="currentTab.tableName"
+      :driver="isPostgresConnection ? 'postgres' : 'mysql'"
+      @close="showGenerator = false"
+      @open-sql="onGeneratorOpenSql"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { useDataBrowserStore, type TableChange } from '@/stores/dataBrowser'
+import {
+  useDataBrowserStore,
+  type DataFilterCondition,
+  type TableChange,
+} from '@/stores/dataBrowser'
 import { useConnectionStore } from '@/stores/connection'
 import { useDebounce } from '@/composables/useDebounce'
 import { confirmAction } from '@/composables/useConfirm'
 import { useUnsavedGuard } from '@/composables/useUnsavedGuard'
 import { useVirtualRows } from '@/composables/useVirtualRows'
-import { collectTableChanges, isBinaryType, isSameValue } from '@/utils/tableChanges'
+import { collectTableChanges, formatSqlValue, isBinaryType, isSameValue } from '@/utils/tableChanges'
+import { quoteIdentifier } from '@/utils/sql'
 import { t } from '@/i18n'
 import CellViewer from '@/components/CellViewer.vue'
 import {
@@ -523,8 +645,9 @@ import {
   X,
   AlignHorizontalDistributeCenter
 } from '@/components/icons'
-import { Calendar, Columns3 } from 'lucide-vue-next'
+import { Calendar, Columns3, Filter, Wand2 } from 'lucide-vue-next'
 import Select from '@/components/ui/Select.vue'
+import DataGeneratorDialog from '@/components/DataGeneratorDialog.vue'
 
 interface TableTab {
   id: string
@@ -555,6 +678,8 @@ const connectionStore = useConnectionStore()
 // 表标签真正关闭后通知外层，保证外层 Tab 与内部表状态同步
 const emit = defineEmits<{
   (e: 'table-closed', tab: { connectionId: string; database: string; tableName: string }): void
+  /** 请求外层新开一个 SQL 标签页（外键引用导航等） */
+  (e: 'open-sql', sql: string, title: string, connectionId: string): void
 }>()
 
 // 标签页管理
@@ -661,6 +786,213 @@ const searchText = ref('')
 const activeSearch = ref('')
 const { debouncedValue: debouncedSearchText, flush: flushSearch } = useDebounce(searchText, 300)
 
+// ========== 过滤栏（列头筛选 + 多条件构建器 + 已存过滤器） ==========
+type FilterOperator = 'Eq' | 'Ne' | 'Gt' | 'Gte' | 'Lt' | 'Lte' | 'Like' | 'IsNull' | 'IsNotNull'
+
+interface FilterRow {
+  id: number
+  column: string
+  operator: FilterOperator
+  value: string
+}
+
+interface SavedFilter {
+  name: string
+  logic: 'AND' | 'OR'
+  rows: { column: string; operator: FilterOperator; value: string }[]
+}
+
+const showFilterPanel = ref(false)
+const filterRows = ref<FilterRow[]>([])
+const filterLogic = ref<'AND' | 'OR'>('AND')
+/** 已应用到请求的筛选（面板里可以继续编辑而不立即生效） */
+const activeFilters = ref<FilterRow[]>([])
+const activeFilterLogic = ref<'AND' | 'OR'>('AND')
+const savedFilters = ref<SavedFilter[]>([])
+const selectedSavedFilter = ref('')
+const newFilterName = ref('')
+let filterRowSeq = 0
+
+const filterOperatorOptions: { label: string; value: FilterOperator }[] = [
+  { label: '=', value: 'Eq' },
+  { label: '!=', value: 'Ne' },
+  { label: '>', value: 'Gt' },
+  { label: '>=', value: 'Gte' },
+  { label: '<', value: 'Lt' },
+  { label: '<=', value: 'Lte' },
+  { label: 'LIKE', value: 'Like' },
+  { label: 'IS NULL', value: 'IsNull' },
+  { label: 'IS NOT NULL', value: 'IsNotNull' },
+]
+
+const filterColumnOptions = computed(() => allColumnsForTab.value.map(col => col.name))
+
+const savedFilterKey = computed(() =>
+  currentTab.value
+    ? `auroradb:savedFilters:${currentTab.value.connectionId}:${currentTab.value.database}:${currentTab.value.tableName}`
+    : ''
+)
+
+/** 条件是否有效：IS NULL 类不需要值，其它必须填值 */
+function isUsableFilter(row: FilterRow): boolean {
+  if (!row.column) return false
+  if (row.operator === 'IsNull' || row.operator === 'IsNotNull') return true
+  return row.value !== ''
+}
+
+function isNullOperator(operator: FilterOperator): boolean {
+  return operator === 'IsNull' || operator === 'IsNotNull'
+}
+
+/** 数值列把输入转成数字，避免 PG 文本与整型比较报错 */
+function coerceFilterValue(row: FilterRow): unknown {
+  if (isNullOperator(row.operator)) return null
+  const type = allColumnsForTab.value.find(col => col.name === row.column)?.data_type?.toLowerCase() ?? ''
+  const numeric = /int|decimal|numeric|float|double|real|year|bit/.test(type)
+  if (numeric && row.value.trim() !== '' && !Number.isNaN(Number(row.value))) {
+    return Number(row.value)
+  }
+  return row.value
+}
+
+function toFilterConditions(rows: FilterRow[]): DataFilterCondition[] {
+  return rows.filter(isUsableFilter).map(row => ({
+    column: row.column,
+    operator: row.operator,
+    value: coerceFilterValue(row),
+  }))
+}
+
+function addFilterRow(column = '') {
+  showFilterPanel.value = true
+  filterRows.value = [
+    ...filterRows.value,
+    {
+      id: ++filterRowSeq,
+      column: column || filterColumnOptions.value[0] || '',
+      operator: 'Eq',
+      value: '',
+    },
+  ]
+}
+
+function removeFilterRow(id: number) {
+  filterRows.value = filterRows.value.filter(row => row.id !== id)
+}
+
+/** 生成的 WHERE 预览（可直接复制到 SQL 编辑器） */
+const filterWherePreview = computed(() => {
+  const rows = filterRows.value.filter(isUsableFilter)
+  if (rows.length === 0) return ''
+  const quote = (name: string) => (isPostgresConnection.value ? `"${name}"` : `\`${name}\``)
+  const literal = (row: FilterRow): string => {
+    const coerced = coerceFilterValue(row)
+    if (coerced === null) return ''
+    if (typeof coerced === 'number') return String(coerced)
+    return `'${String(coerced).replace(/'/g, "''")}'`
+  }
+  const parts = rows.map(row => {
+    const column = quote(row.column)
+    switch (row.operator) {
+      case 'Eq': return `${column} = ${literal(row)}`
+      case 'Ne': return `${column} != ${literal(row)}`
+      case 'Gt': return `${column} > ${literal(row)}`
+      case 'Gte': return `${column} >= ${literal(row)}`
+      case 'Lt': return `${column} < ${literal(row)}`
+      case 'Lte': return `${column} <= ${literal(row)}`
+      case 'Like': return `${column} LIKE ${literal(row)}`
+      case 'IsNull': return `${column} IS NULL`
+      case 'IsNotNull': return `${column} IS NOT NULL`
+    }
+  })
+  return `WHERE ${parts.join(` ${filterLogic.value} `)}`
+})
+
+async function copyWherePreview() {
+  try {
+    await navigator.clipboard.writeText(filterWherePreview.value)
+    showToast(t('dataTable.filterCopied'))
+  } catch {
+    showToast(t('dataTable.filterCopied'), 'error')
+  }
+}
+
+/** 应用筛选：会丢弃未保存的修改，因此先确认 */
+async function applyFilters() {
+  if (hasUnsavedChanges.value) {
+    const confirmed = await confirmAction({
+      message: t('dataTable.filterDiscardConfirm'),
+      confirmText: t('common.confirm'),
+    })
+    if (!confirmed) return
+  }
+  activeFilters.value = filterRows.value.filter(isUsableFilter).map(row => ({ ...row }))
+  activeFilterLogic.value = filterLogic.value
+  browserStore.setPage(1)
+  await loadData()
+}
+
+async function clearFilters() {
+  filterRows.value = []
+  activeFilters.value = []
+  activeFilterLogic.value = 'AND'
+  filterLogic.value = 'AND'
+  selectedSavedFilter.value = ''
+  browserStore.setPage(1)
+  await loadData()
+}
+
+function loadSavedFilters() {
+  if (!savedFilterKey.value) {
+    savedFilters.value = []
+    return
+  }
+  try {
+    const raw = localStorage.getItem(savedFilterKey.value)
+    savedFilters.value = raw ? (JSON.parse(raw) as SavedFilter[]) : []
+  } catch {
+    savedFilters.value = []
+  }
+}
+
+function persistSavedFilters() {
+  if (!savedFilterKey.value) return
+  localStorage.setItem(savedFilterKey.value, JSON.stringify(savedFilters.value))
+}
+
+function saveCurrentFilter() {
+  const name = newFilterName.value.trim()
+  if (!name) return
+  const rows = filterRows.value.filter(isUsableFilter).map(row => ({
+    column: row.column,
+    operator: row.operator,
+    value: row.value,
+  }))
+  const next: SavedFilter = { name, logic: filterLogic.value, rows }
+  const index = savedFilters.value.findIndex(item => item.name === name)
+  if (index >= 0) savedFilters.value[index] = next
+  else savedFilters.value.push(next)
+  persistSavedFilters()
+  selectedSavedFilter.value = name
+  newFilterName.value = ''
+}
+
+async function applySavedFilter(name: string) {
+  const saved = savedFilters.value.find(item => item.name === name)
+  if (!saved) return
+  filterLogic.value = saved.logic
+  filterRows.value = saved.rows.map(row => ({ ...row, id: ++filterRowSeq }))
+  await applyFilters()
+}
+
+function deleteSavedFilter() {
+  const name = selectedSavedFilter.value
+  if (!name) return
+  savedFilters.value = savedFilters.value.filter(item => item.name !== name)
+  persistSavedFilters()
+  selectedSavedFilter.value = ''
+}
+
 // 右键菜单
 const contextMenu = ref({
   show: false,
@@ -669,6 +1001,16 @@ const contextMenu = ref({
   colIndex: -1,
   cellValue: null as unknown
 })
+
+// 外键引用导航（B2）：右键某列时异步查询有哪些子表引用它
+interface ForeignKeyMeta {
+  name: string
+  column: string
+  ref_table: string
+  ref_column: string
+}
+const foreignKeyMenu = ref<{ loading: boolean; keys: ForeignKeyMeta[] }>({ loading: false, keys: [] })
+let foreignKeyRequestSeq = 0
 
 // 单元格查看器状态（记录列名/类型，数据刷新后仍可正确展示）
 const cellViewer = ref({
@@ -752,6 +1094,8 @@ const DEFAULT_VISIBLE_COLUMNS = 30
 
 /** 每张表的结构列元数据（按 tab id 缓存，只取一次） */
 const tableColumns = ref<Record<string, TableColumnMeta[]>>({})
+/** 每张表的外键（按 tab id 缓存），用于「查它引用的行」 */
+const tableForeignKeys = ref<Record<string, ForeignKeyMeta[]>>({})
 /** 每张表当前勾选要查询的列 */
 const selectedColumns = ref<Record<string, string[]>>({})
 const showColumnSelector = ref(false)
@@ -803,6 +1147,7 @@ async function ensureTableColumns(tab: TableTab) {
       is_primary: col.is_primary,
     }))
     tableColumns.value = { ...tableColumns.value, [tab.id]: columns }
+    tableForeignKeys.value = { ...tableForeignKeys.value, [tab.id]: structure.foreign_keys ?? [] }
     selectedColumns.value = { ...selectedColumns.value, [tab.id]: defaultColumnSelection(columns) }
   } catch (e) {
     console.error('Failed to load table columns:', e)
@@ -1093,6 +1438,13 @@ async function activateTab(tab: TableTab) {
   searchText.value = ''
   activeSearch.value = ''
   flushSearch()
+  filterRows.value = []
+  activeFilters.value = []
+  filterLogic.value = 'AND'
+  activeFilterLogic.value = 'AND'
+  selectedSavedFilter.value = ''
+  newFilterName.value = ''
+  loadSavedFilters()
   
   // 重置排序状态，避免使用之前表的排序列
   sortColumn.value = ''
@@ -1230,6 +1582,8 @@ async function loadData() {
       sortColumn: sortColumn.value || undefined,
       sortDirection: sortDirection.value?.toLowerCase() as 'asc' | 'desc' | undefined,
       search: activeSearch.value || undefined,
+      filters: toFilterConditions(activeFilters.value),
+      filterLogic: activeFilterLogic.value === 'OR' ? 'or' : 'and',
       columns: selectedColumnNames.value.length > 0 ? selectedColumnNames.value : undefined,
     })
     // 首页返回游标说明后续翻页可走 keyset，切换为「加载更多」模式
@@ -1254,6 +1608,8 @@ async function loadMore() {
       sortColumn: sortColumn.value || undefined,
       sortDirection: sortDirection.value?.toLowerCase() as 'asc' | 'desc' | undefined,
       search: activeSearch.value || undefined,
+      filters: toFilterConditions(activeFilters.value),
+      filterLogic: activeFilterLogic.value === 'OR' ? 'or' : 'and',
       columns: selectedColumnNames.value.length > 0 ? selectedColumnNames.value : undefined,
     })
   } catch (e) {
@@ -1818,12 +2174,77 @@ function showContextMenu(event: MouseEvent, rowIndex: number, colIndex: number, 
     colIndex,
     cellValue: cell
   }
+  void loadReferencingForeignKeys(colIndex)
 }
 
 function hideContextMenu() {
   contextMenu.value.show = false
+  foreignKeyMenu.value = { loading: false, keys: [] }
   // 点击表格其他区域时同时收起列选择器
   showColumnSelector.value = false
+}
+
+/** 外键导航用的表名：MySQL 带库名前缀，PG 按 schema.table 分段加引号 */
+function qualifiedTableName(table: string): string {
+  const driver = isPostgresConnection.value ? 'postgres' : 'mysql'
+  if (isPostgresConnection.value) {
+    return table.split('.').map(part => quoteIdentifier(part, driver)).join('.')
+  }
+  const database = currentTab.value?.database
+  return database
+    ? `${quoteIdentifier(database, driver)}.${quoteIdentifier(table, driver)}`
+    : quoteIdentifier(table, driver)
+}
+
+/** 查询引用了当前单元格所在列的外键（子表），供右键菜单展示 */
+async function loadReferencingForeignKeys(colIndex: number) {
+  const tab = currentTab.value
+  const column = currentTableData.value?.columns[colIndex]
+  if (!tab || !column) return
+  const seq = ++foreignKeyRequestSeq
+  foreignKeyMenu.value = { loading: true, keys: [] }
+  try {
+    const keys = await invoke<ForeignKeyMeta[]>('get_referencing_foreign_keys', {
+      connectionId: tab.connectionId,
+      database: tab.database,
+      table: tab.tableName,
+      column: column.name
+    })
+    if (seq === foreignKeyRequestSeq) foreignKeyMenu.value = { loading: false, keys }
+  } catch (e) {
+    console.error('Failed to load referencing foreign keys:', e)
+    if (seq === foreignKeyRequestSeq) foreignKeyMenu.value = { loading: false, keys: [] }
+  }
+}
+
+/** 当前单元格所在列指向其它表的外键（「查它引用的行」） */
+const currentCellForeignKeys = computed<ForeignKeyMeta[]>(() => {
+  const tab = currentTab.value
+  const column = currentTableData.value?.columns[contextMenu.value.colIndex]
+  if (!tab || !column) return []
+  return (tableForeignKeys.value[tab.id] ?? []).filter(fk => fk.column === column.name)
+})
+
+/** 用当前单元格的值生成一条只读查询，并在新 SQL 标签页打开 */
+function openForeignKeyQuery(targetTable: string, targetColumn: string, title: string) {
+  const value = contextMenu.value.cellValue
+  if (value === null || value === undefined) {
+    showToast(t('dataTable.fkNullValue'))
+    return
+  }
+  const driver = isPostgresConnection.value ? 'postgres' : 'mysql'
+  const literal = formatSqlValue(value, { driver })
+  const sql = `SELECT *\nFROM ${qualifiedTableName(targetTable)}\nWHERE ${quoteIdentifier(targetColumn, driver)} = ${literal}\nLIMIT 200;`
+  emit('open-sql', sql, title, currentTab.value?.connectionId ?? '')
+  hideContextMenu()
+}
+
+/** 数据生成器弹窗开关（B8） */
+const showGenerator = ref(false)
+
+/** 生成的数据脚本交给外层在新 SQL 标签页打开 */
+function onGeneratorOpenSql(sql: string, title: string) {
+  emit('open-sql', sql, title, currentTab.value?.connectionId ?? '')
 }
 
 function copyCell() {
@@ -3663,5 +4084,196 @@ td.editing::before {
     transform: translateX(0);
     opacity: 1;
   }
+}
+
+/* 过滤栏 */
+.filter-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--color-primary);
+  color: #fff;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.filter-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 16px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-default);
+  flex-shrink: 0;
+}
+
+.filter-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.filter-panel-title {
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+}
+
+.filter-logic {
+  display: flex;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.filter-logic button {
+  padding: 2px 10px;
+  border: none;
+  background: var(--surface-default);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.filter-logic button.active {
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.filter-close {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.filter-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.filter-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.filter-join {
+  min-width: 48px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.filter-select,
+.filter-value {
+  padding: 3px 6px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-default);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.filter-select {
+  min-width: 130px;
+}
+
+.filter-op {
+  min-width: 90px;
+}
+
+.filter-value {
+  flex: 1;
+  min-width: 120px;
+}
+
+.filter-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.filter-remove:hover {
+  color: var(--color-danger);
+}
+
+.filter-empty {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.filter-actions,
+.filter-saved {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.filter-actions button,
+.filter-saved button,
+.filter-preview button {
+  padding: 3px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-default);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.filter-actions button:disabled,
+.filter-saved button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.filter-preview {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 8px;
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-hover);
+}
+
+.filter-preview code {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.th-filter-btn {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 2px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  opacity: 0.5;
+  cursor: pointer;
+}
+
+.th-filter-btn:hover,
+.th-filter-btn.active {
+  opacity: 1;
+  color: var(--color-primary);
 }
 </style>

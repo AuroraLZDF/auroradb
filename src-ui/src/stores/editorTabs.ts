@@ -31,6 +31,8 @@ interface DraftPayload {
 export const useEditorTabsStore = defineStore('editorTabs', () => {
   const tabs = ref<Record<string, EditorTabState>>({})
   let saveTimer: ReturnType<typeof setTimeout> | null = null
+  /** 待自动执行的 tab（重跑历史等），只存在内存中，避免重启后误执行 */
+  const pendingRuns = new Map<string, { params?: Record<string, string> }>()
 
   function ensure(tabId: string) {
     if (!tabs.value[tabId]) {
@@ -63,7 +65,21 @@ export const useEditorTabsStore = defineStore('editorTabs', () => {
   }
 
   function remove(tabId: string) {
+    pendingRuns.delete(tabId)
     delete tabs.value[tabId]
+  }
+
+  /** 安排某个 tab 打开后自动执行一次（可带预设参数，用于一键重跑） */
+  function scheduleRun(tabId: string, params?: Record<string, string>) {
+    pendingRuns.set(tabId, { params })
+  }
+
+  /** 取出并清除待执行标记 */
+  function consumePendingRun(tabId: string): { params?: Record<string, string> } | null {
+    const pending = pendingRuns.get(tabId)
+    if (!pending) return null
+    pendingRuns.delete(tabId)
+    return pending
   }
 
   function reset() {
@@ -139,6 +155,8 @@ export const useEditorTabsStore = defineStore('editorTabs', () => {
     getSql,
     markClean,
     markExecuted,
+    scheduleRun,
+    consumePendingRun,
     remove,
     reset,
     restore,
