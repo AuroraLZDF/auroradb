@@ -154,6 +154,7 @@ fn main() {
             commands::update::download_update_package,
             commands::sql_file::take_pending_sql_files,
             commands::sql_file::read_sql_file,
+            commands::sql_tools::format_sql,
         ])
         // 首次启动就带文件参数（文件关联双击）：先入队，等前端挂载后取走
         .setup(|app| {

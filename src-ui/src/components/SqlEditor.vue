@@ -807,10 +807,18 @@ async function explainSql() {
   }
 }
 
-// 格式化 SQL：结果写回 CodeMirror（dispatch 可撤销，Ctrl+Z 能回到格式化前）
-function handleFormatSql() {
-  const formatted = formatSql(sql.value)
-  if (formatted !== sql.value) editorApi?.replaceDoc(formatted)
+// 格式化 SQL：优先走后端 sqlformat（正确处理嵌套子查询/窗口函数），
+// 非 Tauri 环境或失败时回退到前端正则版；结果写回 CodeMirror（可撤销）
+async function handleFormatSql() {
+  const source = sql.value
+  let formatted: string
+  try {
+    formatted = await invoke<string>('format_sql', { sql: source })
+  } catch (e) {
+    console.warn('后端格式化失败，回退前端正则版:', e)
+    formatted = formatSql(source)
+  }
+  if (formatted && formatted !== source) editorApi?.replaceDoc(formatted)
 }
 
 // 清空编辑器

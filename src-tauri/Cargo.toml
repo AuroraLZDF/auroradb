@@ -42,6 +42,7 @@ sqlparser = { version = "0.63", features = ["visitor"] }
 rust_xlsxwriter = { version = "0.83", features = ["constant_memory"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 tauri-plugin-single-instance = "2.4.5"
+sqlformat = "0.5"
 
 [features]
 default = ["custom-protocol"]
