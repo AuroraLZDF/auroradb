@@ -48,35 +48,8 @@
     <!-- 编辑器区域 - 可调节高度 -->
     <div class="editor-section" :style="{ height: editorHeight + 'px' }">
       <div class="editor-container">
-        <textarea
-          ref="editorRef"
-          v-model="sql"
-          class="sql-textarea"
-          :placeholder="t('sqlEditor.placeholder')"
-          spellcheck="false"
-          @keydown="handleKeydown"
-          @input="handleEditorInput"
-          @click="closeCompletion"
-          @blur="closeCompletion"
-        ></textarea>
-        <!-- 补全弹窗 -->
-        <div
-          v-if="completion.open && completion.items.length > 0"
-          class="completion-popup"
-          :style="{ top: completion.top + 'px', left: completion.left + 'px' }"
-        >
-          <div
-            v-for="(item, index) in completion.items"
-            :key="item.kind + ':' + item.label"
-            :class="['completion-item', { active: index === completion.index }]"
-            @mousedown.prevent="acceptCompletion(index)"
-            @mouseenter="completion.index = index"
-          >
-            <span class="completion-label">{{ item.label }}</span>
-            <span class="completion-kind">{{ kindLabel(item.kind) }}</span>
-            <span v-if="item.detail" class="completion-detail">{{ item.detail }}</span>
-          </div>
-        </div>
+        <!-- CodeMirror 6 编辑器：语法高亮 / 补全 / 折叠 / 查找替换 / 多光标 -->
+        <div ref="editorHostRef" class="cm-host"></div>
       </div>
       <!-- 拖拽分隔条 -->
       <div
@@ -334,7 +307,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick, reactive, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useConnectionStore } from '@/stores/connection'
 import { resolveTabConnectionId } from '@/utils/tabConnection'
 import { useDataBrowserStore } from '@/stores/dataBrowser'
@@ -351,9 +324,8 @@ import { confirmDanger } from '@/composables/useConfirm'
 import {
   useSqlCompletion,
   invalidateSchemaCache,
-  type CompletionItem,
-  type CompletionKind,
 } from '@/composables/useSqlCompletion'
+import { createSqlEditor, type SqlEditorApi } from '@/composables/useCodeMirror'
 import type { ExplainPlan } from '@/utils/explain'
 import { ProUi } from '@/utils/pro'
 import CellViewer from '@/components/CellViewer.vue'
@@ -375,7 +347,9 @@ const props = defineProps<{
 // 确保 store 中存在这个 tab 的内容记录
 if (props.tabId) editorTabs.ensure(props.tabId)
 
-const editorRef = ref<HTMLTextAreaElement>()
+// CodeMirror 6 编辑器实例（按 tabId 作 key 挂载，切 Tab 时重建）
+const editorHostRef = ref<HTMLElement>()
+let editorApi: SqlEditorApi | null = null
 
 // SQL 文本走 editorTabs store，组件只做读写代理
 const sql = computed({
@@ -562,6 +536,11 @@ watch(effectiveConnectionId, () => {
   manualSelectedDatabase.value = ''
 })
 
+// 连接驱动变化时同步 SQL 方言（MySQL / PostgreSQL 语法高亮不同）
+watch(isPostgres, value => {
+  editorApi?.setDriver(value ? 'postgres' : 'mysql')
+})
+
 // 根据数据类型获取列宽
 function getColumnWidthByType(dataType: string): number {
   if (!dataType) return 120
@@ -699,6 +678,8 @@ async function executeQuery() {
   result.value = null
   statementOutcomes.value = []
   activeStatementIndex.value = 0
+  // 清掉上一次的错误行高亮
+  editorApi?.highlightErrorLine(null)
   // 切回结果视图，避免上次 EXPLAIN 的执行计划残留在面板中
   resultView.value = 'result'
 
@@ -712,6 +693,8 @@ async function executeQuery() {
     statements = [sql.value]
   }
   if (statements.length === 0) statements = [sql.value]
+  const sourceSql = sql.value
+  const statementOffsets = computeStatementOffsets(sourceSql, statements)
 
   let databaseName = resolveDatabase()
   let schemaChanged = false
@@ -757,6 +740,11 @@ async function executeQuery() {
     const failureIndex = outcomes.findIndex(outcome => outcome.error || outcome.cancelled)
     const failure = failureIndex >= 0 ? outcomes[failureIndex] : undefined
     selectStatement(failureIndex >= 0 ? failureIndex : 0)
+
+    // 执行失败：把数据库报的错误行号换算成整段文本的行号，跳转并高亮
+    if (failure?.error) {
+      highlightStatementError(sourceSql, statementOffsets[failureIndex] ?? 0, failure.error)
+    }
 
     const totalMs = outcomes.reduce((sum, outcome) => sum + (outcome.result?.execution_time_ms ?? 0), 0)
     recordHistory(!failure, failure?.error, totalMs)
@@ -819,80 +807,22 @@ async function explainSql() {
   }
 }
 
-// 格式化 SQL
+// 格式化 SQL：结果写回 CodeMirror（dispatch 可撤销，Ctrl+Z 能回到格式化前）
 function handleFormatSql() {
-  sql.value = formatSql(sql.value)
+  const formatted = formatSql(sql.value)
+  if (formatted !== sql.value) editorApi?.replaceDoc(formatted)
 }
 
 // 清空编辑器
 function clearEditor() {
-  sql.value = ''
+  editorApi?.replaceDoc('')
   error.value = ''
   cancelled.value = false
   result.value = null
   statementOutcomes.value = []
   activeStatementIndex.value = 0
   if (props.tabId) editorTabs.markClean(props.tabId)
-  editorRef.value?.focus()
-}
-
-// 处理键盘事件
-function handleKeydown(e: KeyboardEvent) {
-  // 补全弹窗打开时接管方向键 / 确认 / 关闭
-  if (completion.open) {
-    if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      completion.index = (completion.index + 1) % completion.items.length
-      return
-    }
-    if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      completion.index = (completion.index - 1 + completion.items.length) % completion.items.length
-      return
-    }
-    if (e.key === 'Enter' || e.key === 'Tab') {
-      e.preventDefault()
-      acceptCompletion(completion.index)
-      return
-    }
-    if (e.key === 'Escape') {
-      e.preventDefault()
-      closeCompletion()
-      return
-    }
-  }
-
-  // Ctrl/Cmd+Space 手动触发补全
-  if ((e.ctrlKey || e.metaKey) && e.code === 'Space') {
-    e.preventDefault()
-    openCompletion(true)
-    return
-  }
-
-  // F5 执行
-  if (e.key === 'F5') {
-    e.preventDefault()
-    executeQuery()
-    return
-  }
-
-  // Shift+Alt+F 格式化
-  if (e.shiftKey && e.altKey && (e.key === 'f' || e.key === 'F')) {
-    e.preventDefault()
-    handleFormatSql()
-    return
-  }
-
-  // Tab 插入缩进
-  if (e.key === 'Tab') {
-    e.preventDefault()
-    const start = editorRef.value?.selectionStart
-    const end = editorRef.value?.selectionEnd
-    if (start !== undefined && end !== undefined) {
-      sql.value = sql.value.substring(0, start) + '  ' + sql.value.substring(end)
-      editorRef.value?.setSelectionRange(start + 2, start + 2)
-    }
-  }
+  editorApi?.focus()
 }
 
 // 格式化单元格显示
@@ -994,15 +924,13 @@ const savedGroups = computed(() => {
 })
 
 function loadHistoryItem(item: QueryHistoryEntry) {
-  sql.value = item.sql
-  closeCompletion()
-  nextTick(() => editorRef.value?.focus())
+  editorApi?.replaceDoc(item.sql)
+  nextTick(() => editorApi?.focus())
 }
 
 function loadSavedQuery(item: SavedQuery) {
-  sql.value = item.sql
-  closeCompletion()
-  nextTick(() => editorRef.value?.focus())
+  editorApi?.replaceDoc(item.sql)
+  nextTick(() => editorApi?.focus())
 }
 
 /** 记录一次执行结果（成功/失败都留痕，便于回溯） */
@@ -1047,6 +975,56 @@ function leadingUseDatabase(text: string): string {
   return database
 }
 
+// ===== SQL 错误行定位 =====
+
+/** 后端按语句切分保留原文，顺序 indexOf 定位每条语句在整段文本中的起始偏移 */
+function computeStatementOffsets(source: string, statements: string[]): number[] {
+  const offsets: number[] = []
+  let cursor = 0
+  for (const statement of statements) {
+    const candidates = statement.trim() ? [statement, statement.trim()] : []
+    let matched = -1
+    let nextCursor = cursor
+    for (const candidate of candidates) {
+      const index = source.indexOf(candidate, cursor)
+      if (index >= 0) {
+        matched = index
+        nextCursor = index + candidate.length
+        break
+      }
+    }
+    offsets.push(matched >= 0 ? matched : cursor)
+    cursor = nextCursor
+  }
+  return offsets
+}
+
+/** 从错误消息解析相对当前语句的行号（PostgreSQL: LINE N: / MySQL: at line N） */
+function parseErrorStatementLine(message: string): number | null {
+  const pg = message.match(/\bLINE\s+(\d+)/i)
+  if (pg) return Number(pg[1])
+  const mysql = message.match(/\bat line\s+(\d+)/i)
+  if (mysql) return Number(mysql[1])
+  return null
+}
+
+function lineOfOffset(text: string, offset: number): number {
+  let line = 1
+  const end = Math.min(offset, text.length)
+  for (let i = 0; i < end; i++) {
+    if (text[i] === '\n') line++
+  }
+  return line
+}
+
+/** 把失败语句的错误行号换算成整段文本的行号，在编辑器中跳转并高亮 */
+function highlightStatementError(source: string, statementOffset: number, message: string) {
+  const relative = parseErrorStatementLine(message)
+  if (relative === null) return
+  const globalLine = lineOfOffset(source, statementOffset) + relative - 1
+  editorApi?.highlightErrorLine(globalLine)
+}
+
 function refreshSchema() {
   const connectionId = effectiveConnectionId.value
   const database = currentDatabaseName.value
@@ -1056,139 +1034,66 @@ function refreshSchema() {
   }
 }
 
-// ===== Schema 感知补全 =====
+// ===== CodeMirror 6 编辑器（补全复用 useSqlCompletion 引擎）=====
 const databaseNames = computed(() => databases.value.map(db => db.name))
 
-const completion = reactive({
-  open: false,
-  items: [] as CompletionItem[],
-  index: 0,
-  top: 0,
-  left: 0,
-  replaceStart: 0,
-  replaceEnd: 0,
-})
-
-const kindLabels = computed<Record<CompletionKind, string>>(() => ({
-  column: t('sqlEditor.kindColumn'),
-  table: t('sqlEditor.kindTable'),
-  view: t('sqlEditor.kindView'),
-  database: t('sqlEditor.kindDatabase'),
-  keyword: t('sqlEditor.kindKeyword'),
-}))
-
-function kindLabel(kind: CompletionKind): string {
-  return kindLabels.value[kind]
-}
-
-// textarea 没有原生 caret 坐标 API，用等宽字体度量估算弹窗位置
-const COMPLETION_WIDTH = 280
-const COMPLETION_MAX_HEIGHT = 220
-const EDITOR_PADDING = 16
-let charWidth = 8.4
-let lineHeight = 21
-
-function measureEditorMetrics() {
-  const el = editorRef.value
-  if (!el) return
-  const style = getComputedStyle(el)
-  const computedLineHeight = parseFloat(style.lineHeight)
-  if (!Number.isNaN(computedLineHeight) && computedLineHeight > 0) {
-    lineHeight = computedLineHeight
-  }
-  const context = document.createElement('canvas').getContext('2d')
-  if (context) {
-    context.font = `${style.fontSize} ${style.fontFamily}`
-    const measured = context.measureText('M').width
-    if (measured > 0) charWidth = measured
-  }
-}
-
-function positionCompletion(caret: number) {
-  const el = editorRef.value
-  if (!el) return
-
-  const before = sql.value.slice(0, caret)
-  const lines = before.split('\n')
-  const line = lines.length - 1
-  const column = lines[line]?.length ?? 0
-
-  const left = EDITOR_PADDING + column * charWidth - el.scrollLeft
-  const maxLeft = Math.max(0, el.clientWidth - COMPLETION_WIDTH - 8)
-  const top = EDITOR_PADDING + (line + 1) * lineHeight - el.scrollTop
-  const maxTop = Math.max(0, el.clientHeight - COMPLETION_MAX_HEIGHT - 8)
-
-  completion.left = Math.max(0, Math.min(left, maxLeft))
-  completion.top = Math.max(0, Math.min(top, maxTop))
-}
-
-function closeCompletion() {
-  completion.open = false
-  completion.items = []
-}
-
-function openCompletion(manual = false) {
-  const el = editorRef.value
-  if (!el) return
-  if (el.selectionStart !== el.selectionEnd) return
-
-  const caret = el.selectionStart ?? 0
-  const value = el.value
+/** 引擎补全结果 → CM6 autocomplete source 的适配层 */
+function completionAdapter(
+  text: string,
+  caret: number,
+  explicit: boolean
+): ReturnType<typeof completionEngine.complete> | null {
   const result = completionEngine.complete(
-    value,
+    text,
     caret,
     databaseNames.value,
     currentDatabaseName.value
   )
-
-  if (result.items.length === 0) {
-    closeCompletion()
-    return
-  }
+  if (result.items.length === 0) return null
 
   // 自动触发要求已输入至少两个字符或刚输入 `.`；手动触发（Ctrl+Space）不受限
-  const charBefore = caret > 0 ? value.charAt(caret - 1) : ''
-  if (!manual && result.token.length < 2 && charBefore !== '.') {
-    closeCompletion()
-    return
+  const charBefore = caret > 0 ? text.charAt(caret - 1) : ''
+  if (!explicit && result.token.length < 2 && charBefore !== '.') return null
+
+  return result
+}
+
+onMounted(() => {
+  if (editorHostRef.value && !editorApi) {
+    editorApi = createSqlEditor({
+      parent: editorHostRef.value,
+      initialValue: sql.value,
+      driver: isPostgres.value ? 'postgres' : 'mysql',
+      placeholder: t('sqlEditor.placeholder'),
+      onChange: value => {
+        sql.value = value
+      },
+      onExecute: () => executeQuery(),
+      onFormat: () => handleFormatSql(),
+      complete: completionAdapter,
+    })
   }
+  refreshSchema()
 
-  completion.items = result.items
-  completion.index = 0
-  completion.replaceStart = result.replaceStart
-  completion.replaceEnd = result.replaceEnd
-  completion.open = true
-  positionCompletion(caret)
-}
-
-function handleEditorInput(event: Event) {
-  const target = event.target as HTMLTextAreaElement
-  const caret = target.selectionStart ?? 0
-  const lastChar = target.value[caret - 1] ?? ''
-
-  if (/[A-Za-z0-9_$.]/.test(lastChar)) {
-    nextTick(() => openCompletion(false))
-  } else {
-    closeCompletion()
+  // 从 store 恢复查询结果
+  if (props.tabId) {
+    const cachedResult = browserStore.getQueryResult(props.tabId)
+    const cachedError = browserStore.getQueryError(props.tabId)
+    const cachedStatements = browserStore.getQueryStatements(props.tabId)
+    if (cachedStatements.length > 0) {
+      statementOutcomes.value = cachedStatements
+      // 缓存里只保留当前选中的那条结果，据此还原激活的语句标签
+      const cachedIndex = cachedStatements.findIndex(outcome => outcome.result === cachedResult)
+      activeStatementIndex.value = cachedIndex >= 0 ? cachedIndex : 0
+    }
+    if (cachedResult) {
+      result.value = cachedResult
+    }
+    if (cachedError) {
+      error.value = cachedError
+    }
   }
-}
-
-function acceptCompletion(index: number) {
-  const item = completion.items[index]
-  if (!item) return
-
-  const el = editorRef.value
-  const start = completion.replaceStart
-  const end = completion.replaceEnd
-  sql.value = sql.value.slice(0, start) + item.label + sql.value.slice(end)
-  closeCompletion()
-
-  nextTick(() => {
-    const caret = start + item.label.length
-    el?.focus()
-    el?.setSelectionRange(caret, caret)
-  })
-}
+})
 
 // 截断 SQL 显示
 function truncateSql(querySql: string): string {
@@ -1357,33 +1262,10 @@ async function downloadFile(content: string, filename: string, mimeType: string)
   }
 }
 
-// 加载缓存的查询结果
-onMounted(() => {
-  measureEditorMetrics()
-  refreshSchema()
-
-  // 从 store 恢复查询结果
-  if (props.tabId) {
-    const cachedResult = browserStore.getQueryResult(props.tabId)
-    const cachedError = browserStore.getQueryError(props.tabId)
-    const cachedStatements = browserStore.getQueryStatements(props.tabId)
-    if (cachedStatements.length > 0) {
-      statementOutcomes.value = cachedStatements
-      // 缓存里只保留当前选中的那条结果，据此还原激活的语句标签
-      const cachedIndex = cachedStatements.findIndex(outcome => outcome.result === cachedResult)
-      activeStatementIndex.value = cachedIndex >= 0 ? cachedIndex : 0
-    }
-    if (cachedResult) {
-      result.value = cachedResult
-    }
-    if (cachedError) {
-      error.value = cachedError
-    }
-  }
-})
-
 onUnmounted(() => {
   if (cancelTimer) clearTimeout(cancelTimer)
+  editorApi?.destroy()
+  editorApi = null
   // 拖拽中卸载时清理全局监听与临时样式
   document.removeEventListener('mousemove', handleResize)
   document.removeEventListener('mouseup', stopResize)
@@ -1524,19 +1406,32 @@ onUnmounted(() => {
   overflow: visible;
 }
 
-.sql-textarea {
-  width: 100%;
+/* CodeMirror 6 宿主：填满编辑区，内部配色由 useCodeMirror 主题接管 */
+.cm-host {
   height: 100%;
-  padding: 16px;
-  border: none;
-  resize: none;
+}
+
+.editor-container:focus-within {
+  background: var(--color-background-soft);
+}
+
+.cm-host :deep(.cm-editor) {
+  height: 100%;
+}
+
+.cm-host :deep(.cm-editor.cm-errorLine) {
+  background: transparent;
+}
+
+/* 错误行高亮（A6）：执行失败的语句所在行 */
+.cm-host :deep(.cm-line.cm-errorLine) {
+  background: rgba(244, 67, 54, 0.14);
+  box-shadow: inset 3px 0 0 var(--color-danger, #ef4444);
+}
+
+/* 补全弹窗类型角标 */
+.cm-host :deep(.cm-completionLabel) {
   font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-  font-size: 14px;
-  line-height: 1.5;
-  tab-size: 2;
-  outline: none;
-  background: var(--color-background);
-  color: var(--color-text);
 }
 
 /* 拖拽分隔条 */
@@ -1568,14 +1463,6 @@ onUnmounted(() => {
 .resize-handle:hover::before {
   background: white;
   opacity: 0.8;
-}
-
-.sql-textarea:focus {
-  background: var(--color-background-soft);
-}
-
-.sql-textarea::placeholder {
-  color: var(--color-text-secondary);
 }
 
 /* 多语句结果分栏 */
@@ -1822,67 +1709,6 @@ onUnmounted(() => {
   color: var(--warning-700, #b45309);
   font-size: 13px;
   flex-shrink: 0;
-}
-
-/* 补全弹窗 */
-.completion-popup {
-  position: absolute;
-  z-index: 60;
-  width: 280px;
-  max-height: 220px;
-  overflow-y: auto;
-  background: var(--color-background);
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
-  padding: 4px;
-  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-}
-
-.completion-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 8px;
-  border-radius: 4px;
-  font-size: 12px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.completion-item.active {
-  background: var(--color-primary);
-  color: white;
-}
-
-.completion-label {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.completion-kind {
-  font-size: 10px;
-  padding: 1px 5px;
-  border-radius: 3px;
-  background: var(--color-background-soft);
-  color: var(--color-text-secondary);
-  flex-shrink: 0;
-}
-
-.completion-item.active .completion-kind {
-  background: rgba(255, 255, 255, 0.24);
-  color: white;
-}
-
-.completion-detail {
-  font-size: 10px;
-  color: var(--color-text-secondary);
-  flex-shrink: 0;
-}
-
-.completion-item.active .completion-detail {
-  color: rgba(255, 255, 255, 0.8);
 }
 
 /* 查询历史 / 已保存查询面板 */

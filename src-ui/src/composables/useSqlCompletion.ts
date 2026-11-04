@@ -24,7 +24,7 @@ interface CompletionContext {
   tables: SchemaTableInfo[]
 }
 
-interface CompletionResult {
+export interface CompletionResult {
   items: CompletionItem[]
   /** 替换区间（只替换光标前的标识符片段，保留 db.table. 限定符） */
   replaceStart: number
