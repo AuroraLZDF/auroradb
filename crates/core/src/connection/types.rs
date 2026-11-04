@@ -191,6 +191,8 @@ pub struct QueryResult {
     pub columns: Vec<ColumnDefinition>,
     pub rows: Vec<Vec<CellValue>>,
     pub execution_time_ms: u64,
+    /// DML/DDL 的影响行数；SELECT 类为 None，序列化时省略（前端按 undefined 判断）
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub rows_affected: Option<u64>,
     pub rows_returned: usize,
     /// 结果集是否因超出行数上限被截断（仅 SELECT 类查询可能出现）

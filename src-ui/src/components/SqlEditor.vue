@@ -118,7 +118,7 @@
         <CheckCircle class="success-icon" :size="16" />
         <span>{{ t('sqlEditor.executeSuccess') }}</span>
         <span class="execution-info">
-          {{ result.rows_affected !== undefined ? t('sqlEditor.rowsAffected', { count: result.rows_affected }) : t('sqlEditor.rowsReturned', { count: result.rows_returned }) }}
+          {{ result.rows_affected != null ? t('sqlEditor.rowsAffected', { count: result.rows_affected }) : t('sqlEditor.rowsReturned', { count: result.rows_returned }) }}
           · {{ t('sqlEditor.executionTime', { ms: result.execution_time_ms }) }}
         </span>
         <button @click="exportResults" :disabled="!result.rows || result.rows.length === 0" class="btn-export">
@@ -201,7 +201,7 @@
         </table>
       </div>
 
-      <div v-else-if="result.rows_affected !== undefined" class="no-results">
+      <div v-else-if="result.rows_affected != null" class="no-results">
         {{ t('sqlEditor.statementSuccess', { count: result.rows_affected }) }}
       </div>
 

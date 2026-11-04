@@ -598,7 +598,7 @@ async function executeCommand() {
         type: 'message',
         database: db,
         command: fullCommand,
-        message: response.rows_affected !== undefined
+        message: response.rows_affected != null
           ? t('console.queryOkAffected', { count: response.rows_affected })
           : t('console.queryOk'),
         executionTime
