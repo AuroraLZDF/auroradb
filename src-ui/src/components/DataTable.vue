@@ -77,26 +77,28 @@
             {{ t('dataGenerator.button') }}
           </button>
           <span class="toolbar-divider"></span>
-          <!-- 事务控制按钮 -->
-          <button
-            @click="beginTransaction"
-            :disabled="transactionActive || loading || isReadOnlyConnection"
-            :class="{ active: transactionActive }"
-            :title="t('dataTable.beginTransaction')"
-          >BEGIN</button>
-          <button
-            @click="commitTransaction"
-            :disabled="!transactionActive || loading"
-            :title="t('dataTable.commitTransaction')"
-          >COMMIT</button>
-          <button
-            @click="rollbackTransaction"
-            :disabled="!transactionActive || loading"
-            :title="t('dataTable.rollbackTransaction')"
-          >ROLLBACK</button>
-          <span v-if="transactionActive" class="transaction-indicator" :title="t('dataTable.transactionActiveHint')">
-            <Circle :size="10" fill="var(--success-500)" />
-          </span>
+          <!-- 事务控制：收进分段控件，避免三个 ghost 按钮在 2px 间距下粘连 -->
+          <div class="txn-group">
+            <button
+              @click="beginTransaction"
+              :disabled="transactionActive || loading || isReadOnlyConnection"
+              :class="{ active: transactionActive }"
+              :title="t('dataTable.beginTransaction')"
+            >BEGIN</button>
+            <button
+              @click="commitTransaction"
+              :disabled="!transactionActive || loading"
+              :title="t('dataTable.commitTransaction')"
+            >COMMIT</button>
+            <button
+              @click="rollbackTransaction"
+              :disabled="!transactionActive || loading"
+              :title="t('dataTable.rollbackTransaction')"
+            >ROLLBACK</button>
+            <span v-if="transactionActive" class="transaction-indicator" :title="t('dataTable.transactionActiveHint')">
+              <Circle :size="10" fill="var(--success-500)" />
+            </span>
+          </div>
           <span v-if="isReadOnlyConnection" class="readonly-badge" :title="readOnlyHint">
             {{ readOnlyBadgeLabel }}
           </span>
@@ -121,13 +123,6 @@
           :placeholder="t('dataTable.searchPlaceholder')"
           class="search-input"
         />
-        <span v-if="currentTableData" class="row-info">
-          {{ t('dataTable.rowRange', {
-            start: cursorMode ? 1 : (page - 1) * pageSize + 1,
-            end: cursorMode ? currentTableData.rows.length : Math.min(page * pageSize, currentTableData.total_count),
-            total: currentTableData.total_count
-          }) }}
-        </span>
       </div>
     </div>
 
@@ -401,35 +396,47 @@
 
     <!-- 分页 / 游标续页 -->
     <div v-if="currentTableData" class="table-footer">
-      <!-- 大表使用游标翻页：只追加「加载更多」，不再展示页码 -->
-      <div v-if="cursorMode" class="pagination load-more-bar">
-        <span class="loaded-rows">
-          {{ t('dataTable.loadedRows', { loaded: currentTableData.rows.length, total: currentTableData.total_count }) }}
+      <div class="footer-left">
+        <!-- 行区间只在这里出现一次（原工具栏也显示一份，属于重复信息） -->
+        <span v-if="currentTableData" class="row-info">
+          {{ t('dataTable.rowRange', {
+            start: cursorMode ? 1 : (page - 1) * pageSize + 1,
+            end: cursorMode ? currentTableData.rows.length : Math.min(page * pageSize, currentTableData.total_count),
+            total: currentTableData.total_count
+          }) }}
         </span>
-        <button
-          v-if="currentTableData.next_cursor != null"
-          @click="loadMore"
-          :disabled="!canLoadMore"
-        >{{ loadingMore ? t('dataTable.loadingMore') : t('dataTable.loadMore') }}</button>
-        <span v-else class="all-loaded">{{ t('dataTable.allLoaded') }}</span>
+        <!-- 大表使用游标翻页：只追加「加载更多」，不再展示页码 -->
+        <div v-if="cursorMode" class="pagination load-more-bar">
+          <span class="loaded-rows">
+            {{ t('dataTable.loadedRows', { loaded: currentTableData.rows.length, total: currentTableData.total_count }) }}
+          </span>
+          <button
+            v-if="currentTableData.next_cursor != null"
+            @click="loadMore"
+            :disabled="!canLoadMore"
+          >{{ loadingMore ? t('dataTable.loadingMore') : t('dataTable.loadMore') }}</button>
+          <span v-else class="all-loaded">{{ t('dataTable.allLoaded') }}</span>
+        </div>
+        <div v-else class="pagination">
+          <button @click="firstPage" :disabled="page <= 1">{{ t('dataTable.firstPage') }}</button>
+          <button @click="prevPage" :disabled="page <= 1">{{ t('dataTable.prevPage') }}</button>
+          <span>{{ t('dataTable.pageIndicator', { page, total: totalPages }) }}</span>
+          <button @click="nextPage" :disabled="page >= totalPages">{{ t('dataTable.nextPage') }}</button>
+          <button @click="lastPage" :disabled="page >= totalPages">{{ t('dataTable.lastPage') }}</button>
+        </div>
       </div>
-      <div v-else class="pagination">
-        <button @click="firstPage" :disabled="page <= 1">{{ t('dataTable.firstPage') }}</button>
-        <button @click="prevPage" :disabled="page <= 1">{{ t('dataTable.prevPage') }}</button>
-        <span>{{ t('dataTable.pageIndicator', { page, total: totalPages }) }}</span>
-        <button @click="nextPage" :disabled="page >= totalPages">{{ t('dataTable.nextPage') }}</button>
-        <button @click="lastPage" :disabled="page >= totalPages">{{ t('dataTable.lastPage') }}</button>
-      </div>
-      <div class="page-size">
-        <Select
-          :model-value="String(pageSize)"
-          :options="pageSizeOptions"
-          size="sm"
-          @update:model-value="onPageSizeChange"
-        />
-      </div>
-      <div class="execution-time" v-if="currentTableData">
-        {{ t('dataTable.executionTime', { ms: currentTableData.execution_time_ms }) }}
+      <div class="footer-right">
+        <div class="page-size">
+          <Select
+            :model-value="String(pageSize)"
+            :options="pageSizeOptions"
+            size="sm"
+            @update:model-value="onPageSizeChange"
+          />
+        </div>
+        <div class="execution-time" v-if="currentTableData">
+          {{ t('dataTable.executionTime', { ms: currentTableData.execution_time_ms }) }}
+        </div>
       </div>
     </div>
 
@@ -3060,9 +3067,11 @@ defineExpose({
 }
 
 .row-info {
-  color: var(--text-secondary);
+  color: var(--text-tertiary);
   font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 /* 表格容器 */
@@ -3167,14 +3176,18 @@ tr.selected .frozen-col {
 }
 
 .th-content {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 1px;
+  /* 右侧留出排序箭头 / 筛选按钮的位置，它们改为绝对定位，避免把表头堆成 4 行 */
+  padding-right: 30px;
   overflow: hidden;
 }
 
 .col-name {
   font-size: var(--text-xs);
+  line-height: 16px;
   font-weight: var(--font-medium);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3188,8 +3201,13 @@ tr.selected .frozen-col {
 }
 
 .sort-indicator {
-  margin-left: var(--space-1);
+  position: absolute;
+  top: 2px;
+  right: 15px;
+  display: flex;
+  align-items: center;
   color: var(--brand-500);
+  pointer-events: none;
 }
 
 .resize-handle {
@@ -3626,10 +3644,23 @@ td.editing::before {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: var(--space-3);
   height: var(--toolbar-height);
-  padding: 0 var(--space-2);
+  padding: 0 var(--space-2) 0 var(--space-3);
   background: var(--canvas);
   border-top: 1px solid var(--hairline);
+  flex-shrink: 0;
+}
+
+.footer-left,
+.footer-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.footer-right {
   flex-shrink: 0;
 }
 
@@ -3821,6 +3852,49 @@ td.editing::before {
   height: 14px;
   background: var(--hairline);
   margin: 0 2px;
+}
+
+/* 事务按钮分段控件：三个裸 ghost 按钮在 2px 间距下会读成一串，这里收成一个整体 */
+.txn-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: var(--control-height-sm);
+  padding: 0 2px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+
+.txn-group button {
+  height: calc(var(--control-height-sm) - 4px);
+  padding: 0 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: var(--font-medium);
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: var(--transition-colors);
+}
+
+.txn-group button:hover:not(:disabled) {
+  background: var(--hover-fill);
+  color: var(--text-primary);
+}
+
+.txn-group button.active {
+  background: var(--selected-fill);
+  color: var(--text-primary);
+}
+
+.txn-group button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .toolbar-actions button.active {
@@ -4362,7 +4436,10 @@ td.editing::before {
 }
 
 .th-filter-btn {
-  margin-left: auto;
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
   display: flex;
   align-items: center;
   justify-content: center;

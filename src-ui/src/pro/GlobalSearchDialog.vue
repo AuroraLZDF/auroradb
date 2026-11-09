@@ -539,16 +539,16 @@ onMounted(async () => {
 }
 
 .warning-msg {
-  background: var(--color-warning-bg, #fef3c7);
-  border: 1px solid var(--color-warning-border, #fcd34d);
-  color: var(--color-warning-text, #92400e);
+  background: rgba(245, 158, 11, 0.14);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  color: var(--warning-500);
   align-items: flex-start;
 }
 
 .error-msg {
-  background: var(--color-danger-bg, #fee2e2);
-  border: 1px solid var(--color-danger-border, #fca5a5);
-  color: var(--color-danger-text, #991b1b);
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: var(--error-500);
 }
 
 .actions {
@@ -580,8 +580,8 @@ onMounted(async () => {
   margin-left: var(--space-2);
   padding: 1px var(--space-2);
   border-radius: var(--radius-sm);
-  background: var(--color-warning-bg, #fef3c7);
-  color: var(--color-warning-text, #92400e);
+  background: rgba(245, 158, 11, 0.14);
+  color: var(--warning-500);
   font-size: var(--text-xs);
 }
 

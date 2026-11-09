@@ -207,20 +207,20 @@ watch(
 
 .progress-track {
   height: 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-full, 999px);
   background: var(--surface-hover);
   overflow: hidden;
 }
 
 .progress-bar {
   height: 100%;
-  border-radius: 999px;
+  border-radius: var(--radius-full, 999px);
   background: var(--brand-500);
   transition: width 150ms linear;
 }
 
 .progress-bar.failed {
-  background: var(--color-danger-text, #dc2626);
+  background: var(--error-500);
 }
 
 .progress-meta {
@@ -269,15 +269,15 @@ watch(
 }
 
 .log-line.success .log-no {
-  color: var(--color-success-text, #15803d);
+  color: var(--success-500);
 }
 
 .log-line.error {
-  color: var(--color-danger-text, #dc2626);
+  color: var(--error-500);
 }
 
 .log-line.warn {
-  color: var(--color-warning-text, #b45309);
+  color: var(--warning-500);
 }
 
 .log-empty {
@@ -300,15 +300,15 @@ watch(
 }
 
 .result.ok {
-  background: var(--color-success-bg, #dcfce7);
-  border: 1px solid var(--color-success-border, #86efac);
-  color: var(--color-success-text, #15803d);
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  color: var(--success-500);
 }
 
 .result.fail {
-  background: var(--color-danger-bg, #fee2e2);
-  border: 1px solid var(--color-danger-border, #fca5a5);
-  color: var(--color-danger-text, #991b1b);
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: var(--error-500);
 }
 
 .result-error {

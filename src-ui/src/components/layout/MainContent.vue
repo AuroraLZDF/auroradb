@@ -870,8 +870,11 @@ defineExpose({
   grid-template-columns: minmax(140px, 1fr) 96px 148px 88px;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-2) var(--space-3);
+  /* 与数据表/树保持同一密度：行高 26px，不再用 space-2 的纵向内边距撑到 34px */
+  min-height: var(--tree-row-height);
+  padding: 0 var(--space-3);
   font-size: var(--text-sm);
+  line-height: var(--tree-row-height);
 }
 
 .objects-head {
@@ -879,10 +882,12 @@ defineExpose({
   top: 0;
   z-index: 1;
   background: var(--canvas);
-  border-bottom: 1px solid var(--hairline-strong);
+  border-bottom: 1px solid var(--hairline);
   color: var(--text-secondary);
   font-weight: var(--font-semibold);
   font-size: var(--text-xs);
+  min-height: 24px;
+  line-height: 24px;
   white-space: nowrap;
 }
 

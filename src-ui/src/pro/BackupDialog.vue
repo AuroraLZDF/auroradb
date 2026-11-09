@@ -558,10 +558,10 @@ function databasesByConn(connId: string): string[] {
   display: flex;
   gap: var(--space-2);
   padding: var(--space-3);
-  background: var(--color-warning-bg, #fef3c7);
-  border: 1px solid var(--color-warning-border, #fcd34d);
+  background: rgba(245, 158, 11, 0.14);
+  border: 1px solid rgba(245, 158, 11, 0.35);
   border-radius: var(--radius-md);
-  color: var(--color-warning-text, #92400e);
+  color: var(--warning-500);
   font-size: var(--text-sm);
   align-items: flex-start;
 }
@@ -570,10 +570,10 @@ function databasesByConn(connId: string): string[] {
   display: flex;
   gap: var(--space-2);
   padding: var(--space-3);
-  background: var(--color-danger-bg, #fee2e2);
-  border: 1px solid var(--color-danger-border, #fca5a5);
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.35);
   border-radius: var(--radius-md);
-  color: var(--color-danger-text, #991b1b);
+  color: var(--error-500);
   font-size: var(--text-sm);
   margin: 0;
   align-items: center;
@@ -588,14 +588,14 @@ function databasesByConn(connId: string): string[] {
 
 .progress-track {
   height: 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-full, 999px);
   background: var(--surface-hover);
   overflow: hidden;
 }
 
 .progress-bar {
   height: 100%;
-  border-radius: 999px;
+  border-radius: var(--radius-full, 999px);
   background: var(--brand-500);
   transition: width 150ms linear;
 }
@@ -627,11 +627,11 @@ function databasesByConn(connId: string): string[] {
 }
 
 .log-line.error {
-  color: var(--color-danger-text, #dc2626);
+  color: var(--error-500);
 }
 
 .log-line.warn {
-  color: var(--color-warning-text, #b45309);
+  color: var(--warning-500);
 }
 
 .log-text {
