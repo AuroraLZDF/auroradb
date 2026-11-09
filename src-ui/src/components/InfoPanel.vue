@@ -582,48 +582,53 @@ watch(() => [props.type, props.data], () => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 12px 16px;
-  background: var(--color-background);
-  border-bottom: 1px solid var(--color-border);
+  height: var(--toolbar-height);
+  padding: 0 var(--space-3);
+  background: var(--panel);
+  border-bottom: 1px solid var(--hairline);
+  flex-shrink: 0;
 }
 
 .panel-header h3 {
   margin: 0;
-  font-size: 14px;
-  font-weight: 500;
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
   display: flex;
   align-items: center;
-  gap: 8px;
-  color: var(--color-text);
+  gap: var(--space-2);
+  color: var(--text-primary);
+  min-width: 0;
 }
 
 .header-icon {
-  font-size: 16px;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
 }
 
 .btn-close {
-  width: 28px;
-  height: 28px;
-  background: var(--color-background-soft);
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
+  width: var(--control-height-sm);
+  height: var(--control-height-sm);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-size: 14px;
+  color: var(--text-secondary);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--color-text);
 }
 
 .btn-close:hover {
-  background: var(--color-background-hover);
+  background: var(--hover-fill);
+  color: var(--text-primary);
 }
 
 /* 内容区 */
 .panel-content {
   flex: 1;
   overflow: auto;
-  padding: 12px;
+  padding: 0 var(--space-3);
   position: relative;
   /* 允许选中/复制信息值（如库名、表名、字符集等） */
   user-select: text;
@@ -632,60 +637,68 @@ watch(() => [props.type, props.data], () => {
 
 /* 信息区块 */
 .info-section {
-  margin-bottom: 16px;
-  background: var(--color-background);
-  border-radius: 4px;
-  padding: 12px;
-  border: 1px solid var(--color-border);
+  padding: var(--space-3) 0;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--hairline);
+  border-radius: 0;
+}
+
+.info-section:last-child {
+  border-bottom: none;
 }
 
 .info-section h4 {
   margin: 0;
-  font-size: 12px;
-  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  color: var(--text-tertiary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 
 .info-hint {
-  margin: 8px 0 0;
-  font-size: 12px;
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xs);
   line-height: 1.6;
-  color: var(--color-text-secondary);
+  color: var(--text-secondary);
 }
 
 .section-header-with-action {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 12px;
-  border-bottom: 1px solid var(--color-border);
-  padding-bottom: 8px;
+  margin-bottom: var(--space-2);
+  border-bottom: 1px solid var(--hairline);
+  padding-bottom: var(--space-2);
 }
 
 .btn-copy {
-  padding: 4px 12px;
-  background: var(--color-info);
-  color: white;
+  height: var(--control-height-sm);
+  padding: 0 var(--space-2);
+  background: transparent;
+  color: var(--text-secondary);
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--text-xs);
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
+  transition: var(--transition-colors);
 }
 
 .btn-copy:hover {
-  background: var(--color-primary);
+  background: var(--hover-fill);
+  color: var(--text-primary);
 }
 
 .btn-copy.success {
-  background: var(--color-success);
+  color: var(--color-success);
 }
 
 .btn-copy.success:hover {
-  background: var(--color-primary-dark);
+  background: rgba(16, 185, 129, 0.12);
 }
 
 /* DDL容器 - 可聚焦 */
@@ -694,76 +707,78 @@ watch(() => [props.type, props.data], () => {
 }
 
 .ddl-container:focus {
-  box-shadow: 0 0 0 2px var(--color-primary);
+  box-shadow: 0 0 0 2px var(--brand-500);
 }
 
 /* 基本信息网格 */
 .info-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: var(--space-2) var(--space-3);
 }
 
 .info-item {
   display: flex;
-  gap: 8px;
-  font-size: 12px;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  line-height: 18px;
 }
 
 .info-label {
-  color: var(--color-text-secondary);
+  color: var(--text-tertiary);
   flex-shrink: 0;
-  min-width: 70px;
+  min-width: 64px;
 }
 
 .info-value {
-  color: var(--color-text);
+  color: var(--text-primary);
   word-break: break-all;
 }
 
 /* 状态徽章 */
 .status-badge {
   display: inline-block;
-  padding: 2px 8px;
-  border-radius: 3px;
-  font-size: 11px;
+  padding: 0 6px;
+  border-radius: var(--radius-xs);
+  font-size: 10px;
   font-weight: 500;
+  line-height: 16px;
 }
 
 .status-badge.connected {
-  background: var(--color-success);
-  color: white;
+  background: rgba(16, 185, 129, 0.14);
+  color: var(--color-success);
 }
 
 .status-badge.disconnected {
-  background: var(--color-danger);
-  color: white;
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--color-danger);
 }
 
 .status-badge.reconnecting {
-  background: var(--color-warning);
-  color: white;
+  background: rgba(245, 158, 11, 0.14);
+  color: var(--color-warning);
 }
 
 .status-badge.failed {
-  background: var(--color-text-secondary);
-  color: white;
+  background: var(--hover-fill);
+  color: var(--text-secondary);
 }
 
 /* DDL代码 - 格式化显示 */
 :deep(.ddl-container) {
   background: var(--canvas);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   overflow: auto;
   max-height: 400px;
-  border: 1px solid #333;
+  border: 1px solid var(--hairline);
 }
 
 :deep(.ddl-code) {
-  color: #d4d4d4;
-  padding: 16px 20px;
-  font-size: 12px;
-  line-height: 1.5;
+  color: var(--text-primary);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-xs);
+  line-height: 1.6;
   white-space: pre;
   word-break: normal;
   margin: 0;
@@ -772,18 +787,18 @@ watch(() => [props.type, props.data], () => {
   -webkit-user-select: text;
 }
 
-/* SQL 语法高亮 */
+/* SQL 语法高亮（主题感知 token） */
 :deep(.sql-keyword) {
-  color: #4ECBFD !important;
+  color: var(--code-keyword) !important;
   font-weight: 600;
 }
 
 :deep(.sql-function) {
-  color: #dcdcaa !important;
+  color: var(--code-function) !important;
 }
 
 :deep(.sql-string) {
-  color: #ce9178 !important;
+  color: var(--code-string) !important;
 }
 
 :deep(.sql-field) {
@@ -791,11 +806,11 @@ watch(() => [props.type, props.data], () => {
 }
 
 :deep(.sql-number) {
-  color: #b5cea8 !important;
+  color: var(--code-number) !important;
 }
 
 :deep(.sql-comment) {
-  color: #6a9955 !important;
+  color: var(--code-comment) !important;
   font-style: italic;
 }
 

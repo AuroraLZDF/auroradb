@@ -3,7 +3,6 @@
     <!-- 工具栏 -->
     <div class="table-toolbar" v-if="currentTab">
       <div class="toolbar-left">
-        <span class="table-info">{{ currentTab?.name }}</span>
         <div class="toolbar-actions">
           <button v-if="!loading" @click="refreshData" :title="t('dataTable.refreshHint')">
             <RefreshCw :size="14" />
@@ -1291,7 +1290,7 @@ const {
   paddingBottom: virtualPaddingBottom,
   onScroll: handleVirtualScroll,
 } = useVirtualRows(tableContainer, () => filteredRows.value.length, {
-  rowHeight: 36,
+  rowHeight: 28,
   threshold: 100,
 })
 
@@ -2910,7 +2909,7 @@ defineExpose({
   flex: 1;
   display: flex;
   flex-direction: column;
-  background: var(--bg-primary);
+  background: var(--canvas);
   overflow: hidden;
   position: relative;
 }
@@ -2920,83 +2919,144 @@ defineExpose({
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: var(--space-2) var(--space-4);
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-default);
+  height: var(--toolbar-height);
+  padding: 0 var(--space-2);
+  background: var(--canvas);
+  border-bottom: 1px solid var(--hairline);
   flex-shrink: 0;
-  gap: var(--space-4);
+  gap: var(--space-2);
+  overflow: hidden;
 }
 
 .toolbar-left {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
   flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.toolbar-left::-webkit-scrollbar {
+  display: none;
 }
 
 .toolbar-right {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-}
-
-.table-info {
-  font-weight: var(--font-semibold);
-  font-size: var(--text-sm);
-  white-space: nowrap;
-  color: var(--text-primary);
+  gap: var(--space-2);
+  flex-shrink: 0;
 }
 
 .toolbar-actions {
   display: flex;
-  gap: var(--space-2);
+  gap: 2px;
+  flex-shrink: 0;
 }
 
 .toolbar-actions button {
-  padding: var(--space-1) var(--space-3);
-  border: 1px solid var(--border-default);
-  background: var(--surface-default);
-  color: var(--text-primary);
+  height: var(--control-height-sm);
+  padding: 0 5px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
   cursor: pointer;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   font-size: var(--text-xs);
   white-space: nowrap;
   display: flex;
   align-items: center;
-  gap: var(--space-1);
+  gap: 4px;
+  flex-shrink: 0;
   transition: var(--transition-colors);
 }
 
 .toolbar-actions button:hover:not(:disabled) {
-  background: var(--surface-hover);
-  border-color: var(--border-strong);
+  background: var(--hover-fill);
+  color: var(--text-primary);
+}
+
+/* 工具栏内所有按钮：单行不换行、不压缩（溢出交给 .toolbar-left 横向滚动） */
+.table-toolbar button,
+.table-toolbar .toolbar-btn {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* 右侧筛选按钮（与左侧操作按钮同一 ghost 语言） */
+.toolbar-right > button {
+  height: var(--control-height-sm);
+  padding: 0 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  transition: var(--transition-colors);
+}
+
+.toolbar-right > button:hover {
+  background: var(--hover-fill);
+  color: var(--text-primary);
+}
+
+.toolbar-right > button.active {
+  background: var(--selected-fill);
+  color: var(--text-primary);
+}
+
+.filter-count {
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: var(--radius-xs);
+  background: var(--brand-500);
+  color: #fff;
+  font-size: 9px;
+  line-height: 14px;
+  text-align: center;
 }
 
 .toolbar-actions button:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
 .toolbar-actions button.btn-cancel-query {
-  border-color: var(--color-danger);
   color: var(--color-danger);
 }
 
+.toolbar-actions button.btn-cancel-query:hover {
+  background: rgba(239, 68, 68, 0.12);
+}
+
 .search-input {
-  padding: var(--space-1) var(--space-2);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  height: var(--control-height-sm);
+  padding: 0 var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
   font-size: var(--text-xs);
-  background: var(--surface-default);
+  background: var(--raised);
   color: var(--text-primary);
-  width: 150px;
+  width: 132px;
   transition: var(--transition-colors);
 }
 
 .search-input:focus {
-  outline: none;
   border-color: var(--brand-500);
-  box-shadow: var(--shadow-focus);
+  background: var(--canvas);
+}
+
+.search-input:focus {
+  outline: none;
+  background: var(--canvas);
+  border-color: var(--brand-500);
 }
 
 .row-info {
@@ -3017,23 +3077,27 @@ table {
   border-spacing: 0;
   font-size: var(--text-sm);
   table-layout: fixed;
-  width: auto;
-  border-right: 1px solid var(--border-default);
+  width: max-content;
+  min-width: 100%;
 }
 
 /* 行号列 */
 .row-number-header,
 .row-number {
-  width: 40px !important;
-  min-width: 20px !important;
-  max-width: 50px !important;
+  width: 32px !important;
+  min-width: 24px !important;
+  max-width: 44px !important;
   text-align: center;
-  background: var(--bg-secondary);
-  border-right: 1px solid var(--border-default);
-  padding: var(--space-2) !important;
+  border-right: 1px solid var(--hairline);
+  padding: 0 var(--space-2) !important;
+}
+
+.row-number-header {
+  background: var(--surface-default);
 }
 
 .row-number {
+  background: var(--canvas);
   text-align: center;
   vertical-align: middle;
 }
@@ -3044,24 +3108,30 @@ table {
 }
 
 th, td {
-  padding: var(--space-2);
+  padding: 0 var(--space-2);
   text-align: left;
-  border-bottom: 1px solid var(--border-default);
-  border-right: 1px solid var(--border-default);
+  border-bottom: 1px solid var(--hairline);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   position: relative;
 }
 
+td {
+  height: var(--row-height);
+  line-height: calc(var(--row-height) - 1px);
+}
+
 th {
-  background: var(--bg-secondary);
+  background: var(--surface-default);
   font-weight: var(--font-semibold);
   cursor: pointer;
   user-select: none;
   position: sticky;
   top: 0;
   z-index: 1;
+  padding-top: 3px;
+  padding-bottom: 3px;
 }
 
 /* ========== 冻结列样式 ========== */
@@ -3087,7 +3157,7 @@ tbody .frozen-col {
 /* 冻结列右边缘阴影，水平滚动时视觉分隔更清晰 */
 .frozen-row-number,
 .frozen-col {
-  box-shadow: 2px 0 4px -2px rgba(0, 0, 0, 0.18);
+  box-shadow: 4px 0 6px -4px rgba(0, 0, 0, 0.35);
 }
 
 /* 选中行里的冻结单元格保持选中背景（tr.selected 里的 td 背景色） */
@@ -3099,16 +3169,20 @@ tr.selected .frozen-col {
 .th-content {
   display: flex;
   flex-direction: column;
+  gap: 1px;
   overflow: hidden;
 }
 
 .col-name {
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .data-type {
-  font-size: var(--text-xs);
+  font-size: 10px;
+  line-height: 13px;
   color: var(--text-tertiary);
   font-weight: var(--font-normal);
 }
@@ -3135,7 +3209,7 @@ tr.selected .frozen-col {
 
 /* 数据行 */
 tr:hover {
-  background: var(--surface-hover);
+  background: var(--hover-fill);
 }
 
 tr.selected {
@@ -3517,29 +3591,34 @@ td.editing::before {
 /* 右键菜单 */
 .context-menu {
   position: fixed;
-  background: var(--color-background);
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
-  box-shadow: 0 2px 8px var(--color-shadow);
+  background: var(--overlay);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
   z-index: 1000;
   min-width: 120px;
+  padding: var(--space-1);
 }
 
 .menu-item {
-  padding: 8px 16px;
+  padding: 0 var(--space-2);
+  height: var(--control-height-sm);
+  display: flex;
+  align-items: center;
   cursor: pointer;
-  font-size: 13px;
-  color: var(--color-text);
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+  border-radius: var(--radius-sm);
 }
 
 .menu-item:hover {
-  background: var(--color-background-hover);
+  background: var(--hover-fill);
 }
 
 .menu-divider {
   height: 1px;
-  background: var(--color-border);
-  margin: 4px 0;
+  background: var(--hairline);
+  margin: var(--space-1) 0;
 }
 
 /* 分页 */
@@ -3547,46 +3626,59 @@ td.editing::before {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 8px 16px;
-  background: var(--color-background-soft);
-  border-top: 1px solid var(--color-border);
+  height: var(--toolbar-height);
+  padding: 0 var(--space-2);
+  background: var(--canvas);
+  border-top: 1px solid var(--hairline);
   flex-shrink: 0;
 }
 
 .pagination {
   display: flex;
-  gap: 8px;
+  gap: var(--space-1);
   align-items: center;
 }
 
 .pagination button {
-  padding: 4px 12px;
-  border: 1px solid var(--color-border);
-  background: var(--color-background);
-  color: var(--color-text);
+  height: 22px;
+  padding: 0 var(--space-2);
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
   cursor: pointer;
-  border-radius: 4px;
-  font-size: 12px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  transition: var(--transition-colors);
+}
+
+.pagination button:hover:not(:disabled) {
+  background: var(--hover-fill);
+  color: var(--text-primary);
 }
 
 .pagination button:disabled {
-  opacity: 0.5;
+  opacity: 0.4;
   cursor: not-allowed;
 }
 
 /* 分页条数选择：外层定宽，触发器与分页按钮同高 */
 .page-size {
-  width: 132px;
+  width: 120px;
   flex-shrink: 0;
 }
 
 .page-size :deep(.custom-select .select-trigger) {
-  padding: 0 8px;
-  border-color: var(--color-border);
-  border-radius: 4px;
-  background: var(--color-background);
-  color: var(--color-text);
-  font-size: 12px;
+  height: 22px;
+  padding: 0 var(--space-2);
+  border-color: transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+}
+
+.page-size :deep(.custom-select .select-trigger:hover) {
+  background: var(--hover-fill);
 }
 
 /* 空状态 */
@@ -3595,8 +3687,8 @@ td.editing::before {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--color-text-secondary);
-  font-size: 14px;
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
 }
 
 .empty-state.error-state {
@@ -3610,9 +3702,9 @@ td.editing::before {
 
 .empty-cell {
   text-align: center;
-  color: var(--color-text-secondary);
-  font-size: 13px;
-  padding: 24px 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+  padding: var(--space-5) 0 !important;
 }
 
 .loading-overlay {
@@ -3726,15 +3818,14 @@ td.editing::before {
 /* 工具栏样式 */
 .toolbar-divider {
   width: 1px;
-  height: 20px;
-  background: var(--color-border);
-  margin: 0 4px;
+  height: 14px;
+  background: var(--hairline);
+  margin: 0 2px;
 }
 
 .toolbar-actions button.active {
-  background: rgba(25, 118, 210, 0.15);
-  border-color: var(--color-primary);
-  color: var(--color-primary);
+  background: var(--selected-fill);
+  color: var(--text-primary);
 }
 
 /* 列选择器（宽表按需加载） */
@@ -3858,13 +3949,12 @@ td.editing::before {
 .readonly-badge {
   display: inline-flex;
   align-items: center;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: var(--text-xs);
-  line-height: 1.4;
-  color: var(--text-secondary);
-  background: var(--surface-hover);
-  border: 1px solid var(--border-default);
+  padding: 0 6px;
+  border-radius: var(--radius-xs);
+  font-size: 10px;
+  line-height: 16px;
+  color: var(--text-tertiary);
+  background: var(--hover-fill);
   white-space: nowrap;
 }
 
@@ -4091,30 +4181,30 @@ td.editing::before {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  border-radius: 8px;
-  background: var(--color-primary);
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: var(--radius-xs);
+  background: var(--brand-500);
   color: #fff;
-  font-size: 10px;
+  font-size: 9px;
   line-height: 1;
 }
 
 .filter-panel {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px 16px;
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-default);
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--raised);
+  border-bottom: 1px solid var(--hairline);
   flex-shrink: 0;
 }
 
 .filter-panel-header {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .filter-panel-title {
@@ -4125,23 +4215,28 @@ td.editing::before {
 
 .filter-logic {
   display: flex;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  gap: 2px;
+  padding: 2px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--canvas);
   overflow: hidden;
 }
 
 .filter-logic button {
-  padding: 2px 10px;
+  padding: 0 var(--space-2);
+  height: 20px;
   border: none;
-  background: var(--surface-default);
-  color: var(--text-secondary);
-  font-size: 11px;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 10px;
   cursor: pointer;
 }
 
 .filter-logic button.active {
-  background: var(--color-primary);
-  color: #fff;
+  background: var(--selected-fill);
+  color: var(--text-primary);
 }
 
 .filter-close {
@@ -4158,29 +4253,37 @@ td.editing::before {
 .filter-rows {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1);
 }
 
 .filter-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .filter-join {
-  min-width: 48px;
-  font-size: 11px;
-  color: var(--text-secondary);
+  min-width: 44px;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
 }
 
 .filter-select,
 .filter-value {
-  padding: 3px 6px;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  background: var(--surface-default);
+  height: var(--control-height-sm);
+  padding: 0 var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--canvas);
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: var(--text-xs);
+}
+
+.filter-select:focus,
+.filter-value:focus {
+  outline: none;
+  border-color: var(--brand-500);
 }
 
 .filter-select {
@@ -4266,14 +4369,19 @@ td.editing::before {
   padding: 0 2px;
   border: none;
   background: transparent;
-  color: var(--text-secondary);
-  opacity: 0.5;
+  color: var(--text-tertiary);
+  opacity: 0;
   cursor: pointer;
+  transition: opacity var(--duration-fast);
+}
+
+th:hover .th-filter-btn {
+  opacity: 0.55;
 }
 
 .th-filter-btn:hover,
 .th-filter-btn.active {
   opacity: 1;
-  color: var(--color-primary);
+  color: var(--text-primary);
 }
 </style>

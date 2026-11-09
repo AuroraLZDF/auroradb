@@ -623,7 +623,7 @@ function handleNewDatabase(connectionId: string) {
 
 // 三栏宽度
 const leftWidth = ref(280)
-const rightWidth = ref(320)
+const rightWidth = ref(280)
 const middleWidth = computed(() => {
   // 中间区域宽度 = 总宽度 - 左 - 右
   return Math.max(400, window.innerWidth - leftWidth.value - rightWidth.value - 8) // 8px for resizers

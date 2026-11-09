@@ -241,6 +241,13 @@
   /* Accent - 强调色（仅语义用途：状态点/链接/选中指示） */
   --accent: var(--brand-500);
 
+  /* Code - SQL/DDL 语法高亮（亮色） */
+  --code-keyword: #0B6BCB;
+  --code-function: #795E26;
+  --code-string: #A31515;
+  --code-number: #098658;
+  --code-comment: #008000;
+
   /* Status */
   --status-online: var(--success-500);
   --status-offline: var(--gray-500);
@@ -294,6 +301,13 @@
 
   /* Accent - 强调色（仅语义用途：状态点/链接/选中指示） */
   --accent: var(--brand-500);
+
+  /* Code - SQL/DDL 语法高亮（暗色） */
+  --code-keyword: #4ECBFD;
+  --code-function: #DCDCAA;
+  --code-string: #CE9178;
+  --code-number: #B5CEA8;
+  --code-comment: #6A9955;
 
   /* Status */
   --status-online: var(--success-400);
@@ -358,6 +372,13 @@
 
     /* Accent */
     --accent: var(--brand-500);
+
+    /* Code - SQL/DDL 语法高亮（暗色） */
+    --code-keyword: #4ECBFD;
+    --code-function: #DCDCAA;
+    --code-string: #CE9178;
+    --code-number: #B5CEA8;
+    --code-comment: #6A9955;
 
     /* Status */
     --status-online: var(--success-400);
