@@ -733,9 +733,9 @@ onMounted(() => {
 .console-wrapper {
   height: 100%;
   background: var(--canvas);
-  color: #d4d4d4;
-  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-  font-size: 13px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -743,7 +743,7 @@ onMounted(() => {
 
 .console-output {
   flex: 1;
-  padding: 12px 16px;
+  padding: var(--space-2) var(--space-3);
   overflow-y: auto;
   overflow-x: auto;
   white-space: pre;
@@ -754,16 +754,16 @@ onMounted(() => {
 }
 
 .entry-input {
-  color: #d4d4d4;
+  color: var(--text-primary);
 }
 
 .prompt {
-  color: #569cd6;
-  font-weight: bold;
+  color: var(--accent);
+  font-weight: var(--font-medium);
 }
 
 .command {
-  color: #d4d4d4;
+  color: var(--text-primary);
   font-size: inherit;
 }
 
@@ -777,17 +777,17 @@ onMounted(() => {
   background: transparent;
   border: none;
   outline: none;
-  color: #d4d4d4;
+  color: var(--text-primary);
   font-family: inherit;
   font-size: inherit;
   padding: 0;
   margin: 0;
-  caret-color: #fff;
+  caret-color: var(--accent);
 }
 
 /* 表格样式 */
 .entry-table {
-  margin: 8px 0;
+  margin: var(--space-2) 0;
 }
 
 .ascii-table {
@@ -796,26 +796,26 @@ onMounted(() => {
 
 /* SHOW CREATE TABLE 格式化输出 */
 .create-table-output {
-  margin: 8px 0;
-  padding: 12px 16px;
-  background: var(--canvas);
-  border: 1px solid #3c3c3c;
-  border-radius: 4px;
+  margin: var(--space-2) 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
 }
 
 .formatted-sql {
   margin: 0;
   padding: 0;
-  color: #d4d4d4;
-  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-  font-size: 12px;
-  line-height: 1.4;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.5;
   white-space: pre-wrap;
   word-wrap: break-word;
 }
 
 .ascii-border {
-  color: #808080;
+  color: var(--text-tertiary);
 }
 
 .ascii-row {
@@ -823,31 +823,31 @@ onMounted(() => {
 }
 
 .ascii-header {
-  font-weight: bold;
-  color: #dcdcaa;
+  font-weight: var(--font-semibold);
+  color: var(--code-function);
 }
 
 .ascii-cell {
-  padding: 0 8px;
-  color: #ce9178;
+  padding: 0 var(--space-2);
+  color: var(--code-string);
 }
 
 .result-stats {
-  color: #6a9955;
+  color: var(--code-comment);
   margin-top: 4px;
-  font-size: 12px;
+  font-size: var(--text-xs);
 }
 
 .result-warning {
-  color: #d7ba7d;
+  color: var(--warning-500);
   margin-top: 2px;
-  font-size: 12px;
+  font-size: var(--text-xs);
   white-space: pre-wrap;
 }
 
 /* 消息样式 */
 .entry-message {
-  color: #d4d4d4;
+  color: var(--text-primary);
 }
 
 .message-text {
@@ -856,7 +856,7 @@ onMounted(() => {
 
 /* 错误样式 */
 .entry-error {
-  color: #f44747;
+  color: var(--error-500);
 }
 
 .error-text {
@@ -865,7 +865,7 @@ onMounted(() => {
 
 /* 执行中提示 */
 .running-entry {
-  color: #6a9955;
+  color: var(--text-secondary);
   font-style: italic;
 }
 
@@ -874,19 +874,21 @@ onMounted(() => {
 }
 
 .btn-cancel {
-  margin-left: 12px;
-  padding: 2px 10px;
-  background: var(--color-danger);
-  color: white;
+  margin-left: var(--space-2);
+  height: var(--control-height-sm);
+  padding: 0 var(--space-2);
+  background: transparent;
+  color: var(--error-500);
   border: none;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--text-xs);
   font-style: normal;
+  transition: var(--transition-colors);
 }
 
 .btn-cancel:hover {
-  opacity: 0.9;
+  background: var(--color-danger-bg);
 }
 
 @keyframes pulse {
@@ -896,20 +898,20 @@ onMounted(() => {
 
 /* 滚动条 */
 .console-output::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 
 .console-output::-webkit-scrollbar-track {
-  background: var(--canvas);
+  background: transparent;
 }
 
 .console-output::-webkit-scrollbar-thumb {
-  background: #424242;
-  border-radius: 5px;
+  background: var(--border-default);
+  border-radius: var(--radius-sm);
 }
 
 .console-output::-webkit-scrollbar-thumb:hover {
-  background: #4f4f4f;
+  background: var(--border-strong);
 }
 </style>

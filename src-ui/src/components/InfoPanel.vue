@@ -655,9 +655,8 @@ watch(() => [props.type, props.data], () => {
   margin: 0;
   font-size: var(--text-xs);
   font-weight: var(--font-medium);
-  color: var(--text-tertiary);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  letter-spacing: 0.2px;
 }
 
 .info-hint {

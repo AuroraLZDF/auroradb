@@ -1661,7 +1661,7 @@ onMounted(() => {
   padding: var(--space-4);
   max-height: 60vh;
   background: var(--canvas);
-  color: #A5D6A7;
+  color: var(--text-primary);
   font-family: var(--font-mono);
   font-size: var(--text-base);
   line-height: var(--leading-relaxed);

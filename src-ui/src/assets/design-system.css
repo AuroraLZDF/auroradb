@@ -889,19 +889,23 @@ body {
 
 /* Webkit Scrollbar (Chrome, Safari, Edge) */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--surface-subtle);
-  border-radius: var(--radius-full);
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
   background: var(--gray-400);
+  background-clip: content-box;
   border-radius: var(--radius-full);
-  border: 2px solid var(--surface-subtle);
+  border: 3px solid transparent;
   min-height: 40px;
 }
 
@@ -915,12 +919,13 @@ body {
 
 /* Dark theme scrollbar */
 [data-theme="dark"] ::-webkit-scrollbar-track {
-  background: var(--surface-subtle);
+  background: transparent;
 }
 
 [data-theme="dark"] ::-webkit-scrollbar-thumb {
   background: var(--gray-600);
-  border-color: var(--surface-subtle);
+  background-clip: content-box;
+  border-color: transparent;
 }
 
 [data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
