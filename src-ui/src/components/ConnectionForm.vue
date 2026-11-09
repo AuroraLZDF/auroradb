@@ -608,7 +608,7 @@ async function handleSubmit() {
 
 <style scoped>
 .connection-form {
-  padding: 20px;
+  padding: var(--space-4) var(--space-5);
   width: 100%;
 }
 
@@ -616,65 +616,69 @@ async function handleSubmit() {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 20px;
+  margin-bottom: var(--space-4);
 }
 
 .form-header h2 {
   margin: 0;
-  font-size: 18px;
+  font-size: var(--text-md);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
 }
 
 .btn-close {
-  background: none;
+  background: transparent;
   border: none;
-  color: var(--color-text-secondary);
+  color: var(--text-secondary);
   cursor: pointer;
-  font-size: 20px;
   padding: 0;
-  width: 28px;
-  height: 28px;
+  width: var(--control-height-sm);
+  height: var(--control-height-sm);
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
+  transition: var(--transition-colors);
 }
 
 .btn-close:hover {
-  background: var(--color-background-hover);
-  color: var(--color-text);
+  background: var(--hover-fill);
+  color: var(--text-primary);
 }
 
 .form-tabs {
   display: flex;
-  gap: 4px;
-  margin-bottom: 18px;
-  border-bottom: 1px solid var(--color-border);
+  gap: 0;
+  margin-bottom: var(--space-4);
+  border-bottom: 1px solid var(--hairline);
 }
 
 .form-tab {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
+  height: 30px;
   margin-bottom: -1px;
-  padding: 8px 14px;
+  padding: 0 var(--space-3);
   border: none;
-  border-bottom: 2px solid transparent;
+  border-bottom: 1px solid transparent;
   border-radius: 0;
   background: none;
-  color: var(--color-text-secondary);
-  font-size: 13px;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
   cursor: pointer;
+  transition: var(--transition-colors);
 }
 
 .form-tab:hover {
-  color: var(--color-text);
-  background: none;
+  color: var(--text-primary);
+  background: var(--hover-fill);
 }
 
 .form-tab.active {
-  color: var(--color-primary);
-  border-bottom-color: var(--color-primary);
+  color: var(--text-primary);
+  border-bottom-color: var(--brand-500);
 }
 
 .tab-dot {
@@ -731,32 +735,39 @@ async function handleSubmit() {
 .form-group label {
   display: block;
   margin-bottom: 4px;
-  font-weight: 500;
-  font-size: 13px;
-  color: var(--color-text);
+  font-weight: var(--font-medium);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
 }
 
 .form-group input {
   width: 100%;
-  padding: 8px 12px;
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
-  font-size: 14px;
-  background: var(--color-background);
-  color: var(--color-text);
+  height: 30px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  background: var(--raised);
+  color: var(--text-primary);
+  transition: var(--transition-colors);
+}
+
+.form-group input:focus {
+  outline: none;
+  border-color: var(--brand-500);
 }
 
 /* 自定义下拉框：触发器与同组输入框保持相同的尺寸与配色 */
 .form-group :deep(.custom-select .select-trigger) {
   width: 100%;
-  height: 38px;
-  min-height: 38px;
-  padding: 0 12px;
-  border-color: var(--color-border);
-  border-radius: 4px;
-  background: var(--color-background);
-  color: var(--color-text);
-  font-size: 14px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0 var(--space-2);
+  border-color: var(--hairline-strong);
+  border-radius: var(--radius-sm);
+  background: var(--raised);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
 }
 
 .password-input-wrapper {
@@ -806,9 +817,42 @@ async function handleSubmit() {
 
 .form-actions {
   display: flex;
-  gap: 12px;
+  gap: var(--space-2);
   justify-content: flex-end;
   margin-top: 0;
+}
+
+/* 按钮统一到 DBX 语言：取消=ghost，连接=品牌主按钮 */
+.form-actions button {
+  height: var(--control-height);
+  padding: 0 var(--space-4);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: var(--transition-colors);
+}
+
+.form-actions button:hover {
+  background: var(--hover-fill);
+  color: var(--text-primary);
+}
+
+.form-actions button[type='submit'] {
+  background: var(--brand-500);
+  color: #fff;
+  font-weight: var(--font-medium);
+}
+
+.form-actions button[type='submit']:hover:not(:disabled) {
+  background: var(--brand-600);
+}
+
+.form-actions button[type='submit']:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .checkbox-label {

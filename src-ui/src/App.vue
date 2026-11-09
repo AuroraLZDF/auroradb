@@ -71,26 +71,24 @@
       />
 
       <!-- 右分隔条 -->
-      <div class="resizer resizer-right" @mousedown="startResize('right', $event)"></div>
-
-      <!-- 右侧：信息面板 -->
       <div
+        v-if="showInfoPanel"
+        class="resizer resizer-right"
+        @mousedown="startResize('right', $event)"
+      ></div>
+
+      <!-- 右侧：信息面板（按需出现，选中连接/库/表时展开） -->
+      <div
+        v-if="showInfoPanel"
         class="sidebar-right"
         :style="{ width: rightWidth + 'px' }"
       >
-        <div class="info-panel" v-if="selectedInfoType">
-          <InfoPanel
-            :type="selectedInfoType"
-            :data="selectedInfoData"
-            @close="closeInfoPanel"
-          />
-        </div>
-        <div v-else class="empty-panel">
-          <div class="empty-content">
-            <Info class="empty-icon" :size="48" />
-            <p>{{ t('app.emptyPanelHint') }}</p>
-          </div>
-        </div>
+        <InfoPanel
+          v-if="selectedInfoType"
+          :type="selectedInfoType"
+          :data="selectedInfoData"
+          @close="closeInfoPanel"
+        />
       </div>
     </div>
 
@@ -393,7 +391,6 @@ import {
   Copy,
   Trash2,
   Eraser,
-  Info,
 } from '@/components/icons'
 
 const store = useConnectionStore()
@@ -409,13 +406,16 @@ const { isMobile, isSmallScreen, isDesktop } = useBreakpoints()
 
 // 响应式面板状态
 const sidebarOpen = ref(false)
-const infoPanelOpen = ref(true)
+// 信息面板默认收起（DBX 风格：选中连接/库/表时才出现）
+const infoPanelOpen = ref(false)
+// 面板渲染条件：有选中对象且未被用户收起
+const showInfoPanel = computed(() => infoPanelOpen.value && !!selectedInfoType.value)
 
 // 监听断点变化
 watch(isDesktop, (desktop) => {
   if (desktop) {
     sidebarOpen.value = false
-    infoPanelOpen.value = true
+    // 桌面端保留用户当前的面板开合意图，不做强制切换
   }
 }, { immediate: true })
 
@@ -981,6 +981,7 @@ async function loadDatabaseTables(connectionId: string, dbName: string, force = 
 // 单击选中连接 - 显示连接信息
 function selectConnection(conn: { id: string; name: string; host: string; port: number; username?: string }) {
   selectedInfoType.value = 'connection'
+  infoPanelOpen.value = true
   selectedInfoData.value = {
     connectionId: conn.id,
     connectionName: conn.name,
@@ -1010,6 +1011,7 @@ async function selectDatabase(connectionId: string, dbName: string) {
 function selectTable(connectionId: string, dbName: string, tableName: string) {
   selectedTable.value = `${connectionId}.${dbName}.${tableName}`
   selectedInfoType.value = 'table'
+  infoPanelOpen.value = true
   selectedInfoData.value = {
     connectionId,
     database: dbName,
@@ -1023,6 +1025,7 @@ function selectTable(connectionId: string, dbName: string, tableName: string) {
 function closeInfoPanel() {
   selectedInfoType.value = null
   selectedInfoData.value = {}
+  infoPanelOpen.value = false
 }
 
 // 表 Tab 关闭后同步右侧信息面板：若右侧正显示该表，则关闭面板
@@ -2035,24 +2038,6 @@ body {
 .info-panel {
   flex: 1;
   overflow: hidden;
-}
-
-.empty-panel {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--space-5);
-}
-
-.empty-content {
-  text-align: center;
-  color: var(--text-secondary);
-}
-
-.empty-icon {
-  color: var(--text-tertiary);
-  margin-bottom: var(--space-4);
 }
 
 /* 拖拽分隔条 */

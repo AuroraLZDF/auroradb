@@ -571,10 +571,13 @@ watch(() => [props.type, props.data], () => {
 
 <style scoped>
 .info-panel {
+  flex: 1;
   height: 100%;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  background: var(--color-background-soft);
+  background: var(--panel);
+  overflow: hidden;
 }
 
 /* 头部 */
