@@ -143,13 +143,19 @@
         <div v-for="(row, index) in filterRows" :key="row.id" class="filter-row">
           <span v-if="index > 0" class="filter-join">{{ filterLogic }}</span>
           <span v-else class="filter-join">{{ t('dataTable.filterTitle') }}</span>
-          <select v-model="row.column" class="filter-select">
-            <option value="" disabled>{{ t('dataTable.filterColumn') }}</option>
-            <option v-for="name in filterColumnOptions" :key="name" :value="name">{{ name }}</option>
-          </select>
-          <select v-model="row.operator" class="filter-select filter-op">
-            <option v-for="op in filterOperatorOptions" :key="op.value" :value="op.value">{{ op.label }}</option>
-          </select>
+          <Select
+            v-model="row.column"
+            class="filter-select"
+            size="sm"
+            :options="filterColumnChoices"
+            :placeholder="t('dataTable.filterColumn')"
+          />
+          <Select
+            v-model="row.operator"
+            class="filter-select filter-op"
+            size="sm"
+            :options="filterOperatorOptions"
+          />
           <input
             v-if="!isNullOperator(row.operator)"
             v-model="row.value"
@@ -172,10 +178,14 @@
       </div>
 
       <div class="filter-saved">
-        <select v-model="selectedSavedFilter" class="filter-select" @change="applySavedFilter(selectedSavedFilter)">
-          <option value="">{{ t('dataTable.filterSavedPlaceholder') }}</option>
-          <option v-for="item in savedFilters" :key="item.name" :value="item.name">{{ item.name }}</option>
-        </select>
+        <Select
+          v-model="selectedSavedFilter"
+          class="filter-select"
+          size="sm"
+          :options="savedFilterChoices"
+          :placeholder="t('dataTable.filterSavedPlaceholder')"
+          @update:model-value="applySavedFilter"
+        />
         <input v-model="newFilterName" class="filter-value" :placeholder="t('dataTable.filterSaveName')" />
         <button :disabled="!newFilterName.trim() || filterRows.length === 0" @click="saveCurrentFilter">
           {{ t('dataTable.filterSave') }}
@@ -833,6 +843,14 @@ const filterOperatorOptions: { label: string; value: FilterOperator }[] = [
 ]
 
 const filterColumnOptions = computed(() => allColumnsForTab.value.map(col => col.name))
+
+/** 列选择器选项（CustomSelect 需要 { label, value } 结构，但支持纯字符串，这里保持字符串便于 placeholder） */
+const filterColumnChoices = computed(() => filterColumnOptions.value)
+
+/** 已保存筛选的选项 */
+const savedFilterChoices = computed(() =>
+  savedFilters.value.map(item => ({ label: item.name, value: item.name })),
+)
 
 const savedFilterKey = computed(() =>
   currentTab.value
@@ -4368,29 +4386,55 @@ td.editing::before {
   text-transform: uppercase;
 }
 
-.filter-select,
 .filter-value {
   height: var(--control-height-sm);
   padding: 0 var(--space-2);
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
-  background: var(--canvas);
+  background: var(--raised);
   color: var(--text-primary);
   font-size: var(--text-xs);
 }
 
-.filter-select:focus,
 .filter-value:focus {
   outline: none;
   border-color: var(--brand-500);
+  background: var(--canvas);
 }
 
+/* 下拉用 CustomSelect（DOM 弹层）：原生 <select> 的展开列表由浏览器/系统绘制，
+   暗色下会渲染成白底，无法用 CSS 覆盖 —— 这也是换成组件的原因 */
 .filter-select {
+  /* CustomSelect 自身是 width:100%，这里要收回成内容宽度 */
+  width: auto;
+  flex: 0 0 auto;
   min-width: 130px;
 }
 
 .filter-op {
   min-width: 90px;
+}
+
+.filter-select :deep(.select-trigger),
+.filter-select :deep(.select-trigger.size-sm) {
+  height: var(--control-height-sm);
+  min-height: var(--control-height-sm);
+  padding: 0 var(--space-2);
+  border-color: transparent;
+  border-radius: var(--radius-sm);
+  background: var(--raised);
+  font-size: var(--text-xs);
+}
+
+.filter-select :deep(.select-trigger:hover:not(.disabled)) {
+  background: var(--hover-fill);
+  border-color: transparent;
+}
+
+.filter-select :deep(.select-trigger.open) {
+  background: var(--canvas);
+  border-color: var(--brand-500);
+  box-shadow: none;
 }
 
 .filter-value {

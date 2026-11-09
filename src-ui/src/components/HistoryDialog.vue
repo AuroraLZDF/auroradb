@@ -8,17 +8,20 @@
 
       <div class="history-filters">
         <input v-model="keyword" class="history-search" :placeholder="t('history.searchPlaceholder')" />
-        <select v-model="connectionFilter" class="history-select">
-          <option value="">{{ t('history.allConnections') }}</option>
-          <option v-for="conn in connectionOptions" :key="conn.id" :value="conn.id">
-            {{ conn.name }}
-          </option>
-        </select>
-        <select v-model="statusFilter" class="history-select">
-          <option value="">{{ t('history.allStatus') }}</option>
-          <option value="success">{{ t('history.successOnly') }}</option>
-          <option value="failed">{{ t('history.failedOnly') }}</option>
-        </select>
+        <Select
+          v-model="connectionFilter"
+          class="history-select"
+          size="sm"
+          :options="connectionOptions"
+          :placeholder="t('history.allConnections')"
+        />
+        <Select
+          v-model="statusFilter"
+          class="history-select"
+          size="sm"
+          :options="statusOptions"
+          :placeholder="t('history.allStatus')"
+        />
         <span class="history-count">{{ t('history.count', { count: filtered.length }) }}</span>
       </div>
 
@@ -70,6 +73,7 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import Select from '@/components/ui/Select.vue'
 import { useQueryLibraryStore, type QueryHistoryEntry } from '@/stores/queryLibrary'
 import { useSavedConnectionsStore } from '@/stores/savedConnections'
 import { t } from '@/i18n'
@@ -87,11 +91,20 @@ const keyword = ref('')
 const connectionFilter = ref('')
 const statusFilter = ref('')
 
+const statusOptions = computed(() => [
+  { label: t('history.allStatus'), value: '' },
+  { label: t('history.successOnly'), value: 'success' },
+  { label: t('history.failedOnly'), value: 'failed' },
+])
+
 const connectionOptions = computed(() => {
   const ids = new Set(queryLibrary.history.map(item => item.connectionId))
-  return savedConnections.savedConnections
-    .filter(conn => ids.has(conn.id))
-    .map(conn => ({ id: conn.id, name: conn.name }))
+  return [
+    { label: t('history.allConnections'), value: '' },
+    ...savedConnections.savedConnections
+      .filter(conn => ids.has(conn.id))
+      .map(conn => ({ label: conn.name, value: conn.id })),
+  ]
 })
 
 const filtered = computed(() => {
@@ -226,13 +239,10 @@ function showNotice(message: string) {
 }
 
 .history-select {
-  height: var(--control-height-sm);
-  padding: 0 var(--space-2);
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  background: var(--raised);
-  color: var(--text-primary);
-  font-size: var(--text-xs);
+  /* CustomSelect 自身是 width:100%，这里要收回成内容宽度 */
+  width: auto;
+  flex: 0 0 auto;
+  min-width: 150px;
 }
 
 .history-count {
