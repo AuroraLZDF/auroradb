@@ -209,9 +209,10 @@ if [ -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ]; then
     fi
 fi
 
-# 使用 timeout 防止卡死
+# 使用 timeout 防止卡死。冷缓存（如 CI 首次构建）需要更长时间，可用 BUILD_TIMEOUT 覆盖
+BUILD_TIMEOUT="${BUILD_TIMEOUT:-600}"
 if command -v timeout &> /dev/null; then
-    timeout 600 cargo tauri build --bundles "$BUNDLE_TYPE" || {
+    timeout "$BUILD_TIMEOUT" cargo tauri build --bundles "$BUNDLE_TYPE" || {
         echo -e "${RED}  ✗ 打包超时或失败${NC}"
         echo ""
         echo "如果卡在网络下载，建议:"

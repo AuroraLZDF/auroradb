@@ -7,6 +7,7 @@
 #   GITHUB_TOKEN=<令牌> ./tools/publish/linux.sh --tag v1.0.1 --notes "修复若干问题"
 #   ./tools/publish/linux.sh --repo owner/repo      # 指定公开发布仓库
 #   ./tools/publish/linux.sh --dry-run              # 只在本机校验并打印发布计划
+#   ./tools/publish/linux.sh --yes                  # 跳过交互确认（CI/自动化用）
 #
 # 发布目标默认为 origin 同名的 GitHub 仓库（如 AuroraLZDF/auroradb）。
 # 安装包、deb、SHA256SUMS 与 latest.json 全部作为发行版附件上传，
@@ -36,6 +37,7 @@ NOTES=""
 RELEASE_REPO=""
 APPIMAGE=""
 DRY_RUN=0
+ASSUME_YES=0
 EXTRA_ARTIFACTS=()
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -45,8 +47,9 @@ while [[ $# -gt 0 ]]; do
         --appimage) APPIMAGE="$2"; shift 2 ;;
         --extra-artifact) EXTRA_ARTIFACTS+=("$2"); shift 2 ;;
         --dry-run) DRY_RUN=1; shift ;;
+        -y|--yes) ASSUME_YES=1; shift ;;
         -h|--help)
-            sed -n '3,22p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '3,23p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *) echo -e "${RED}未知参数: $1${NC}"; exit 1 ;;
@@ -305,6 +308,8 @@ fi
 echo ""
 if (( DRY_RUN == 1 )); then
     echo -e "${YELLOW}  dry-run: 跳过交互确认，也不会上传或联网${NC}"
+elif (( ASSUME_YES == 1 )); then
+    echo -e "${YELLOW}  --yes: 跳过交互确认（CI 用）${NC}"
 else
     echo "  注意: 继续后将上传安装包并更新 latest.json，对终端用户立即可见。"
     read -r -p "  确认继续？输入 yes 继续，其他任意输入取消: " CONFIRM || CONFIRM=""

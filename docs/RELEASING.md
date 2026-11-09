@@ -25,7 +25,41 @@ Linux 脚本只从环境变量读取 `GITHUB_TOKEN` 或 `GH_TOKEN`；Windows 脚
 
 令牌有效不等于有写权限。`GET /repos/<owner>/<repo>` 返回 200 只说明令牌可读该仓库；带 `{}` 空 body 的 `POST /releases` 返回 422 是 GitHub 先校验请求体，**不能**据此判断有写权限。真正能暴露权限问题的是带 `tag_name` 的真实 POST，返回 403 `Resource not accessible by personal access token` 即令牌对该仓库只读。
 
-## 发布命令
+## 自动发布（推荐）
+
+打 tag 即发布，两级流水线在 `.github/workflows/release.yml`：
+
+```bash
+# 1. 改版本号（tools/release-tag.sh 会自动改全部位置并打 tag）
+./tools/release-tag.sh 2.2.2            # 只升版本、提交、打 tag
+git push origin main && git push origin v2.2.2
+```
+
+推 tag 后 CI 自动完成：
+
+| Job | 内容 |
+|---|---|
+| `check` | 版本单一来源校验、tag 与 `tauri.conf.json` 版本比对、前端 type-check/lint/test |
+| `build-linux` | deb + AppImage（重压签名）+ rpm，产物打成 tar |
+| `build-windows` | NSIS 安装包 + `.sig` |
+| `publish-linux` | 调 `tools/publish/linux.sh --yes`，写 `linux-x86_64` 条目 |
+| `publish-windows` | 调 `tools/publish/windows.ps1 -Yes`，合并 `windows-x86_64` 条目 |
+| `verify` | 抓线上 `latest.json`，断言版本与 tag 一致且两个平台都在 |
+
+关键约束：`publish-*` 的 `needs` 同时包含两个 build job，**任一平台构建失败就整个不发布**——避免出现「清单只有一个平台、另一个平台用户更新不了」的半残发行版。
+
+需要在仓库 Settings → Secrets and variables → Actions 里配置：
+
+| Secret | 说明 |
+|---|---|
+| `TAURI_SIGNING_PRIVATE_KEY` | 更新签名私钥全文（`~/.config/auroradb/updater.key` 的内容） |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | 私钥密码；私钥未加密时留空字符串 |
+
+`GITHUB_TOKEN` 由 Actions 自动提供，workflow 已声明 `permissions: contents: write`。
+
+只想验证流水线不发布时，用 `workflow_dispatch` 触发并勾选 `skip_publish`。
+
+## 手工发布命令
 
 在仓库根目录执行，先完成构建（见 [README](../README.md#构建与发布)）：
 
@@ -37,6 +71,7 @@ export GITHUB_TOKEN=<令牌>
 ./tools/publish/linux.sh --dry-run                # 只在本机校验并打印发布计划
 ./tools/publish/linux.sh --repo owner/repo        # 覆盖发布仓库（默认与 origin 同名）
 ./tools/publish/linux.sh --extra-artifact <文件>  # 追加附件，可重复（如 lite AppImage）
+./tools/publish/linux.sh --yes                    # 跳过交互确认（CI/自动化用）
 ```
 
 ```powershell
@@ -45,11 +80,12 @@ $env:GITHUB_TOKEN = "<令牌>"
 .\tools\publish\windows.ps1
 .\tools\publish\windows.ps1 -Tag v2.1.0 -Notes "…"
 .\tools\publish\windows.ps1 -Repo owner/repo -BundleDir <目录>
+.\tools\publish\windows.ps1 -Yes                    # 跳过交互确认（CI/自动化用）
 ```
 
 ## 发布行为
 
-- 上传前打印版本、标签、分支、提交、工作区状态与 tag 推送状态，需输入 `yes` 确认
+- 上传前打印版本、标签、分支、提交、工作区状态与 tag 推送状态，需输入 `yes` 确认；`--yes` / `-Yes` 可跳过（CI 用）
 - Linux 脚本强制调用 `tools/check-release.sh`，校验产物齐全、`.sig` 存在、体积不超限、更新源指向发布仓库，并生成 `SHA256SUMS`
 - 任一附件上传失败立即中止，不写入 `latest.json`，避免用户更新到不存在的地址
 - 同名附件先删除再上传，重复发布同一 tag 会覆盖旧产物

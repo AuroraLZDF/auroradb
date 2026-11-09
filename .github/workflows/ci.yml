@@ -88,3 +88,38 @@ jobs:
 
       - name: Test
         run: cargo test --locked --workspace
+
+  # E2E：跑在真实 Chromium 里，通过 e2e/support/tauri-mock.ts 注入伪造的 Tauri IPC，
+  # 因此不需要 Tauri 运行时与数据库。Playwright 的 webServer 会自动起 vite dev。
+  e2e:
+    name: E2E (Playwright)
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: src-ui
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: src-ui/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      # 与 package-lock 里 @playwright/test 的版本对齐，避免 headless shell 版本不匹配
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run E2E
+        run: npm run test:e2e
+
+      - name: Upload report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: src-ui/playwright-report
+          retention-days: 7

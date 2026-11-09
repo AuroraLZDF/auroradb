@@ -1,0 +1,355 @@
+name: Release
+
+# 打 tag 即发布：v2.2.2 → 双平台构建 + 上传发行版 + 合并 latest.json
+#
+# 设计要点（对应 ROADMAP V2-3 发布链路）：
+# 1. build 与 publish 分 job：构建失败不会留下半残发行版
+# 2. publish 串行：Linux 先发（写 linux-x86_64），Windows 后发（合并 windows-x86_64），
+#    两者都复用 tools/publish/*.sh，不做第二套实现
+# 3. 任一平台构建失败则整个发布不执行 —— 避免出现「清单只有一个平台」的事故
+# 4. 发布后自动核对 latest.json 是否两个平台都在
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的 tag（已存在，如 v2.2.2）'
+        required: true
+        type: string
+      skip_publish:
+        description: '只构建不发布（验证流水线用）'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 门禁：版本一致性 + 前端 + 后端。跑不过就不该产出任何安装包。
+  # ---------------------------------------------------------------------------
+  check:
+    name: Pre-release checks
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: src-ui/package-lock.json
+
+      - name: Version single source
+        run: node tools/check-version.mjs
+
+      - name: Tag matches tauri.conf.json version
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          if [ "v$VERSION" != "$TAG" ]; then
+            echo "::error::tag $TAG 与 tauri.conf.json 的版本 v$VERSION 不一致，请先改版本号再打 tag"
+            exit 1
+          fi
+
+      - name: Check signing secrets
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          # 没有签名私钥就构建不出可被客户端接受的 .sig，早点失败比构建 20 分钟后才发现好
+          if [ -z "$KEY" ]; then
+            echo "::error::缺少 TAURI_SIGNING_PRIVATE_KEY —— 到 Settings → Secrets and variables → Actions 配置（见 docs/RELEASING.md「自动发布」）"
+            exit 1
+          fi
+
+      - name: Install frontend deps
+        working-directory: src-ui
+        run: npm ci
+
+      - name: Frontend type-check / lint / test
+        working-directory: src-ui
+        run: |
+          npm run type-check
+          npm run lint
+          npm run test
+
+  # ---------------------------------------------------------------------------
+  # Linux 构建：deb + AppImage + rpm，产物打包成单个 tar 交给发布 job
+  # ---------------------------------------------------------------------------
+  build-linux:
+    name: Build Linux bundles
+    needs: check
+    runs-on: ubuntu-22.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libdbus-1-dev \
+            libssl-dev \
+            patchelf \
+            pkg-config \
+            squashfs-tools \
+            zstd \
+            binutils \
+            rpm
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: src-ui/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+
+      # 预编译的 cargo-tauri（build/linux.sh 内部用的是 `cargo tauri build`）
+      # 预编译 cargo-tauri；安装失败不致命——build 脚本检测不到 `cargo tauri` 时会
+      # 自己 `cargo install tauri-cli --locked`（慢，但能兜住）
+      - uses: taiki-e/install-action@v2
+        continue-on-error: true
+        with:
+          tool: cargo-tauri
+
+      - name: Tauri CLI version
+        run: cargo tauri --version || echo "::warning::未预装 cargo-tauri，构建脚本将现场编译" 
+
+      - name: Frontend deps
+        working-directory: src-ui
+        run: npm ci
+
+      - name: Build bundles
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # 冷缓存下 Rust 全量编译 + AppImage 重压会超过脚本默认的 600s
+          BUILD_TIMEOUT: 2400
+        run: ./tools/build/linux.sh --bundles deb,appimage,rpm
+
+      - name: Inventory
+        run: |
+          find src-tauri/target/release/bundle -maxdepth 2 -type f \
+            \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.sig' \) \
+            -printf '%10s  %p\n' | sort -k2
+
+      # 只打包发布脚本真正会读的安装包与签名：AppImage 的 .AppDir 中间目录体积翻倍
+      - name: Pack bundle tree
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          rm -rf staging && mkdir -p staging/bundle
+          for d in appimage deb rpm; do
+            src="src-tauri/target/release/bundle/$d"
+            [ -d "$src" ] || continue
+            mkdir -p "staging/bundle/$d"
+            find "$src" -maxdepth 1 -type f \
+              \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' -o -name '*.sig' \) \
+              -exec cp -p {} "staging/bundle/$d/" \;
+          done
+          [ -f src-tauri/target/release/bundle/SHA256SUMS ] && \
+            cp -p src-tauri/target/release/bundle/SHA256SUMS staging/bundle/
+          find staging -type f -printf '%10s  %p\n' | sort -k2
+          tar -czf "linux-bundles-${TAG}.tar.gz" -C staging bundle
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-bundles
+          path: linux-bundles-*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Windows 构建：NSIS 安装包
+  # ---------------------------------------------------------------------------
+  build-windows:
+    name: Build Windows installer
+    needs: check
+    runs-on: windows-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: src-ui/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+
+      # 预编译 cargo-tauri；安装失败不致命——build 脚本检测不到 `cargo tauri` 时会
+      # 自己 `cargo install tauri-cli --locked`（慢，但能兜住）
+      - uses: taiki-e/install-action@v2
+        continue-on-error: true
+        with:
+          tool: cargo-tauri
+
+      - name: Tauri CLI version
+        run: cargo tauri --version || echo "::warning::未预装 cargo-tauri，构建脚本将现场编译" 
+
+      - name: Frontend deps
+        working-directory: src-ui
+        run: npm ci
+
+      - name: Build NSIS installer
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pwsh -File tools/build/windows.ps1 -Bundles nsis
+
+      - name: Inventory
+        shell: pwsh
+        run: |
+          Get-ChildItem -Recurse src-tauri/target/release/bundle -Include *.exe,*.sig |
+            Select-Object Name, Length | Format-Table -AutoSize
+
+      - name: Pack bundle tree
+        shell: pwsh
+        run: |
+          Compress-Archive -Path src-tauri/target/release/bundle -DestinationPath windows-bundles.zip -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-bundles
+          path: windows-bundles.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # 发布：Linux 先，Windows 后（清单按平台 key 合并，串行避免竞态）
+  # needs 同时包含两个 build：任一平台构建失败则不发布
+  # ---------------------------------------------------------------------------
+  publish-linux:
+    name: Publish Linux
+    needs: [build-linux, build-windows]
+    if: github.event_name != 'workflow_dispatch' || inputs.skip_publish == false
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-bundles
+
+      - name: Unpack
+        run: |
+          mkdir -p src-tauri/target/release
+          tar -xzf linux-bundles-*.tar.gz -C src-tauri/target/release
+          find src-tauri/target/release/bundle -type f | sort
+
+      - name: Publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          chmod +x tools/publish/linux.sh tools/check-release.sh
+          ./tools/publish/linux.sh --tag "$TAG" --yes
+
+  publish-windows:
+    name: Publish Windows
+    needs: publish-linux
+    if: github.event_name != 'workflow_dispatch' || inputs.skip_publish == false
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-bundles
+
+      - name: Unpack
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/target/release | Out-Null
+          Expand-Archive -Path windows-bundles.zip -DestinationPath src-tauri/target/release -Force
+          Get-ChildItem -Recurse src-tauri/target/release/bundle | Select-Object FullName
+
+      - name: Publish
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: pwsh -File tools/publish/windows.ps1 -Tag $env:TAG -Yes
+
+  # ---------------------------------------------------------------------------
+  # 发布后核对：清单版本与 tag 一致，且两个平台条目都在
+  # ---------------------------------------------------------------------------
+  verify:
+    name: Verify latest.json
+    needs: [publish-linux, publish-windows]
+    if: github.event_name != 'workflow_dispatch' || inputs.skip_publish == false
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - name: Check manifest
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          URL="https://github.com/$REPO/releases/latest/download/latest.json"
+          # /releases/latest/download 走 CDN，刚发布时可能短暂 404/504 或返回上一版清单
+          CODE=""
+          for i in $(seq 1 10); do
+            CODE="$(curl -sL -o latest.json -w '%{http_code}' --max-time 30 "$URL" || true)"
+            if [ "$CODE" = "200" ] && python3 -c "import json,sys; json.load(open('latest.json'))" 2>/dev/null; then
+              echo "第 $i 次抓取成功"
+              break
+            fi
+            echo "第 $i 次抓取失败（HTTP $CODE），10 秒后重试"
+            sleep 10
+          done
+          cat latest.json
+          python3 - <<'PY'
+          import json, os, sys
+
+          with open('latest.json', encoding='utf-8') as f:
+              data = json.load(f)
+          want = os.environ['TAG'].lstrip('v')
+          got = data.get('version')
+          platforms = sorted((data.get('platforms') or {}).keys())
+          print(f'version={got} platforms={platforms}')
+          if got != want:
+              sys.exit(f'清单版本 {got} 与 tag {want} 不一致')
+          missing = {'linux-x86_64', 'windows-x86_64'} - set(platforms)
+          if missing:
+              sys.exit(f'清单缺少平台条目: {sorted(missing)}')
+          print('OK: 两个平台条目齐全')
+          PY

@@ -13,7 +13,8 @@ param(
     [string]$Tag,
     [string]$Notes,
     [string]$Repo,
-    [string]$BundleDir
+    [string]$BundleDir,
+    [switch]$Yes   # 跳过交互确认（CI 用）
 )
 
 $ErrorActionPreference = "Stop"
@@ -194,11 +195,16 @@ else {
 }
 
 Write-Host ""
-Write-Host "  注意: 继续后将上传安装包并更新 latest.json，对终端用户立即可见。"
-$Confirm = Read-Host "  确认继续？输入 yes 继续，其他任意输入取消"
-if ($Confirm -ne "yes") {
-    Write-Host "已取消发布"
-    exit 0
+if ($Yes) {
+    Write-Host "  -Yes: 跳过交互确认（CI 用）" -ForegroundColor Yellow
+}
+else {
+    Write-Host "  注意: 继续后将上传安装包并更新 latest.json，对终端用户立即可见。"
+    $Confirm = Read-Host "  确认继续？输入 yes 继续，其他任意输入取消"
+    if ($Confirm -ne "yes") {
+        Write-Host "已取消发布"
+        exit 0
+    }
 }
 Write-Host ""
 

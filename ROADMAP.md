@@ -113,6 +113,8 @@ P1-3 备份还原 → P1-8 数据同步
 | V2-3.4 | 更新源单一入口 | 客户端从 GitHub 读取清单 | [tauri.conf.json](src-tauri/tauri.conf.json) `endpoints` 只保留 `https://github.com/AuroraLZDF/auroradb/releases/latest/download/latest.json` |
 | V2-3.5 | 版本单一来源 | 三处版本号一致 | `tauri.conf.json` 为准，构建时校验 `Cargo.toml` / `package.json` 一致，不一致直接失败 |
 | V2-3.6 | 发布前检查 | 防止漏发或发错 | 校验各平台 `.sig` 存在、单附件 ≤2GB、更新地址与配置一致、`SHA256SUMS` 已生成 |
+| V2-3.7 ✅ | tag 触发自动发布 | `git push --tags` 后无需人工介入，两个平台产物与合并后的清单自动到位 | [.github/workflows/release.yml](.github/workflows/release.yml)：`check`（版本/tag 比对/签名私钥/前端）→ `build-linux` + `build-windows` → `publish-linux` → `publish-windows` → `verify`（断言清单含两个平台）。`publish-*` 同时依赖两个 build，任一平台构建失败即整体不发布 |
+| V2-3.8 ✅ | e2e 进入 CI 门禁 | 每次 push/PR 跑 Playwright 用例 | [.github/workflows/ci.yml](.github/workflows/ci.yml) 新增 `e2e` job（`npx playwright install --with-deps chromium` + `npm run test:e2e`），失败上传 report |
 
 ## V2-4 大库性能补齐（P1）
 
