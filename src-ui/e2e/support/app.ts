@@ -81,12 +81,33 @@ export async function openTableTab(page: Page, table: string = FIXTURE.table): P
 export async function runQuery(page: Page, sql: string): Promise<void> {
   await page.locator('button[title="新建查询"]').click()
 
-  const editor = page.locator('.sql-view textarea.sql-textarea')
+  // v2.1.1 起编辑器是 CodeMirror 6（contenteditable），不再是 textarea
+  const editor = page.locator('.sql-view .cm-host .cm-content')
   await expect(editor).toBeVisible()
-  await editor.fill(sql)
+  await editor.click()
+  await page.keyboard.press('ControlOrMeta+a')
+  await page.keyboard.insertText(sql)
+  await expect(editor).toContainText(sql.slice(0, 12))
+
   await page.locator('.sql-view .btn-execute').click()
 
   await expect(page.locator('.result-panel .result-header')).toContainText('执行成功')
+}
+
+/**
+ * 选择 CustomSelect 的某一项：v2.2.1 起筛选面板的原生 `<select>` 换成了组件，
+ * `selectOption()` 不再适用 —— 要先点开触发器，再点 Teleport 到 body 的选项。
+ */
+export async function chooseCustomSelect(
+  page: Page,
+  trigger: Locator,
+  label: string,
+): Promise<void> {
+  await trigger.click()
+  const option = page
+    .locator('.select-dropdown:visible .select-option')
+    .filter({ hasText: new RegExp(`^${escapeRegExp(label)}$`) })
+  await option.first().click()
 }
 
 /** 单击单元格进入编辑，改值后回车，再走「保存 → 预览确认」流程 */

@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { FIXTURE, getTauriCalls, installTauriMock } from './support/tauri-mock'
-import { connectToMockDatabase, openTableTab } from './support/app'
+import { chooseCustomSelect, connectToMockDatabase, openTableTab } from './support/app'
 
 /**
  * 表格筛选回归：LIKE 必须是「包含」语义。
@@ -24,8 +24,9 @@ test.describe('表格筛选', () => {
     }
 
     const row = page.locator('.filter-row').first()
-    await row.locator('select.filter-select').nth(0).selectOption({ label: 'name' })
-    await row.locator('select.filter-select').nth(1).selectOption({ label: 'LIKE（包含）' })
+    const selects = row.locator('.filter-select')
+    await chooseCustomSelect(page, selects.nth(0).locator('.select-trigger'), 'name')
+    await chooseCustomSelect(page, selects.nth(1).locator('.select-trigger'), 'LIKE（包含）')
     await row.locator('input.filter-value').fill('li')
 
     await expect(page.locator('.filter-preview code')).toHaveText("WHERE `name` LIKE '%li%'")
@@ -53,8 +54,9 @@ test.describe('表格筛选', () => {
     }
 
     const row = page.locator('.filter-row').first()
-    await row.locator('select.filter-select').nth(0).selectOption({ label: 'name' })
-    await row.locator('select.filter-select').nth(1).selectOption({ label: 'LIKE（包含）' })
+    const selects = row.locator('.filter-select')
+    await chooseCustomSelect(page, selects.nth(0).locator('.select-trigger'), 'name')
+    await chooseCustomSelect(page, selects.nth(1).locator('.select-trigger'), 'LIKE（包含）')
     await row.locator('input.filter-value').fill('Ali%')
 
     await expect(page.locator('.filter-preview code')).toHaveText("WHERE `name` LIKE 'Ali%'")

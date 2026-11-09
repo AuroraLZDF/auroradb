@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
+import { setLocale } from '@/i18n'
 
 // 更新源偶发 5xx 不该把英文报错抛给用户：这里验证重试与错误分类
 const checkMock = vi.fn()
@@ -48,6 +49,8 @@ describe('更新检查的重试与错误分类', () => {
     toastError.mockReset()
     // node 环境没有 window；store 用 `'__TAURI_INTERNALS__' in window` 判断是否在 Tauri 里
     vi.stubGlobal('window', { __TAURI_INTERNALS__: {} })
+    // 断言的是中文文案：CI runner 的 navigator.language 是 en-US，这里显式固定语言
+    setLocale('zh-CN')
   })
 
   afterEach(() => {
