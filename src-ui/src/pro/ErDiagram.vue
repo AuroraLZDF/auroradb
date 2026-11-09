@@ -1064,8 +1064,8 @@ function buildExportSvg(): { svg: string; width: number; height: number } {
   const selectedBg = cssVar('--surface-selected', 'rgba(33,150,243,0.12)')
   const textPrimary = cssVar('--text-primary', '#1a1a1a')
   const textSecondary = cssVar('--text-secondary', '#444444')
-  const textTertiary = cssVar('--text-tertiary', '#888888')
-  const brand = cssVar('--brand-500', '#2196f3')
+  const textTertiary = cssVar('--text-tertiary', '#6F6F75')
+  const brand = cssVar('--brand-500', '#4C9AFF')
   const linkColor = cssVar('--border-strong', '#999999')
   const fontFamily = "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif"
 

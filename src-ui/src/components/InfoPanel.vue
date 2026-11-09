@@ -752,7 +752,7 @@ watch(() => [props.type, props.data], () => {
 
 /* DDL代码 - 格式化显示 */
 :deep(.ddl-container) {
-  background: #1e1e1e;
+  background: var(--canvas);
   border-radius: 6px;
   overflow: auto;
   max-height: 400px;
@@ -861,7 +861,7 @@ watch(() => [props.type, props.data], () => {
   width: 40px;
   height: 40px;
   border: 3px solid rgba(255, 255, 255, 0.1);
-  border-top-color: var(--color-primary, #42b883);
+  border-top-color: var(--brand-500);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
   margin-bottom: 16px;

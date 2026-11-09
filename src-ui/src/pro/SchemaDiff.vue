@@ -789,7 +789,7 @@ async function applyTableDiff() {
 }
 
 .filter-tab.active {
-  background: rgba(33, 150, 243, 0.1);
+  background: var(--selected-fill);
   color: var(--brand-500);
   font-weight: var(--font-medium);
 }
@@ -817,7 +817,7 @@ async function applyTableDiff() {
 }
 
 .table-item.active {
-  background: rgba(33, 150, 243, 0.08);
+  background: var(--hover-fill);
   border-left-color: var(--brand-500);
 }
 

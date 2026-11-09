@@ -432,7 +432,7 @@ onUnmounted(() => {
 
 .select-trigger.open {
   border-color: var(--brand-500);
-  box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.15);
+  box-shadow: 0 0 0 3px rgba(76, 154, 255, 0.2);
 }
 
 .select-trigger:focus-visible {

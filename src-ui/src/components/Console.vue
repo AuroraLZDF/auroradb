@@ -732,7 +732,7 @@ onMounted(() => {
 <style scoped>
 .console-wrapper {
   height: 100%;
-  background: #1e1e1e;
+  background: var(--canvas);
   color: #d4d4d4;
   font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
   font-size: 13px;
@@ -798,7 +798,7 @@ onMounted(() => {
 .create-table-output {
   margin: 8px 0;
   padding: 12px 16px;
-  background: #1e1e1e;
+  background: var(--canvas);
   border: 1px solid #3c3c3c;
   border-radius: 4px;
 }
@@ -901,7 +901,7 @@ onMounted(() => {
 }
 
 .console-output::-webkit-scrollbar-track {
-  background: #1e1e1e;
+  background: var(--canvas);
 }
 
 .console-output::-webkit-scrollbar-thumb {

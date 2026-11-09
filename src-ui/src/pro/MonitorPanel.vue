@@ -891,7 +891,7 @@ startTimer()
   padding: 1px 8px;
   border-radius: 999px;
   font-size: var(--text-xs);
-  background: rgba(59, 130, 246, 0.12);
+  background: var(--selected-fill);
   color: var(--brand-500);
   white-space: nowrap;
 }

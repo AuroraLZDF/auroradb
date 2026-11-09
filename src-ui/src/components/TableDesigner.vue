@@ -1177,7 +1177,7 @@ onMounted(() => {
 .table-name-field:focus {
   outline: none;
   border-color: var(--brand-500);
-  box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.15);
+  box-shadow: 0 0 0 3px rgba(76, 154, 255, 0.2);
 }
 
 .header-center {
@@ -1532,7 +1532,7 @@ onMounted(() => {
   outline: none;
   border-color: var(--brand-500);
   background: var(--surface-default);
-  box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.15);
+  box-shadow: 0 0 0 3px rgba(76, 154, 255, 0.2);
 }
 
 .fields-table input[type="checkbox"],
@@ -1574,7 +1574,7 @@ onMounted(() => {
 .fk-table :deep(.select-trigger.open) {
   border-color: var(--brand-500);
   background: var(--surface-default);
-  box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.15);
+  box-shadow: 0 0 0 3px rgba(76, 154, 255, 0.2);
 }
 
 /* ---------- 关键字段徽章 ---------- */
@@ -1617,7 +1617,7 @@ onMounted(() => {
 }
 
 [data-theme="dark"] .key-badge.index {
-  background: rgba(100, 181, 246, 0.18);
+  background: var(--selected-fill);
   color: var(--brand-300);
 }
 
@@ -1660,7 +1660,7 @@ onMounted(() => {
   margin: 0;
   padding: var(--space-4);
   max-height: 60vh;
-  background: #1E1E1E;
+  background: var(--canvas);
   color: #A5D6A7;
   font-family: var(--font-mono);
   font-size: var(--text-base);
@@ -1766,7 +1766,7 @@ onMounted(() => {
 .field-properties-panel .property-row input[type="text"]:focus {
   outline: none;
   border-color: var(--brand-500);
-  box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.15);
+  box-shadow: 0 0 0 3px rgba(76, 154, 255, 0.2);
 }
 
 .field-properties-panel .property-row input[type="checkbox"] {

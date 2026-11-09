@@ -3139,7 +3139,7 @@ tr:hover {
 }
 
 tr.selected {
-  background: #87CEEB !important;
+  background: var(--selected-fill) !important;
 }
 
 tr.new-row {
@@ -3208,13 +3208,13 @@ td.is-null {
   background: var(--color-background);
   box-sizing: border-box;
   color: var(--color-text);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15), 0 4px 12px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 0 0 3px rgba(76, 154, 255, 0.2), 0 4px 12px rgba(0, 0, 0, 0.15);
   transition: all 0.15s ease;
 }
 
 .edit-input:focus {
   border-color: var(--brand-600);
-  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2), 0 6px 16px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 0 0 4px rgba(76, 154, 255, 0.25), 0 6px 16px rgba(0, 0, 0, 0.2);
 }
 
 /* 编辑器包装器 */
@@ -3243,7 +3243,7 @@ td.is-null {
   padding: 2px;
   background: var(--color-background);
   border: 1px solid var(--brand-500);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15), 0 4px 12px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 0 0 3px rgba(76, 154, 255, 0.2), 0 4px 12px rgba(0, 0, 0, 0.15);
 }
 
 .datetime-editor-container .edit-input {
@@ -3499,7 +3499,7 @@ td.is-null {
 
 td.editing {
   padding: 2px;
-  background: rgba(59, 130, 246, 0.05);
+  background: var(--hover-fill);
 }
 
 td.editing::before {

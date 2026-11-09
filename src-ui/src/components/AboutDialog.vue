@@ -133,7 +133,7 @@ onMounted(async () => {
   width: 56px;
   height: 56px;
   border-radius: var(--radius-lg);
-  background: rgba(33, 150, 243, 0.12);
+  background: var(--hover-fill);
   color: var(--brand-500);
   flex-shrink: 0;
 }

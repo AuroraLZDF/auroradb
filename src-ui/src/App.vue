@@ -1925,28 +1925,28 @@ body {
 }
 
 .app-header {
-  height: 48px;
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-default);
+  height: var(--header-height);
+  background: var(--panel);
+  border-bottom: none;
   color: var(--text-primary);
   display: flex;
   align-items: center;
-  padding: 0 var(--space-4);
-  gap: var(--space-4);
+  padding: 0 var(--space-3);
+  gap: var(--space-3);
 }
 
 .app-header h1 {
-  font-size: var(--text-lg);
+  font-size: var(--text-sm);
   font-weight: var(--font-semibold);
   margin: 0;
   flex-shrink: 0;
-  color: var(--brand-600);
+  color: var(--text-primary);
 }
 
 /* 顶部工具栏 */
 .header-toolbar {
   display: flex;
-  gap: var(--space-2);
+  gap: var(--space-1);
   flex: 1;
 }
 
@@ -1954,26 +1954,26 @@ body {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  background: var(--surface-subtle);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  color: var(--text-primary);
+  height: var(--control-height-sm);
+  padding: 0 var(--space-2);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
   cursor: pointer;
   font-size: var(--text-sm);
   font-weight: var(--font-medium);
-  transition: var(--transition-all);
+  transition: var(--transition-colors);
 }
 
 .header-btn:hover {
-  background: var(--surface-hover);
-  border-color: var(--border-strong);
+  background: var(--hover-fill);
+  color: var(--text-primary);
 }
 
 .header-btn.active {
-  background: var(--brand-500);
-  border-color: var(--brand-500);
-  color: white;
+  background: var(--selected-fill);
+  color: var(--text-primary);
 }
 
 .header-btn-icon {
@@ -1997,8 +1997,8 @@ body {
   min-width: 200px;
   max-width: 400px;
   width: 240px;
-  background: var(--bg-secondary);
-  border-right: 1px solid var(--border-default);
+  background: var(--panel);
+  border-right: none;
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -2025,8 +2025,8 @@ body {
   min-width: 200px;
   max-width: 800px;
   width: 280px;
-  background: var(--bg-secondary);
-  border-left: 1px solid var(--border-default);
+  background: var(--panel);
+  border-left: none;
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -2057,8 +2057,8 @@ body {
 
 /* 拖拽分隔条 */
 .resizer {
-  width: 4px;
-  background: var(--border-subtle);
+  width: 3px;
+  background: transparent;
   cursor: col-resize;
   transition: background var(--duration-fast);
   user-select: none;
@@ -2117,25 +2117,25 @@ body {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2);
-  border-radius: var(--radius-md);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  background: var(--surface-default);
-  border: 1px solid var(--border-default);
+  background: transparent;
+  border: none;
   transition: var(--transition-colors);
 }
 
 .connection-item.saved {
-  opacity: 0.8;
+  opacity: 0.9;
 }
 
 .connection-item:hover {
-  background: var(--surface-hover);
+  background: var(--hover-fill);
 }
 
 .connection-item.active {
-  background: var(--surface-active);
-  border-color: var(--brand-500);
+  background: var(--selected-fill);
+  border-color: transparent;
 }
 
 .expand-icon {
@@ -2217,16 +2217,15 @@ body {
 }
 
 .database-item.active > .database-header {
-  background: var(--surface-active);
+  background: var(--selected-fill);
 }
 
 .database-item.opened > .database-header {
-  background: rgba(var(--brand-500-rgb, 59, 130, 246), 0.1);
-  border-left: 3px solid var(--brand-500);
+  background: var(--selected-fill);
 }
 
 .database-item.opened > .database-header .database-name {
-  color: var(--brand-500);
+  color: var(--text-primary);
   font-weight: var(--font-medium);
 }
 
@@ -2234,15 +2233,15 @@ body {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2);
-  border-radius: var(--radius-md);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-size: var(--text-sm);
   transition: var(--transition-colors);
 }
 
 .database-header:hover {
-  background: var(--surface-hover);
+  background: var(--hover-fill);
 }
 
 .database-icon {
@@ -2273,14 +2272,14 @@ body {
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-1) var(--space-2);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-size: var(--text-xs);
   transition: var(--transition-colors);
 }
 
 .category-header:hover {
-  background: var(--surface-hover);
+  background: var(--hover-fill);
 }
 
 .category-icon {
@@ -2305,23 +2304,23 @@ body {
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-1) var(--space-2);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-size: var(--text-xs);
   transition: var(--transition-colors);
 }
 
 .object-item:hover {
-  background: var(--surface-hover);
+  background: var(--hover-fill);
 }
 
 .object-item.active {
-  background: var(--surface-active);
+  background: var(--selected-fill);
+  color: var(--text-primary);
 }
 
 .object-item.viewing-structure {
-  background: #87CEEB;
-  border-left: 3px solid var(--warning-500);
+  background: var(--selected-fill);
 }
 
 .object-icon {
@@ -2347,37 +2346,49 @@ body {
 /* 视图切换标签 */
 .view-tabs {
   display: flex;
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-default);
-  padding: var(--space-2) var(--space-4) 0;
-  gap: var(--space-1);
+  background: var(--panel);
+  border-bottom: 1px solid var(--hairline);
+  padding: 0 var(--space-2) 0;
+  gap: 0;
 }
 
 .view-tab {
-  padding: var(--space-2) var(--space-3);
-  background: var(--surface-subtle);
-  border: 1px solid var(--border-default);
-  border-bottom: none;
-  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  height: var(--tabbar-height);
+  padding: 0 var(--space-3);
+  background: transparent;
+  border: none;
+  border-radius: 0;
   cursor: pointer;
   font-size: var(--text-sm);
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  color: var(--text-primary);
+  color: var(--text-secondary);
   transition: var(--transition-colors);
+  box-shadow: inset -1px 0 0 var(--hairline);
+  position: relative;
 }
 
 .view-tab:hover {
-  background: var(--surface-hover);
+  background: var(--hover-fill);
+  color: var(--text-primary);
 }
 
 .view-tab.active {
-  background: var(--surface-default);
-  border-bottom: 2px solid var(--surface-default);
-  margin-bottom: -1px;
-  color: var(--brand-600);
+  background: var(--canvas);
+  color: var(--text-primary);
   font-weight: var(--font-medium);
+  box-shadow: none;
+}
+
+.view-tab.active::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: var(--canvas);
 }
 
 .view-tab-close {
@@ -2435,7 +2446,7 @@ body {
 }
 
 .modal-content {
-  background: var(--surface-default);
+  background: var(--overlay);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-xl);
   max-width: 480px;
@@ -2502,9 +2513,9 @@ body {
 /* 右键菜单 */
 .context-menu {
   position: fixed;
-  background: var(--surface-default);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-lg);
+  background: var(--overlay);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
   z-index: var(--z-popover);
   min-width: 160px;
@@ -2535,7 +2546,7 @@ body {
 }
 
 .menu-item:hover {
-  background: var(--surface-hover);
+  background: var(--hover-fill);
 }
 
 .menu-item-danger {
@@ -2543,8 +2554,8 @@ body {
 }
 
 .menu-item-danger:hover {
-  background: var(--error-50);
-  color: var(--error-600);
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--error-500);
 }
 
 .menu-icon {
@@ -2554,7 +2565,7 @@ body {
 
 .menu-divider {
   height: 1px;
-  background: var(--border-subtle);
+  background: var(--hairline);
   margin: var(--space-1) 0;
 }
 
@@ -2594,7 +2605,7 @@ body {
   .sidebar-left {
     position: fixed;
     left: 0;
-    top: 48px;
+    top: var(--header-height);
     bottom: 0;
     width: 280px !important;
     min-width: 280px !important;
@@ -2611,7 +2622,7 @@ body {
   .app-body.sidebar-open::before {
     content: '';
     position: fixed;
-    inset: 48px 0 0 0;
+    inset: var(--header-height) 0 0 0;
     background: var(--bg-overlay);
     z-index: var(--z-modal-backdrop);
   }
@@ -2627,7 +2638,7 @@ body {
   .sidebar-right {
     position: fixed;
     right: 0;
-    top: 48px;
+    top: var(--header-height);
     bottom: 0;
     width: 320px !important;
     min-width: 320px !important;
@@ -2646,7 +2657,7 @@ body {
   .app-body.panel-open::after {
     content: '';
     position: fixed;
-    inset: 48px 0 0 0;
+    inset: var(--header-height) 0 0 0;
     background: var(--bg-overlay);
     z-index: var(--z-modal-backdrop);
   }

@@ -221,7 +221,8 @@ function colorOf(item: TreeItem): string {
 /** 连接颜色标识：渲染为条目左侧色条 */
 function colorStyleOf(item: TreeItem): Record<string, string> | undefined {
   const color = colorOf(item)
-  return color ? { borderLeft: `3px solid ${color}` } : undefined
+  // DBX 式语义色：不再用整条 3px 边框，改为 StatusDot 前的细色点（box-shadow 内描）
+  return color ? { boxShadow: `inset 3px 0 0 ${color}` } : undefined
 }
 
 /** 按分组聚合可见连接：未分组排最前（无标题），其余按名称排序 */
@@ -286,14 +287,13 @@ function getConnectionStatus(state: string): 'online' | 'offline' | 'reconnectin
 }
 
 .section-header {
-  padding: var(--space-3);
-  border-bottom: 1px solid var(--border-default);
+  padding: var(--space-2) var(--space-3);
 }
 
 .section-header h3 {
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
   font-weight: var(--font-semibold);
-  color: var(--text-secondary);
+  color: var(--text-tertiary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -314,12 +314,13 @@ function getConnectionStatus(state: string): 'online' | 'offline' | 'reconnectin
 
 .filter-input {
   width: 100%;
-  padding: var(--space-1) var(--space-2) var(--space-1) calc(var(--space-2) * 2 + 10px);
+  height: var(--control-height-sm);
+  padding: 0 var(--space-2) 0 calc(var(--space-2) * 2 + 10px);
   font-size: var(--text-xs);
   color: var(--text-primary);
-  background: var(--surface-default);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  background: var(--raised);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
   outline: none;
   transition: var(--transition-colors);
   user-select: text;
@@ -327,6 +328,7 @@ function getConnectionStatus(state: string): 'online' | 'offline' | 'reconnectin
 }
 
 .filter-input:focus {
+  background: var(--canvas);
   border-color: var(--brand-500);
 }
 
@@ -364,25 +366,30 @@ function getConnectionStatus(state: string): 'online' | 'offline' | 'reconnectin
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2);
-  border-radius: var(--radius-md);
+  min-height: var(--tree-row-height);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  background: var(--surface-default);
-  border: 1px solid var(--border-default);
+  background: transparent;
+  border: none;
   transition: var(--transition-colors);
 }
 
 .connection-item.saved {
-  opacity: 0.8;
+  opacity: 0.9;
 }
 
 .connection-item:hover {
-  background: var(--surface-hover);
+  background: var(--hover-fill);
 }
 
 .connection-item.active {
-  background: var(--surface-active);
-  border-color: var(--brand-500);
+  background: var(--selected-fill);
+  border-color: transparent;
+}
+
+.connection-item.viewing-info {
+  background: var(--selected-fill);
 }
 
 .expand-icon {
@@ -399,8 +406,10 @@ function getConnectionStatus(state: string): 'online' | 'offline' | 'reconnectin
 .connection-info {
   flex: 1;
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
   overflow: hidden;
+  min-width: 0;
 }
 
 .name {
@@ -408,6 +417,7 @@ function getConnectionStatus(state: string): 'online' | 'offline' | 'reconnectin
   align-items: center;
   gap: 4px;
   min-width: 0;
+  flex-shrink: 1;
   font-size: var(--text-sm);
   font-weight: var(--font-medium);
 }
@@ -420,31 +430,32 @@ function getConnectionStatus(state: string): 'online' | 'offline' | 'reconnectin
 
 .mode-badge {
   flex: none;
-  padding: 1px 4px;
-  border-radius: 4px;
+  padding: 0 4px;
+  border-radius: 3px;
   font-size: 10px;
   font-weight: 500;
-  line-height: 1.4;
+  line-height: 1.5;
 }
 
 .mode-badge.readonly {
   color: var(--color-danger);
-  background: rgba(231, 76, 60, 0.12);
+  background: rgba(239, 68, 68, 0.12);
 }
 
 .mode-badge.safe {
   color: var(--color-warning);
-  background: rgba(243, 156, 18, 0.14);
+  background: rgba(245, 158, 11, 0.14);
 }
 
 .mode-badge.driver {
-  color: var(--brand-500);
-  background: rgba(59, 130, 246, 0.12);
+  color: var(--text-secondary);
+  background: var(--hover-fill);
 }
 
 .host {
   font-size: var(--text-xs);
   color: var(--text-tertiary);
+  flex-shrink: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -454,6 +465,7 @@ function getConnectionStatus(state: string): 'online' | 'offline' | 'reconnectin
 .database-hint {
   font-size: var(--text-xs);
   color: var(--text-tertiary);
+  flex-shrink: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

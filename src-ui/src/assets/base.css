@@ -1,106 +1,108 @@
-/* color palette from <https://github.com/vuejs/theme> */
+/**
+ * AuroraDB Base CSS
+ * 旧 token 名保留为 design-system.css 语义层的别名（component 兼容层）。
+ * 新代码请直接使用 design-system.css 的语义层（canvas/panel/raised/overlay/hairline）与 brand/error 色阶。
+ * Version: 2.0.0 (DBX-aligned tokens)
+ */
+
 :root {
+  /* 遗留基础色板（映射到新灰阶语义，勿在新代码中使用） */
   --vt-c-white: #ffffff;
-  --vt-c-white-soft: #f8f8f8;
-  --vt-c-white-mute: #f2f2f2;
+  --vt-c-white-soft: #f4f4f5;
+  --vt-c-white-mute: #ebebed;
 
-  --vt-c-black: #181818;
-  --vt-c-black-soft: #222222;
-  --vt-c-black-mute: #282828;
+  --vt-c-black: #161617;
+  --vt-c-black-soft: #1c1d1f;
+  --vt-c-black-mute: #232325;
 
-  --vt-c-indigo: #2c3e50;
+  --vt-c-indigo: #232326;
 
-  --vt-c-divider-light-1: rgba(60, 60, 60, 0.29);
-  --vt-c-divider-light-2: rgba(60, 60, 60, 0.12);
-  --vt-c-divider-dark-1: rgba(84, 84, 84, 0.65);
-  --vt-c-divider-dark-2: rgba(84, 84, 84, 0.48);
+  --vt-c-divider-light-1: rgba(0, 0, 0, 0.16);
+  --vt-c-divider-light-2: rgba(0, 0, 0, 0.11);
+  --vt-c-divider-dark-1: rgba(255, 255, 255, 0.2);
+  --vt-c-divider-dark-2: rgba(255, 255, 255, 0.1);
 
-  --vt-c-text-light-1: var(--vt-c-indigo);
-  --vt-c-text-light-2: rgba(60, 60, 60, 0.66);
-  --vt-c-text-dark-1: var(--vt-c-white);
-  --vt-c-text-dark-2: rgba(235, 235, 235, 0.64);
-
-  /* Semantic colors */
-  --color-primary: #42b883;
-  --color-primary-light: #42d392;
-  --color-primary-dark: #33a06f;
-  --color-danger: #e74c3c;
-  --color-warning: #f39c12;
-  --color-info: #3498db;
-  --color-success: #2ecc71;
+  /* 语义色（原 Vue 模板绿色已弃用，统一映射到 design-system 色阶） */
+  --color-primary: var(--brand-600);
+  --color-primary-light: var(--brand-400);
+  --color-primary-dark: var(--brand-700);
+  --color-danger: var(--error-500);
+  --color-warning: var(--warning-500);
+  --color-info: var(--brand-500);
+  --color-success: var(--success-500);
 }
 
 /* Light theme (default) */
 :root,
 html[data-theme="light"] {
-  --color-background: var(--vt-c-white);
-  --color-background-soft: var(--vt-c-white-soft);
-  --color-background-mute: var(--vt-c-white-mute);
-  --color-background-hover: rgba(0, 0, 0, 0.05);
-  --color-background-active: rgba(0, 0, 0, 0.1);
+  --color-background: var(--canvas);
+  --color-background-soft: var(--panel);
+  --color-background-mute: var(--raised);
+  --color-background-hover: var(--hover-fill);
+  --color-background-active: var(--selected-fill);
 
-  --color-border: var(--vt-c-divider-light-2);
-  --color-border-hover: var(--vt-c-divider-light-1);
+  --color-border: var(--hairline);
+  --color-border-hover: var(--hairline-strong);
 
-  --color-heading: var(--vt-c-text-light-1);
-  --color-text: var(--vt-c-text-light-1);
-  --color-text-secondary: var(--vt-c-text-light-2);
+  --color-heading: var(--text-primary);
+  --color-text: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
 
   --color-shadow: rgba(0, 0, 0, 0.1);
   --color-overlay: rgba(0, 0, 0, 0.4);
 
   /* RGB values for use in rgba() - Light theme */
-  --bg-primary-rgb: 255, 255, 255;
-  --bg-secondary-rgb: 248, 248, 248;
+  --bg-primary-rgb: 253, 253, 254;
+  --bg-secondary-rgb: 244, 244, 245;
 
   --section-gap: 160px;
 }
 
 /* Dark theme */
 html[data-theme="dark"] {
-  --color-background: var(--vt-c-black);
-  --color-background-soft: var(--vt-c-black-soft);
-  --color-background-mute: var(--vt-c-black-mute);
-  --color-background-hover: rgba(255, 255, 255, 0.05);
-  --color-background-active: rgba(255, 255, 255, 0.1);
+  --color-background: var(--canvas);
+  --color-background-soft: var(--panel);
+  --color-background-mute: var(--raised);
+  --color-background-hover: var(--hover-fill);
+  --color-background-active: var(--selected-fill);
 
-  --color-border: var(--vt-c-divider-dark-2);
-  --color-border-hover: var(--vt-c-divider-dark-1);
+  --color-border: var(--hairline);
+  --color-border-hover: var(--hairline-strong);
 
-  --color-heading: var(--vt-c-text-dark-1);
-  --color-text: var(--vt-c-text-dark-1);
-  --color-text-secondary: var(--vt-c-text-dark-2);
+  --color-heading: var(--text-primary);
+  --color-text: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
 
   --color-shadow: rgba(0, 0, 0, 0.3);
-  --color-overlay: rgba(0, 0, 0, 0.5);
+  --color-overlay: rgba(0, 0, 0, 0.6);
 
   /* RGB values for use in rgba() - Dark theme */
-  --bg-primary-rgb: 24, 24, 24;
-  --bg-secondary-rgb: 34, 34, 34;
+  --bg-primary-rgb: 22, 22, 23;
+  --bg-secondary-rgb: 28, 29, 31;
 }
 
 /* Auto theme - follows system preference */
 @media (prefers-color-scheme: dark) {
   html[data-theme="auto"] {
-    --color-background: var(--vt-c-black);
-    --color-background-soft: var(--vt-c-black-soft);
-    --color-background-mute: var(--vt-c-black-mute);
-    --color-background-hover: rgba(255, 255, 255, 0.05);
-    --color-background-active: rgba(255, 255, 255, 0.1);
+    --color-background: var(--canvas);
+    --color-background-soft: var(--panel);
+    --color-background-mute: var(--raised);
+    --color-background-hover: var(--hover-fill);
+    --color-background-active: var(--selected-fill);
 
-    --color-border: var(--vt-c-divider-dark-2);
-    --color-border-hover: var(--vt-c-divider-dark-1);
+    --color-border: var(--hairline);
+    --color-border-hover: var(--hairline-strong);
 
-    --color-heading: var(--vt-c-text-dark-1);
-    --color-text: var(--vt-c-text-dark-1);
-    --color-text-secondary: var(--vt-c-text-dark-2);
+    --color-heading: var(--text-primary);
+    --color-text: var(--text-primary);
+    --color-text-secondary: var(--text-secondary);
 
     --color-shadow: rgba(0, 0, 0, 0.3);
-    --color-overlay: rgba(0, 0, 0, 0.5);
+    --color-overlay: rgba(0, 0, 0, 0.6);
 
     /* RGB values for use in rgba() - Auto dark */
-    --bg-primary-rgb: 24, 24, 24;
-    --bg-secondary-rgb: 34, 34, 34;
+    --bg-primary-rgb: 22, 22, 23;
+    --bg-secondary-rgb: 28, 29, 31;
   }
 }
 
@@ -119,10 +121,7 @@ body {
   padding: 0;
   color: var(--color-text);
   background: var(--color-background);
-  transition:
-    color 0.5s,
-    background-color 0.5s;
-  line-height: 1.6;
+  line-height: 1.5;
   font-family:
     Inter,
     -apple-system,
@@ -135,8 +134,10 @@ body {
     'Fira Sans',
     'Droid Sans',
     'Helvetica Neue',
+    'PingFang SC',
+    'Microsoft YaHei',
     sans-serif;
-  font-size: 15px;
+  font-size: var(--text-base, 13px);
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;

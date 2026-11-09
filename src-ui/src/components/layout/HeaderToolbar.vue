@@ -6,7 +6,7 @@
       @click="emit('toggleSidebar')"
       :title="t('header.toggleSidebar')"
     >
-      <Menu :size="20" />
+      <Menu :size="16" />
     </button>
 
     <h1>AuroraDB</h1>
@@ -19,7 +19,7 @@
           @click="emit('openConnectionForm')"
           :title="t('header.newConnection')"
         >
-          <Plug class="header-btn-icon" :size="16" />
+          <Plug class="header-btn-icon" :size="15" />
           <span class="header-btn-label u-hidden-mobile">{{ t('header.connection') }}</span>
         </button>
         <button
@@ -29,7 +29,7 @@
           :title="t('header.newQuery')"
           :disabled="!currentConnection"
         >
-          <FileCode class="header-btn-icon" :size="16" />
+          <FileCode class="header-btn-icon" :size="15" />
           <span class="header-btn-label u-hidden-mobile">{{ t('header.newQuery') }}</span>
         </button>
         <div class="tools-menu" ref="toolsMenuRef">
@@ -41,7 +41,7 @@
             :aria-expanded="toolsOpen"
             @click.stop="toggleMenu('tools')"
           >
-            <Wrench class="header-btn-icon" :size="16" />
+            <Wrench class="header-btn-icon" :size="15" />
             <span class="header-btn-label u-hidden-mobile">{{ t('header.tools') }}</span>
             <ChevronDown
               class="tools-chevron"
@@ -57,7 +57,7 @@
               :disabled="connStore.activeConnections.length === 0"
               @click="openTool('openSchemaDiff')"
             >
-              <GitCompare :size="16" />
+              <GitCompare :size="15" />
               <span>{{ t('header.schemaDiff') }}</span>
             </button>
             <button
@@ -67,7 +67,7 @@
               :disabled="connStore.activeConnections.length === 0"
               @click="openTool('openErDiagram')"
             >
-              <Network :size="16" />
+              <Network :size="15" />
               <span>{{ t('header.erDiagram') }}</span>
             </button>
             <button
@@ -77,7 +77,7 @@
               :disabled="connStore.activeConnections.length === 0"
               @click="openTool('openMonitor')"
             >
-              <Activity :size="16" />
+              <Activity :size="15" />
               <span>{{ t('header.monitor') }}</span>
             </button>
             <button
@@ -87,7 +87,7 @@
               :disabled="connStore.activeConnections.length === 0"
               @click="openTool('openBackup')"
             >
-              <HardDrive :size="16" />
+              <HardDrive :size="15" />
               <span>{{ t('header.backup') }}</span>
             </button>
             <button
@@ -97,7 +97,7 @@
               :disabled="connStore.activeConnections.length === 0"
               @click="openTool('openGlobalSearch')"
             >
-              <Search :size="16" />
+              <Search :size="15" />
               <span>{{ t('header.globalSearch') }}</span>
             </button>
             <div class="tools-divider"></div>
@@ -107,7 +107,7 @@
               :title="t('history.open')"
               @click="openTool('openHistory')"
             >
-              <History :size="16" />
+              <History :size="15" />
               <span>{{ t('history.open') }}</span>
             </button>
             <div class="tools-divider"></div>
@@ -118,7 +118,7 @@
               :disabled="!currentConnection"
               @click="openTool('openNewConsoleTab')"
             >
-              <Terminal :size="16" />
+              <Terminal :size="15" />
               <span>{{ t('header.console') }}</span>
             </button>
           </div>
@@ -132,7 +132,7 @@
             :aria-expanded="settingsOpen"
             @click.stop="toggleMenu('settings')"
           >
-            <Settings class="header-btn-icon" :size="16" />
+            <Settings class="header-btn-icon" :size="15" />
             <span class="header-btn-label u-hidden-mobile">{{ t('header.settings') }}</span>
             <ChevronDown
               class="tools-chevron"
@@ -148,7 +148,7 @@
               :disabled="updateStore.busy"
               @click="handleUpdateClick"
             >
-              <RefreshCw :class="{ spinning: updateStore.busy }" :size="16" />
+              <RefreshCw :class="{ spinning: updateStore.busy }" :size="15" />
               <span>{{ updateStore.label }}</span>
             </button>
             <div class="tools-divider"></div>
@@ -158,7 +158,7 @@
               :title="t('header.switchLanguage')"
               @click="closeMenus(); toggleLocale()"
             >
-              <Languages :size="16" />
+              <Languages :size="15" />
               <span>{{ t('header.switchLanguage') }}</span>
               <span class="tools-item-hint">{{ languageLabel }}</span>
             </button>
@@ -168,7 +168,7 @@
               :title="themeTooltip"
               @click="closeMenus(); themeStore.toggleTheme()"
             >
-              <component :is="themeIcon" :size="16" />
+              <component :is="themeIcon" :size="15" />
               <span>{{ t('header.switchTheme') }}</span>
             </button>
             <div class="tools-divider"></div>
@@ -178,7 +178,7 @@
               :title="t('header.aboutHint')"
               @click="openTool('openAbout')"
             >
-              <Info :size="16" />
+              <Info :size="15" />
               <span>{{ t('header.about') }}</span>
             </button>
           </div>
@@ -218,7 +218,7 @@
       @click="emit('togglePanel')"
       :title="t('header.togglePanel')"
     >
-      <PanelRight :size="20" />
+      <PanelRight :size="16" />
     </button>
   </header>
 </template>
@@ -379,22 +379,22 @@ async function handleUpdateClick() {
 
 <style scoped>
 .app-header {
-  height: 48px;
+  height: var(--header-height);
   flex-shrink: 0;
-  background: var(--surface-default);
-  border-bottom: 1px solid var(--border-default);
+  background: var(--panel);
+  border-bottom: none;
   display: flex;
   align-items: center;
-  padding: 0 var(--space-4);
-  gap: var(--space-3);
+  padding: 0 var(--space-3);
+  gap: var(--space-2);
   position: relative;
   z-index: 100;
 }
 
 .app-header h1 {
-  font-size: var(--text-lg);
-  font-weight: var(--font-bold);
-  color: var(--brand-500);
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
   margin: 0;
   flex-shrink: 0;
 }
@@ -405,8 +405,8 @@ async function handleUpdateClick() {
   justify-content: space-between;
   flex: 1;
   min-width: 0;
-  gap: var(--space-2);
-  margin-left: var(--space-4);
+  gap: var(--space-1);
+  margin-left: var(--space-2);
 }
 
 .toolbar-left {
@@ -438,8 +438,8 @@ async function handleUpdateClick() {
   padding: var(--space-1);
   display: flex;
   flex-direction: column;
-  background: var(--surface-default);
-  border: 1px solid var(--border-default);
+  background: var(--overlay);
+  border: 1px solid var(--hairline-strong);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
   z-index: 200;
@@ -462,8 +462,8 @@ async function handleUpdateClick() {
 }
 
 .tools-item:hover:not(:disabled) {
-  background: var(--surface-hover);
-  color: var(--brand-500);
+  background: var(--hover-fill);
+  color: var(--text-primary);
 }
 
 .tools-item:disabled {
@@ -474,7 +474,7 @@ async function handleUpdateClick() {
 .tools-divider {
   height: 1px;
   margin: var(--space-1) 0;
-  background: var(--border-default);
+  background: var(--hairline);
 }
 
 .tools-item-hint {
@@ -488,10 +488,11 @@ async function handleUpdateClick() {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  background: var(--surface-default);
+  height: var(--control-height-sm);
+  padding: 0 var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
   color: var(--text-secondary);
   font-size: var(--text-sm);
   cursor: pointer;
@@ -506,9 +507,8 @@ async function handleUpdateClick() {
 }
 
 .header-btn:hover:not(:disabled) {
-  background: var(--surface-hover);
-  border-color: var(--brand-500);
-  color: var(--brand-500);
+  background: var(--hover-fill);
+  color: var(--text-primary);
 }
 
 .header-btn:disabled {
@@ -517,9 +517,8 @@ async function handleUpdateClick() {
 }
 
 .header-btn.active {
-  background: var(--brand-500);
-  border-color: var(--brand-500);
-  color: white;
+  background: var(--selected-fill);
+  color: var(--text-primary);
 }
 
 .header-btn-icon {
@@ -541,10 +540,10 @@ async function handleUpdateClick() {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-1) var(--space-3);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  background: var(--surface-hover);
+  padding: var(--space-1) var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--hover-fill);
   flex-shrink: 0;
 }
 
@@ -559,7 +558,7 @@ async function handleUpdateClick() {
   width: 96px;
   height: 6px;
   border-radius: 999px;
-  background: var(--border-default);
+  background: var(--hairline-strong);
   overflow: hidden;
 }
 

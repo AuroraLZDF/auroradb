@@ -189,16 +189,15 @@ function isCategoryExpanded(dbName: string, categoryType: string): boolean {
 }
 
 .database-item.active > .database-header {
-  background: var(--surface-active);
+  background: var(--selected-fill);
 }
 
 .database-item.opened > .database-header {
-  background: rgba(59, 130, 246, 0.1);
-  border-left: 3px solid var(--brand-500);
+  background: var(--selected-fill);
 }
 
 .database-item.opened > .database-header .database-name {
-  color: var(--brand-500);
+  color: var(--text-primary);
   font-weight: var(--font-medium);
 }
 
@@ -206,8 +205,8 @@ function isCategoryExpanded(dbName: string, categoryType: string): boolean {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2);
-  border-radius: var(--radius-md);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-size: var(--text-sm);
   transition: var(--transition-colors);
@@ -217,7 +216,7 @@ function isCategoryExpanded(dbName: string, categoryType: string): boolean {
 }
 
 .database-header:hover {
-  background: var(--surface-hover);
+  background: var(--hover-fill);
 }
 
 /* 新建数据库入口：弱化为次要操作 */
@@ -234,7 +233,7 @@ function isCategoryExpanded(dbName: string, categoryType: string): boolean {
 }
 
 .new-database:hover {
-  background: var(--surface-hover);
+  background: var(--hover-fill);
   color: var(--brand-500);
 }
 
@@ -269,7 +268,7 @@ function isCategoryExpanded(dbName: string, categoryType: string): boolean {
 }
 
 .category-header:hover {
-  background: var(--surface-hover);
+  background: var(--hover-fill);
 }
 
 .category-icon {
@@ -298,12 +297,12 @@ function isCategoryExpanded(dbName: string, categoryType: string): boolean {
 }
 
 .object-item:hover {
-  background: var(--surface-hover);
+  background: var(--hover-fill);
 }
 
 .object-item.active {
-  background: var(--brand-500);
-  color: white;
+  background: var(--selected-fill);
+  color: var(--text-primary);
 }
 
 .object-icon {

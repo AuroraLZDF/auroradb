@@ -72,10 +72,10 @@ const iconSize = computed(() => {
 const rippleColor = computed(() => {
   const colors = {
     primary: 'rgba(255, 255, 255, 0.3)',
-    secondary: 'rgba(33, 150, 243, 0.15)',
+    secondary: 'rgba(76, 154, 255, 0.15)',
     danger: 'rgba(255, 255, 255, 0.3)',
-    ghost: 'rgba(33, 150, 243, 0.15)',
-    text: 'rgba(33, 150, 243, 0.15)'
+    ghost: 'rgba(76, 154, 255, 0.15)',
+    text: 'rgba(76, 154, 255, 0.15)'
   }
   return colors[props.variant]
 })
@@ -105,68 +105,62 @@ function handleClick(event: MouseEvent) {
 
 /* Size variants */
 .btn--xs {
-  padding: var(--space-1) var(--space-2);
+  padding: 0 var(--space-2);
   font-size: var(--text-xs);
-  height: 24px;
+  height: var(--control-height-sm);
 }
 
 .btn--sm {
-  padding: var(--space-1) var(--space-2);
+  padding: 0 var(--space-2);
   font-size: var(--text-sm);
-  height: 28px;
+  height: var(--control-height-sm);
 }
 
 .btn--md {
-  padding: var(--space-2) var(--space-3);
+  padding: 0 var(--space-3);
   font-size: var(--text-sm);
-  height: 32px;
+  height: var(--control-height);
 }
 
 .btn--lg {
-  padding: var(--space-2) var(--space-4);
+  padding: 0 var(--space-4);
   font-size: var(--text-base);
-  height: 40px;
+  height: 32px;
 }
 
 /* Color variants */
 .btn--primary {
   background: var(--brand-500);
-  border-color: var(--brand-500);
-  color: white;
+  border-color: transparent;
+  color: var(--text-inverse, #fff);
 }
 
 .btn--primary:hover:not(:disabled) {
   background: var(--brand-600);
-  border-color: var(--brand-600);
-  transform: translateY(-1px);
-  box-shadow: var(--shadow-md);
 }
 
 .btn--primary:active:not(:disabled) {
-  transform: translateY(0);
-  box-shadow: none;
+  background: var(--brand-700);
 }
 
 .btn--secondary {
-  background: var(--surface-default);
-  border-color: var(--border-default);
+  background: var(--hover-fill);
+  border-color: transparent;
   color: var(--text-primary);
 }
 
 .btn--secondary:hover:not(:disabled) {
-  background: var(--surface-hover);
-  border-color: var(--border-strong);
+  background: var(--selected-fill);
 }
 
 .btn--danger {
   background: var(--error-500);
-  border-color: var(--error-500);
+  border-color: transparent;
   color: white;
 }
 
 .btn--danger:hover:not(:disabled) {
   background: var(--error-600);
-  border-color: var(--error-600);
 }
 
 .btn--ghost {
@@ -176,7 +170,7 @@ function handleClick(event: MouseEvent) {
 }
 
 .btn--ghost:hover:not(:disabled) {
-  background: var(--surface-hover);
+  background: var(--hover-fill);
   color: var(--text-primary);
 }
 
@@ -189,7 +183,7 @@ function handleClick(event: MouseEvent) {
 }
 
 .btn--text:hover:not(:disabled) {
-  background: rgba(33, 150, 243, 0.08);
+  background: var(--hover-fill);
 }
 
 /* Loading state */

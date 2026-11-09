@@ -718,17 +718,18 @@ defineExpose({
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--surface-default);
+  background: var(--canvas);
 }
 
 /* Tab 栏 */
 .tab-bar {
   display: flex;
   align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-2);
-  background: var(--surface-secondary);
-  border-bottom: 1px solid var(--border-default);
+  gap: 0;
+  height: var(--tabbar-height);
+  padding: 0 var(--space-2);
+  background: var(--panel);
+  border-bottom: 1px solid var(--hairline);
   overflow-x: auto;
 }
 
@@ -736,26 +737,40 @@ defineExpose({
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  background: var(--surface-default);
+  height: 100%;
+  padding: 0 var(--space-3);
+  border: none;
+  border-radius: 0;
+  background: transparent;
   color: var(--text-secondary);
   font-size: var(--text-sm);
   cursor: pointer;
   transition: var(--transition-colors);
   white-space: nowrap;
   flex-shrink: 0;
+  box-shadow: inset -1px 0 0 var(--hairline);
+  position: relative;
 }
 
 .tab-item:hover {
-  background: var(--surface-hover);
+  background: var(--hover-fill);
+  color: var(--text-primary);
 }
 
 .tab-item.active {
-  background: var(--brand-500);
-  border-color: var(--brand-500);
-  color: white;
+  background: var(--canvas);
+  color: var(--text-primary);
+  box-shadow: none;
+}
+
+.tab-item.active::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: var(--canvas);
 }
 
 .tab-title {
@@ -777,7 +792,7 @@ defineExpose({
 
 .tab-close:hover {
   opacity: 1;
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--selected-fill);
 }
 
 /* 内容区域 */
@@ -800,13 +815,13 @@ defineExpose({
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--space-3) var(--space-4);
-  border-bottom: 1px solid var(--border-default);
-  background: var(--surface-secondary);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--hairline);
+  background: var(--canvas);
 }
 
 .objects-header h3 {
-  font-size: var(--text-base);
+  font-size: var(--text-sm);
   font-weight: var(--font-semibold);
   color: var(--text-primary);
 }
@@ -817,10 +832,11 @@ defineExpose({
 }
 
 .filter-btn {
-  padding: var(--space-1) var(--space-3);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  background: var(--surface-default);
+  height: var(--control-height-sm);
+  padding: 0 var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
   color: var(--text-secondary);
   font-size: var(--text-sm);
   cursor: pointer;
@@ -828,13 +844,13 @@ defineExpose({
 }
 
 .filter-btn:hover {
-  background: var(--surface-hover);
+  background: var(--hover-fill);
+  color: var(--text-primary);
 }
 
 .filter-btn.active {
-  background: var(--brand-500);
-  border-color: var(--brand-500);
-  color: white;
+  background: var(--selected-fill);
+  color: var(--text-primary);
 }
 
 .objects-list {
@@ -862,8 +878,8 @@ defineExpose({
   position: sticky;
   top: 0;
   z-index: 1;
-  background: var(--surface-secondary);
-  border-bottom: 1px solid var(--border-default);
+  background: var(--canvas);
+  border-bottom: 1px solid var(--hairline-strong);
   color: var(--text-secondary);
   font-weight: var(--font-semibold);
   font-size: var(--text-xs);
@@ -871,18 +887,18 @@ defineExpose({
 }
 
 .object-item {
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   transition: var(--transition-colors);
 }
 
 .object-item:hover {
-  background: var(--surface-hover);
+  background: var(--hover-fill);
 }
 
 /* 多选高亮：与表头/悬停背景区分开 */
 .object-item.selected {
-  background: var(--brand-100);
+  background: var(--selected-fill);
 }
 
 .object-item .col-name {

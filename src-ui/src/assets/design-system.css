@@ -12,16 +12,16 @@
   /* ----------------------------------------
      Brand Colors - 品牌色
      ---------------------------------------- */
-  --brand-50: #E3F2FD;
-  --brand-100: #BBDEFB;
-  --brand-200: #90CAF9;
-  --brand-300: #64B5F6;
-  --brand-400: #42A5F5;
-  --brand-500: #2196F3;
-  --brand-600: #1E88E5;
-  --brand-700: #1976D2;
-  --brand-800: #1565C0;
-  --brand-900: #0D47A1;
+  --brand-50: #EBF3FF;
+  --brand-100: #CDE1FF;
+  --brand-200: #A9C9FF;
+  --brand-300: #85B6FF;
+  --brand-400: #6EA8FF;
+  --brand-500: #4C9AFF;
+  --brand-600: #3B87F0;
+  --brand-700: #2F7AE0;
+  --brand-800: #2667BD;
+  --brand-900: #1E5296;
 
   /* ----------------------------------------
      Semantic Colors - 语义色
@@ -122,12 +122,27 @@
      Border Radius - 圆角
      ---------------------------------------- */
   --radius-none: 0;
+  --radius-xs: 3px;
   --radius-sm: 4px;
   --radius-md: 6px;
   --radius-lg: 8px;
   --radius-xl: 12px;
   --radius-2xl: 16px;
   --radius-full: 9999px;
+
+  /* ----------------------------------------
+     Layout Metrics - 布局尺寸（DBX 对齐）
+     ---------------------------------------- */
+  --header-height: 38px;
+  --tabbar-height: 32px;
+  --toolbar-height: 32px;
+  --row-height: 28px;
+  --tree-row-height: 26px;
+  --control-height: 28px;
+  --control-height-sm: 26px;
+  --statusdot-size: 7px;
+  --icon-sm: 14px;
+  --icon-md: 16px;
 
   /* ----------------------------------------
      Shadows - 阴影 (Light)
@@ -139,7 +154,7 @@
                0 4px 6px -2px rgba(0, 0, 0, 0.05);
   --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1),
                0 10px 10px -5px rgba(0, 0, 0, 0.04);
-  --shadow-focus: 0 0 0 3px rgba(33, 150, 243, 0.3);
+  --shadow-focus: 0 0 0 3px rgba(76, 154, 255, 0.25);
 
   /* ----------------------------------------
      Transitions - 过渡
@@ -184,32 +199,47 @@
 
 :root,
 [data-theme="light"] {
+  /* Layer - 语义层级（canvas 内容 / panel 侧栏 chrome / raised 浮起 / overlay 浮层） */
+  --canvas: #FDFDFE;
+  --panel: #F4F4F5;
+  --raised: #FFFFFF;
+  --overlay: #FFFFFF;
+  --hairline: #E2E2E5;
+  --hairline-strong: #D3D3D7;
+  --hover-fill: rgba(0, 0, 0, 0.05);
+  --selected-fill: rgba(0, 0, 0, 0.08);
+
   /* Background */
-  --bg-primary: var(--gray-0);
-  --bg-secondary: var(--gray-50);
-  --bg-tertiary: var(--gray-100);
-  --bg-elevated: var(--gray-0);
-  --bg-overlay: rgba(0, 0, 0, 0.5);
+  --bg-primary: var(--canvas);
+  --bg-secondary: var(--panel);
+  --bg-tertiary: #EBEBED;
+  --bg-elevated: var(--raised);
+  --bg-overlay: rgba(0, 0, 0, 0.4);
 
-  /* Surface */
-  --surface-default: var(--gray-0);
-  --surface-subtle: var(--gray-50);
-  --surface-hover: var(--gray-100);
-  --surface-active: rgba(33, 150, 243, 0.08);
-  --surface-selected: rgba(33, 150, 243, 0.12);
+  /* Surface（surface-default=chrome 面板，表格/内容区请用 --canvas） */
+  --surface-default: var(--panel);
+  --surface-secondary: var(--raised);
+  --surface-canvas: var(--canvas);
+  --surface-subtle: #EBEBED;
+  --surface-hover: var(--hover-fill);
+  --surface-active: rgba(76, 154, 255, 0.10);
+  --surface-selected: rgba(76, 154, 255, 0.09);
 
-  /* Border */
-  --border-default: var(--gray-300);
-  --border-subtle: var(--gray-200);
-  --border-strong: var(--gray-400);
+  /* Border（hairline 弱化） */
+  --border-default: var(--hairline-strong);
+  --border-subtle: var(--hairline);
+  --border-strong: #B9B9BF;
   --border-focus: var(--brand-500);
 
   /* Text */
-  --text-primary: var(--gray-900);
-  --text-secondary: var(--gray-700);
-  --text-tertiary: var(--gray-500);
-  --text-disabled: var(--gray-400);
-  --text-inverse: var(--gray-0);
+  --text-primary: #232326;
+  --text-secondary: #5A5A60;
+  --text-tertiary: #8A8A90;
+  --text-disabled: #B9B9BF;
+  --text-inverse: #FFFFFF;
+
+  /* Accent - 强调色（仅语义用途：状态点/链接/选中指示） */
+  --accent: var(--brand-500);
 
   /* Status */
   --status-online: var(--success-500);
@@ -223,32 +253,47 @@
    ======================================== */
 
 [data-theme="dark"] {
+  /* Layer - 语义层级（对齐 DBX：canvas #161617 / panel #1C1D1F / raised #232325 / overlay #2C2C2F） */
+  --canvas: #161617;
+  --panel: #1C1D1F;
+  --raised: #232325;
+  --overlay: #2C2C2F;
+  --hairline: #2A2B2E;
+  --hairline-strong: #343436;
+  --hover-fill: rgba(255, 255, 255, 0.055);
+  --selected-fill: rgba(255, 255, 255, 0.09);
+
   /* Background */
-  --bg-primary: #121212;
-  --bg-secondary: #1E1E1E;
-  --bg-tertiary: #2C2C2C;
-  --bg-elevated: #1E1E1E;
-  --bg-overlay: rgba(0, 0, 0, 0.7);
+  --bg-primary: var(--canvas);
+  --bg-secondary: var(--panel);
+  --bg-tertiary: var(--raised);
+  --bg-elevated: var(--raised);
+  --bg-overlay: rgba(0, 0, 0, 0.6);
 
-  /* Surface */
-  --surface-default: #1E1E1E;
-  --surface-subtle: #2C2C2C;
-  --surface-hover: #3A3A3A;
-  --surface-active: rgba(100, 181, 246, 0.16);
-  --surface-selected: rgba(100, 181, 246, 0.12);
+  /* Surface（surface-default=chrome 面板，表格/内容区请用 --canvas） */
+  --surface-default: var(--panel);
+  --surface-secondary: var(--raised);
+  --surface-canvas: var(--canvas);
+  --surface-subtle: var(--raised);
+  --surface-hover: var(--hover-fill);
+  --surface-active: rgba(76, 154, 255, 0.14);
+  --surface-selected: var(--selected-fill);
 
-  /* Border */
-  --border-default: #3A3A3A;
-  --border-subtle: #2C2C2C;
-  --border-strong: #484848;
-  --border-focus: var(--brand-400);
+  /* Border（hairline 弱化，仅剩可见的行分隔） */
+  --border-default: var(--hairline-strong);
+  --border-subtle: var(--hairline);
+  --border-strong: #3E3E42;
+  --border-focus: var(--brand-500);
 
   /* Text */
-  --text-primary: #E0E0E0;
-  --text-secondary: #AAAAAA;
-  --text-tertiary: #888888;
-  --text-disabled: #666666;
-  --text-inverse: #121212;
+  --text-primary: #E8E8EA;
+  --text-secondary: #A2A2A6;
+  --text-tertiary: #6F6F75;
+  --text-disabled: #55555A;
+  --text-inverse: #161617;
+
+  /* Accent - 强调色（仅语义用途：状态点/链接/选中指示） */
+  --accent: var(--brand-500);
 
   /* Status */
   --status-online: var(--success-400);
@@ -272,32 +317,47 @@
 
 @media (prefers-color-scheme: dark) {
   [data-theme="auto"] {
+    /* Layer */
+    --canvas: #161617;
+    --panel: #1C1D1F;
+    --raised: #232325;
+    --overlay: #2C2C2F;
+    --hairline: #2A2B2E;
+    --hairline-strong: #343436;
+    --hover-fill: rgba(255, 255, 255, 0.055);
+    --selected-fill: rgba(255, 255, 255, 0.09);
+
     /* Background */
-    --bg-primary: #121212;
-    --bg-secondary: #1E1E1E;
-    --bg-tertiary: #2C2C2C;
-    --bg-elevated: #1E1E1E;
-    --bg-overlay: rgba(0, 0, 0, 0.7);
+    --bg-primary: var(--canvas);
+    --bg-secondary: var(--panel);
+    --bg-tertiary: var(--raised);
+    --bg-elevated: var(--raised);
+    --bg-overlay: rgba(0, 0, 0, 0.6);
 
     /* Surface */
-    --surface-default: #1E1E1E;
-    --surface-subtle: #2C2C2C;
-    --surface-hover: #3A3A3A;
-    --surface-active: rgba(100, 181, 246, 0.16);
-    --surface-selected: rgba(100, 181, 246, 0.12);
+    --surface-default: var(--panel);
+    --surface-secondary: var(--raised);
+    --surface-canvas: var(--canvas);
+    --surface-subtle: var(--raised);
+    --surface-hover: var(--hover-fill);
+    --surface-active: rgba(76, 154, 255, 0.14);
+    --surface-selected: var(--selected-fill);
 
     /* Border */
-    --border-default: #3A3A3A;
-    --border-subtle: #2C2C2C;
-    --border-strong: #484848;
-    --border-focus: var(--brand-400);
+    --border-default: var(--hairline-strong);
+    --border-subtle: var(--hairline);
+    --border-strong: #3E3E42;
+    --border-focus: var(--brand-500);
 
     /* Text */
-    --text-primary: #E0E0E0;
-    --text-secondary: #AAAAAA;
-    --text-tertiary: #888888;
-    --text-disabled: #666666;
-    --text-inverse: #121212;
+    --text-primary: #E8E8EA;
+    --text-secondary: #A2A2A6;
+    --text-tertiary: #6F6F75;
+    --text-disabled: #55555A;
+    --text-inverse: #161617;
+
+    /* Accent */
+    --accent: var(--brand-500);
 
     /* Status */
     --status-online: var(--success-400);
@@ -314,6 +374,31 @@
     --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.5),
                  0 10px 10px -5px rgba(0, 0, 0, 0.3);
   }
+}
+
+
+/* ========================================
+   COMPAT SHIMS - 未定义变量兜底（历史代码引用，逐个收敛后删除）
+   ======================================== */
+:root {
+  --bg-hover: var(--hover-fill);
+  --border-color: var(--border-subtle);
+  --border-hover: var(--hairline-strong);
+  --brand-500-rgb: 76, 154, 255;
+  --brand-dim: var(--text-tertiary);
+  --brand-primary: var(--brand-500);
+  --color-danger-bg: rgba(239, 68, 68, 0.12);
+  --color-danger-border: rgba(239, 68, 68, 0.35);
+  --color-danger-text: var(--error-500);
+  --color-success-bg: rgba(16, 185, 129, 0.12);
+  --color-success-border: rgba(16, 185, 129, 0.35);
+  --color-success-text: var(--success-500);
+  --color-warning-bg: rgba(245, 158, 11, 0.14);
+  --color-warning-border: rgba(245, 158, 11, 0.35);
+  --color-warning-text: var(--warning-500);
+  --danger-100: rgba(239, 68, 68, 0.12);
+  --danger-500: var(--error-500);
+  --info-500: var(--brand-500);
 }
 
 /* ========================================
@@ -462,7 +547,7 @@ body {
 .input-animated:focus {
   outline: none;
   border-color: var(--brand-500);
-  box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.15);
+  box-shadow: 0 0 0 3px rgba(76, 154, 255, 0.2);
 }
 
 /* Input error shake animation */
