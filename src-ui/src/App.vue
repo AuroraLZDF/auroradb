@@ -17,7 +17,11 @@
       @open-about="showAbout = true"
     />
 
-    <div class="app-body" :class="{ 'sidebar-open': sidebarOpen, 'panel-open': infoPanelOpen }">
+    <div
+      class="app-body"
+      :class="{ 'sidebar-open': sidebarOpen, 'panel-open': infoPanelOpen && !isDesktop }"
+      @click.self="closeDrawers"
+    >
       <!-- 左侧：连接树 -->
       <div
         class="sidebar-left"
@@ -986,7 +990,8 @@ async function loadDatabaseTables(connectionId: string, dbName: string, force = 
 // 单击选中连接 - 显示连接信息
 function selectConnection(conn: { id: string; name: string; host: string; port: number; username?: string }) {
   selectedInfoType.value = 'connection'
-  infoPanelOpen.value = true
+  // 桌面端自动展开；窄屏由用户点顶部面板按钮显式打开，避免抽屉遮罩每次点击都弹出来
+  if (isDesktop.value) infoPanelOpen.value = true
   selectedInfoData.value = {
     connectionId: conn.id,
     connectionName: conn.name,
@@ -1001,8 +1006,8 @@ async function selectDatabase(connectionId: string, dbName: string) {
     connectionId,
     database: dbName,
   }
-  // 确保信息面板打开
-  infoPanelOpen.value = true
+  // 确保信息面板打开（同 selectConnection：窄屏不自动展开）
+  if (isDesktop.value) infoPanelOpen.value = true
   // 更新当前数据库，供 SQL 编辑器使用
   browserStore.currentDatabase = dbName
   
@@ -1016,7 +1021,7 @@ async function selectDatabase(connectionId: string, dbName: string) {
 function selectTable(connectionId: string, dbName: string, tableName: string) {
   selectedTable.value = `${connectionId}.${dbName}.${tableName}`
   selectedInfoType.value = 'table'
-  infoPanelOpen.value = true
+  if (isDesktop.value) infoPanelOpen.value = true
   selectedInfoData.value = {
     connectionId,
     database: dbName,
@@ -1031,6 +1036,12 @@ function closeInfoPanel() {
   selectedInfoType.value = null
   selectedInfoData.value = {}
   infoPanelOpen.value = false
+}
+
+/** 窄屏抽屉遮罩点击：关闭左侧连接树抽屉与右侧信息抽屉 */
+function closeDrawers() {
+  sidebarOpen.value = false
+  if (infoPanelOpen.value) closeInfoPanel()
 }
 
 // 表 Tab 关闭后同步右侧信息面板：若右侧正显示该表，则关闭面板

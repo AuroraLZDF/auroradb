@@ -3656,14 +3656,31 @@ td.editing::before {
   background: var(--canvas);
   border-top: 1px solid var(--hairline);
   flex-shrink: 0;
+  overflow: hidden;
 }
 
+/* 窄窗口时行数/分页只横向滚动，不允许换行（换行会撑破 32px 的脚注） */
 .footer-left,
 .footer-right {
   display: flex;
   align-items: center;
   gap: var(--space-3);
   min-width: 0;
+  white-space: nowrap;
+}
+
+.footer-left {
+  flex: 1 1 auto;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.footer-left::-webkit-scrollbar {
+  display: none;
+}
+
+.footer-left > * {
+  flex-shrink: 0;
 }
 
 .footer-right {
@@ -3674,6 +3691,8 @@ td.editing::before {
   display: flex;
   gap: var(--space-1);
   align-items: center;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .pagination button {

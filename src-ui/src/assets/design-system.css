@@ -199,6 +199,10 @@
 
 :root,
 [data-theme="light"] {
+  /* 原生控件（select 弹层、滚动条、复选框）跟随主题；缺这一行会让暗色下
+     下拉/日期面板渲染成白底黑字 —— Chromium 只认 color-scheme 不认 CSS 变量 */
+  color-scheme: light;
+
   /* Layer - 语义层级（canvas 内容 / panel 侧栏 chrome / raised 浮起 / overlay 浮层） */
   --canvas: #FDFDFE;
   --panel: #F4F4F5;
@@ -260,6 +264,9 @@
    ======================================== */
 
 [data-theme="dark"] {
+  /* 原生控件跟随暗色（select 弹层/日期面板/滚动条/复选框） */
+  color-scheme: dark;
+
   /* Layer - 语义层级（对齐 DBX：canvas #161617 / panel #1C1D1F / raised #232325 / overlay #2C2C2F） */
   --canvas: #161617;
   --panel: #1C1D1F;
@@ -331,6 +338,9 @@
 
 @media (prefers-color-scheme: dark) {
   [data-theme="auto"] {
+    /* 跟随系统的暗色：原生控件同样要转暗 */
+    color-scheme: dark;
+
     /* Layer */
     --canvas: #161617;
     --panel: #1C1D1F;
@@ -437,6 +447,49 @@ html {
 body {
   min-height: 100vh;
   overflow: hidden;
+}
+
+/* ========================================
+   NATIVE CONTROLS
+   原生控件不吃 CSS 变量：select 的弹层、日期面板、复选框、滚动条都靠
+   color-scheme + 少量可样式化部分（option / accent-color）对齐主题。
+   ======================================== */
+
+/* 下拉展开后的列表项（Chromium 会为 option 应用背景与文字色） */
+select option,
+select optgroup {
+  background-color: var(--overlay);
+  color: var(--text-primary);
+}
+
+/* 复选框 / 单选框 / 进度条 / range 的强调色 */
+input[type='checkbox'],
+input[type='radio'],
+input[type='range'],
+progress {
+  accent-color: var(--brand-500);
+}
+
+/* 原生 select 未单独写样式时也不该出现系统边框配色 */
+select {
+  color: var(--text-primary);
+  background-color: transparent;
+}
+
+/* 文本选区 */
+::selection {
+  background-color: var(--selected-fill);
+  color: var(--text-primary);
+}
+
+/* 自动填充（Chrome 记密码/表单时）不要变成白底 */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--text-primary);
+  -webkit-box-shadow: 0 0 0 1000px var(--raised) inset;
+  caret-color: var(--text-primary);
+  transition: background-color 9999s ease-in-out 0s;
 }
 
 /* ========================================
