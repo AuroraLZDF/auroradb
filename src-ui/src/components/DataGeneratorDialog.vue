@@ -258,10 +258,6 @@ function isNumericType(type: string): boolean {
   return /int|decimal|numeric|float|double|real|serial|money/i.test(type)
 }
 
-function isDateType(type: string): boolean {
-  return /date|time/i.test(type)
-}
-
 function randomDate(): string {
   const date = new Date(Date.now() - randInt(0, 30) * 86400000)
   return date.toISOString().slice(0, 10)

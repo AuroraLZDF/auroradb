@@ -28,6 +28,49 @@ function isTauri(): boolean {
   return '__TAURI_INTERNALS__' in window
 }
 
+/** 发行版页面：检查更新失败时给用户一个可自助的出口 */
+const RELEASES_URL = 'https://github.com/AuroraLZDF/auroradb/releases/latest'
+
+/** 更新源偶发 5xx / 连接被重置：重试比直接把英文错误抛给用户更有用 */
+const CHECK_ATTEMPTS = 3
+const CHECK_RETRY_DELAY_MS = 800
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * 带重试的更新检查。
+ *
+ * Tauri 的 updater 只要某个更新源返回非 2xx（GitHub 偶发 504、限流）就整体失败，
+ * 单次抖动不该让用户看到报错，所以这里对可重试的失败退避重试。
+ */
+async function checkWithRetry(): Promise<Update | null> {
+  let lastError: unknown = null
+  for (let attempt = 1; attempt <= CHECK_ATTEMPTS; attempt += 1) {
+    try {
+      return await check()
+    } catch (error) {
+      lastError = error
+      if (attempt < CHECK_ATTEMPTS) await wait(CHECK_RETRY_DELAY_MS * attempt)
+    }
+  }
+  throw lastError
+}
+
+/** 把 updater 的英文错误翻译成用户能自己动手的提示 */
+function describeCheckFailure(message: string): string {
+  // 「Could not fetch a valid release JSON」= 更新源返回了非 2xx（GitHub 504、被拦截等）
+  if (message.includes('Could not fetch a valid release JSON')) {
+    return t('store.checkFailedNetwork', { url: RELEASES_URL })
+  }
+  // 清单里没有当前平台的条目（例如只发布了 Linux 包）
+  if (message.includes('was not found in the response') || message.includes('Could not find a release')) {
+    return t('store.checkFailedPlatform', { url: RELEASES_URL })
+  }
+  return t('store.checkFailed', { message })
+}
+
 /** deb 安装包信息：地址与期望的 SHA-256（由 tools/publish/linux.sh 写入顶层 deb 字段） */
 interface DebPackage {
   url: string
@@ -105,7 +148,7 @@ export const useUpdaterStore = defineStore('updater', () => {
     status.value = 'checking'
     try {
       installKind.value = (await invoke<string>('get_update_install_kind')) === 'deb' ? 'deb' : 'auto'
-      const update = await check()
+      const update = await checkWithRetry()
       if (!update) {
         globalToast.success(t('store.upToDate'))
         return null
@@ -134,11 +177,8 @@ export const useUpdaterStore = defineStore('updater', () => {
       globalToast.info(t('store.updateAvailable', { version: update.version }))
       return update.version
     } catch (error) {
-      globalToast.error(
-        t('store.checkFailed', {
-          message: error instanceof Error ? error.message : String(error),
-        }),
-      )
+      const message = error instanceof Error ? error.message : String(error)
+      globalToast.error(describeCheckFailure(message))
       return null
     } finally {
       status.value = 'idle'
