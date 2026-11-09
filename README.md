@@ -10,7 +10,7 @@
 
 ## 下载安装
 
-安装包发布在[发行版页面](https://github.com/AuroraLZDF/auroradb/releases/latest)，当前版本 v2.2.0。
+安装包发布在[发行版页面](https://github.com/AuroraLZDF/auroradb/releases/latest)，当前版本 v2.2.1。
 
 | 平台 | 文件名 | 安装方式 |
 | --- | --- | --- |

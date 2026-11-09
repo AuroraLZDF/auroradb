@@ -7,6 +7,7 @@ use futures_util::StreamExt;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::path::Path;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use tokio::io::AsyncWriteExt;
 
@@ -137,8 +138,35 @@ fn open_directory(dir: &Path) {
     let _ = std::process::Command::new(program).arg(dir).spawn();
 }
 
+/// 下载重试次数
+///
+/// GitHub 的 release 下载链路对国内网络不稳（偶发 504、连接被重置），而安装包是
+/// 100MB 级别的，一次断流就要用户从头再点一次；这里对整包下载做有限重试。
+const DOWNLOAD_ATTEMPTS: u32 = 3;
+
 /// 流式写入更新包，同时计算 SHA-256，返回小写十六进制摘要
+///
+/// 失败时清掉半截文件再重试（不可续传，续传要处理 Range 与摘要重算，收益不抵复杂度）。
 async fn write_package(app: &AppHandle, url: &str, target: &Path) -> Result<String, String> {
+    let mut last_err = String::new();
+    for attempt in 1..=DOWNLOAD_ATTEMPTS {
+        match write_package_once(app, url, target).await {
+            Ok(digest) => return Ok(digest),
+            Err(err) => {
+                tracing::warn!(%url, attempt, error = %err, "更新包下载失败，准备重试");
+                last_err = err;
+                let _ = tokio::fs::remove_file(target).await;
+                if attempt < DOWNLOAD_ATTEMPTS {
+                    tokio::time::sleep(Duration::from_millis(800 * u64::from(attempt))).await;
+                }
+            }
+        }
+    }
+    Err(last_err)
+}
+
+/// 单次下载：把响应体流式落盘并同步算摘要
+async fn write_package_once(app: &AppHandle, url: &str, target: &Path) -> Result<String, String> {
     // reqwest 用 rustls 但不自带加密后端，需在首次使用前装入默认 provider
     if rustls::crypto::CryptoProvider::get_default().is_none() {
         let _ = rustls::crypto::ring::default_provider().install_default();
