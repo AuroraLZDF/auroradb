@@ -41,3 +41,7 @@ test-results/
 
 # Vite
 *.timestamp-*-*.mjs
+node_modules/
+dist/
+shot-*.mjs
+tauri-mock.mjs
