@@ -2315,6 +2315,25 @@ fn escape_like_keyword(keyword: &str) -> String {
         .replace('\'', "''")
 }
 
+/// LIKE 操作符的匹配模式。
+///
+/// 界面上选「LIKE」= 想「包含这段文本」，但直接把用户输入当模式会退化成精确匹配
+/// （MySQL 里 `LIKE '业'` 等价于 `= '业'`），于是「筛选后没有数据」。
+/// 因此默认给两侧补 `%`；用户自己写了 `%`/`_` 通配符时按原样当模式用，
+/// 这样 `餐%` 这类前缀匹配仍然可用。
+fn like_pattern(value: &serde_json::Value) -> String {
+    let raw = match value {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Null => String::new(),
+        other => other.to_string(),
+    };
+    if raw.contains('%') || raw.contains('_') {
+        raw
+    } else {
+        format!("%{raw}%")
+    }
+}
+
 /// 构造单条 MySQL 过滤条件（列名经过标识符校验，值走字面量转义）。
 fn build_mysql_filter_condition(filter: &FilterCondition) -> Result<String> {
     let mut cond = format!("{} ", quote_identifier(&filter.column)?);
@@ -2332,7 +2351,10 @@ fn build_mysql_filter_condition(filter: &FilterCondition) -> Result<String> {
         FilterOperator::Gte => cond.push_str(&value(">=")?),
         FilterOperator::Lt => cond.push_str(&value("<")?),
         FilterOperator::Lte => cond.push_str(&value("<=")?),
-        FilterOperator::Like => cond.push_str(&value("LIKE")?),
+        FilterOperator::Like => {
+            let pattern = serde_json::Value::String(like_pattern(&filter.value));
+            cond.push_str(&format!("LIKE {}", quote_value(&pattern, DriverKind::MySql)?));
+        }
         FilterOperator::IsNull => cond.push_str("IS NULL"),
         FilterOperator::IsNotNull => cond.push_str("IS NOT NULL"),
     }
@@ -2356,7 +2378,13 @@ fn build_pg_filter_condition(filter: &FilterCondition) -> Result<String> {
         FilterOperator::Gte => cond.push_str(&value(">=")?),
         FilterOperator::Lt => cond.push_str(&value("<")?),
         FilterOperator::Lte => cond.push_str(&value("<=")?),
-        FilterOperator::Like => cond.push_str(&value("LIKE")?),
+        FilterOperator::Like => {
+            let pattern = serde_json::Value::String(like_pattern(&filter.value));
+            cond.push_str(&format!(
+                "LIKE {}",
+                quote_value(&pattern, DriverKind::Postgres)?
+            ));
+        }
         FilterOperator::IsNull => cond.push_str("IS NULL"),
         FilterOperator::IsNotNull => cond.push_str("IS NOT NULL"),
     }
@@ -2392,6 +2420,69 @@ fn build_filter_conditions(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn like_filter(column: &str, value: serde_json::Value) -> FilterCondition {
+        FilterCondition {
+            column: column.to_string(),
+            operator: FilterOperator::Like,
+            value,
+        }
+    }
+
+    /// LIKE 是「包含」语义：用户输入 `业` 必须变成 `LIKE '%业%'`，
+    /// 否则 MySQL 会按精确匹配执行、筛选结果为空。
+    #[test]
+    fn like_filter_wraps_plain_text_with_percent() {
+        let cond = build_mysql_filter_condition(&like_filter(
+            "name",
+            serde_json::Value::String("业".into()),
+        ))
+        .expect("build mysql like");
+        assert_eq!(cond, "`name` LIKE '%业%'");
+
+        let cond = build_pg_filter_condition(&like_filter(
+            "name",
+            serde_json::Value::String("业".into()),
+        ))
+        .expect("build pg like");
+        assert_eq!(cond, "\"name\" LIKE '%业%'");
+    }
+
+    /// 用户显式写了通配符时按原样当模式，不重复加 `%`。
+    #[test]
+    fn like_filter_keeps_explicit_wildcards() {
+        let cond = build_mysql_filter_condition(&like_filter(
+            "name",
+            serde_json::Value::String("餐%".into()),
+        ))
+        .expect("build mysql like with wildcard");
+        assert_eq!(cond, "`name` LIKE '餐%'");
+
+        let cond = build_mysql_filter_condition(&like_filter(
+            "code",
+            serde_json::Value::String("A_B".into()),
+        ))
+        .expect("build mysql like with underscore");
+        assert_eq!(cond, "`code` LIKE 'A_B'");
+    }
+
+    /// 引号必须照常转义，不能因为包了 `%` 就漏掉。
+    #[test]
+    fn like_filter_escapes_quotes() {
+        let cond = build_mysql_filter_condition(&like_filter(
+            "name",
+            serde_json::Value::String("O'Brien".into()),
+        ))
+        .expect("build mysql like with quote");
+        assert_eq!(cond, "`name` LIKE '%O\\'Brien%'");
+
+        let cond = build_pg_filter_condition(&like_filter(
+            "name",
+            serde_json::Value::String("O'Brien".into()),
+        ))
+        .expect("build pg like with quote");
+        assert_eq!(cond, "\"name\" LIKE '%O''Brien%'");
+    }
 
     #[test]
     fn searchable_type_skips_binary_like_columns() {

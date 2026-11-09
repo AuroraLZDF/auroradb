@@ -154,7 +154,7 @@
             v-if="!isNullOperator(row.operator)"
             v-model="row.value"
             class="filter-value"
-            :placeholder="t('dataTable.filterValue')"
+            :placeholder="row.operator === 'Like' ? t('dataTable.filterValueLike') : t('dataTable.filterValue')"
           />
           <button class="filter-remove" @click="removeFilterRow(row.id)" :title="t('common.delete')" :aria-label="t('common.delete')">
             <X :size="12" />
@@ -241,7 +241,7 @@
         <tbody>
           <tr v-if="currentTableData.rows.length === 0" class="empty-row">
             <td :colspan="currentTableData.columns.length + 1" class="empty-cell">
-              {{ t('dataTable.tableEmpty') }}
+              {{ activeFilters.length > 0 ? t('dataTable.filterNoMatch') : t('dataTable.tableEmpty') }}
             </td>
           </tr>
           <tr
@@ -827,7 +827,7 @@ const filterOperatorOptions: { label: string; value: FilterOperator }[] = [
   { label: '>=', value: 'Gte' },
   { label: '<', value: 'Lt' },
   { label: '<=', value: 'Lte' },
-  { label: 'LIKE', value: 'Like' },
+  { label: 'LIKE（包含）', value: 'Like' },
   { label: 'IS NULL', value: 'IsNull' },
   { label: 'IS NOT NULL', value: 'IsNotNull' },
 ]
@@ -907,7 +907,12 @@ const filterWherePreview = computed(() => {
       case 'Gte': return `${column} >= ${literal(row)}`
       case 'Lt': return `${column} < ${literal(row)}`
       case 'Lte': return `${column} <= ${literal(row)}`
-      case 'Like': return `${column} LIKE ${literal(row)}`
+      // LIKE 是「包含」语义：不为空且没写通配符时自动补 `%`，与后端 like_pattern 保持一致
+      case 'Like': {
+        const raw = String(coerceFilterValue(row) ?? '')
+        const pattern = raw.includes('%') || raw.includes('_') ? raw : `%${raw}%`
+        return `${column} LIKE '${pattern.replace(/'/g, "''")}'`
+      }
       case 'IsNull': return `${column} IS NULL`
       case 'IsNotNull': return `${column} IS NOT NULL`
     }

@@ -229,18 +229,63 @@ export async function installTauriMock(page: Page, fixture: MockFixture = FIXTUR
       return [{ id: `tbl_${data.table}`, name: data.table, object_type: 'Table' }]
     }
 
+    /** 过滤条件语义与 Rust 侧保持一致：Like = 包含匹配（无通配符时自动补 %）。 */
+    function matchesFilter(row: unknown[], filter: DataFilterCondition): boolean {
+      const index = columnIndex(filter.column)
+      if (index < 0) return false
+      const cell = row[index]
+      const text = cellText(cell)
+      const value = filter.value === null || filter.value === undefined ? '' : String(filter.value)
+      switch (filter.operator) {
+        case 'Eq': return text === value
+        case 'Ne': return text !== value
+        case 'Gt': return Number(text) > Number(value)
+        case 'Gte': return Number(text) >= Number(value)
+        case 'Lt': return Number(text) < Number(value)
+        case 'Lte': return Number(text) <= Number(value)
+        case 'Like': {
+          const pattern = value.includes('%') || value.includes('_')
+            ? value
+            : `%${value}%`
+          const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*').replace(/_/g, '.')
+          return new RegExp(`^${escaped}$`, 'i').test(text)
+        }
+        case 'IsNull': return cell === null || cell === undefined
+        case 'IsNotNull': return cell !== null && cell !== undefined
+        default: return true
+      }
+    }
+
+    type DataFilterCondition = {
+      column: string
+      operator: string
+      value?: unknown
+    }
+
     function queryTableData(args: Args) {
       const request = (args.request ?? {}) as {
         page?: number
         page_size?: number
         search?: string
+        filters?: DataFilterCondition[]
+        filter_logic?: string
       }
       const page = request.page ?? 1
       const pageSize = request.page_size ?? 100
       const keyword = (request.search ?? '').trim().toLowerCase()
-      const rows = keyword
-        ? state.rows.filter((row) => row.some((cell) => cellText(cell).toLowerCase().includes(keyword)))
-        : state.rows
+      const filters = request.filters ?? []
+      const isOr = (request.filter_logic ?? 'and').toLowerCase() === 'or'
+      const matchedFilters = (row: unknown[]) =>
+        filters.length === 0
+          ? true
+          : isOr
+            ? filters.some((filter) => matchesFilter(row, filter))
+            : filters.every((filter) => matchesFilter(row, filter))
+      const rows = state.rows.filter(
+        (row) =>
+          matchedFilters(row) &&
+          (!keyword || row.some((cell) => cellText(cell).toLowerCase().includes(keyword))),
+      )
       const start = (page - 1) * pageSize
       return {
         columns,
