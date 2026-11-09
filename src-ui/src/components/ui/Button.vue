@@ -5,7 +5,7 @@
     :type="type"
     @click="handleClick"
     v-ripple="{ color: rippleColor }"
-  >
+   aria-label="按钮">
     <span v-if="loading" class="btn-spinner">
       <RefreshCw :size="iconSize" class="spin" />
     </span>

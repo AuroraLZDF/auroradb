@@ -3,7 +3,7 @@
     <!-- 头部 -->
     <div class="designer-header">
       <h3>{{ isNewDatabase ? t('databaseDesigner.newDatabase') : t('databaseDesigner.editDatabase') }}</h3>
-      <button class="btn-close" @click="close"><X :size="18" /></button>
+      <button class="btn-close" @click="close" aria-label="按钮"><X :size="18" /></button>
     </div>
 
     <!-- 内容区域 -->
@@ -375,7 +375,7 @@ async function alterDatabase() {
 }
 
 .btn-close:hover {
-  background: var(--bg-hover);
+  background: var(--hover-fill);
 }
 
 .designer-content {
@@ -414,7 +414,7 @@ async function alterDatabase() {
   background: rgba(239, 68, 68, 0.1);
   border: 1px solid rgba(239, 68, 68, 0.3);
   border-radius: 6px;
-  color: var(--color-danger, #ef4444);
+  color: var(--error-500);
   font-size: 13px;
   margin-top: 8px;
 }
@@ -472,7 +472,7 @@ async function alterDatabase() {
 }
 
 .btn-secondary:hover {
-  background: var(--bg-hover);
+  background: var(--hover-fill);
 }
 
 .btn-primary {

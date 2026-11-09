@@ -6,7 +6,7 @@
         <component :is="typeIcon" class="header-icon" :size="18" />
         {{ title }}
       </h3>
-      <button class="btn-close" @click="close" :title="t('common.close')"><X :size="18" /></button>
+      <button class="btn-close" @click="close" :title="t('common.close')" :aria-label="t('common.close')"><X :size="18" /></button>
     </div>
 
     <!-- 内容区（可横向滚动） -->
@@ -696,7 +696,7 @@ watch(() => [props.type, props.data], () => {
 }
 
 .btn-copy.success {
-  color: var(--color-success);
+  color: var(--success-500);
 }
 
 .btn-copy.success:hover {
@@ -749,17 +749,17 @@ watch(() => [props.type, props.data], () => {
 
 .status-badge.connected {
   background: rgba(16, 185, 129, 0.14);
-  color: var(--color-success);
+  color: var(--success-500);
 }
 
 .status-badge.disconnected {
   background: rgba(239, 68, 68, 0.12);
-  color: var(--color-danger);
+  color: var(--error-500);
 }
 
 .status-badge.reconnecting {
   background: rgba(245, 158, 11, 0.14);
-  color: var(--color-warning);
+  color: var(--warning-500);
 }
 
 .status-badge.failed {
@@ -896,14 +896,14 @@ watch(() => [props.type, props.data], () => {
 }
 
 .error-overlay p {
-  color: var(--color-danger);
+  color: var(--error-500);
   font-size: 12px;
   margin-bottom: 12px;
 }
 
 .btn-retry {
   padding: 6px 16px;
-  background: var(--color-info);
+  background: var(--brand-500);
   color: white;
   border: none;
   border-radius: 4px;
@@ -912,14 +912,14 @@ watch(() => [props.type, props.data], () => {
 }
 
 .btn-retry:hover {
-  background: var(--color-primary);
+  background: var(--brand-500);
 }
 
 /* 底部横向滚动条 */
 .scrollbar-container {
   height: 12px;
-  background: var(--color-border);
-  border-top: 1px solid var(--color-border);
+  background: var(--hairline);
+  border-top: 1px solid var(--hairline);
   position: relative;
   cursor: pointer;
   user-select: none;
@@ -927,7 +927,7 @@ watch(() => [props.type, props.data], () => {
 
 .scrollbar-thumb {
   height: 100%;
-  background: var(--color-text-secondary);
+  background: var(--text-secondary);
   border-radius: 6px;
   position: absolute;
   top: 0;
@@ -936,17 +936,17 @@ watch(() => [props.type, props.data], () => {
 }
 
 .scrollbar-thumb:hover {
-  background: var(--color-text);
+  background: var(--text-primary);
 }
 
 .scrollbar-thumb:active {
   cursor: grabbing;
-  background: var(--color-primary);
+  background: var(--brand-500);
 }
 
 /* 选中状态 */
 .viewing-info {
   background: rgba(243, 156, 18, 0.2) !important;
-  border-left: 3px solid var(--color-warning) !important;
+  border-left: 3px solid var(--warning-500) !important;
 }
 </style>

@@ -7,7 +7,7 @@
         <h2>{{ t('monitor.title') }}</h2>
         <span class="header-hint">{{ t('monitor.hint') }}</span>
       </div>
-      <button class="icon-btn" :title="t('common.close')" @click="emit('close')">
+      <button class="icon-btn" :title="t('common.close')" @click="emit('close')" :aria-label="t('common.close')">
         <X :size="18" />
       </button>
     </div>
@@ -351,7 +351,8 @@ async function refreshProcesses(silent = false) {
     ])
     // 已有更新的请求（切换连接 / 手动刷新）时丢弃这次的旧结果
     if (seq !== processSeq) return
-    processes.value = list
+    // 后端异常时可能返回 null，兜底成空列表，避免模板 .length 抛错白屏
+    processes.value = list ?? []
     metrics.value = status
     processError.value = ''
   } catch (err) {
@@ -461,7 +462,7 @@ async function loadAuditEntries() {
       keyword: auditKeyword.value || undefined
     })
     if (seq !== auditSeq) return
-    auditEntries.value = entries
+    auditEntries.value = entries ?? []
   } catch (err) {
     if (seq !== auditSeq) return
     auditEntries.value = []
@@ -570,35 +571,36 @@ startTimer()
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  background: var(--surface-default);
+  background: var(--canvas);
   color: var(--text-primary);
 }
 
-/* 头部 */
+/* 头部：与全局工具栏同高 */
 .panel-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-4);
-  padding: var(--space-4) var(--space-5);
-  border-bottom: 1px solid var(--border-subtle);
+  gap: var(--space-3);
+  height: var(--toolbar-height);
+  padding: 0 var(--space-3);
+  border-bottom: 1px solid var(--hairline);
   flex-shrink: 0;
 }
 
 .header-title {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
   min-width: 0;
 }
 
 .title-icon {
-  color: var(--brand-500);
+  color: var(--text-tertiary);
 }
 
 .header-title h2 {
   margin: 0;
-  font-size: var(--text-lg);
+  font-size: var(--text-sm);
   font-weight: var(--font-semibold);
   white-space: nowrap;
 }
@@ -615,28 +617,31 @@ startTimer()
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: var(--control-height-sm);
+  height: var(--control-height-sm);
+  padding: 0;
   border: none;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-secondary);
   cursor: pointer;
-  transition: var(--transition-all);
+  transition: var(--transition-colors);
   flex-shrink: 0;
 }
 
 .icon-btn:hover {
-  background: var(--surface-hover);
+  background: var(--hover-fill);
   color: var(--text-primary);
 }
 
-/* 标签页 */
+/* 标签页：下划线式，1px */
 .tab-bar {
   display: flex;
-  gap: var(--space-1);
-  padding: 0 var(--space-5);
-  border-bottom: 1px solid var(--border-subtle);
+  align-items: stretch;
+  gap: 0;
+  height: var(--tabbar-height);
+  padding: 0 var(--space-2);
+  border-bottom: 1px solid var(--hairline);
   flex-shrink: 0;
 }
 
@@ -644,22 +649,24 @@ startTimer()
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-3) var(--space-3);
+  height: 100%;
+  padding: 0 var(--space-3);
   border: none;
-  border-bottom: 2px solid transparent;
+  border-bottom: 1px solid transparent;
   background: transparent;
   color: var(--text-secondary);
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
   cursor: pointer;
   transition: var(--transition-colors);
 }
 
 .tab-btn:hover {
   color: var(--text-primary);
+  background: var(--hover-fill);
 }
 
 .tab-btn.active {
-  color: var(--brand-500);
+  color: var(--text-primary);
   border-bottom-color: var(--brand-500);
   font-weight: var(--font-medium);
 }
@@ -675,19 +682,19 @@ startTimer()
 /* 工具栏 */
 .toolbar {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: var(--space-3);
-  padding: var(--space-3) var(--space-5);
-  border-bottom: 1px solid var(--border-subtle);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--hairline);
   flex-wrap: wrap;
   flex-shrink: 0;
 }
 
 .toolbar-field {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  min-width: 180px;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 160px;
 }
 
 .toolbar-field.grow {
@@ -697,20 +704,23 @@ startTimer()
 .field-label {
   font-size: var(--text-xs);
   color: var(--text-tertiary);
+  white-space: nowrap;
 }
 
 .text-input {
-  height: 34px;
-  padding: 0 var(--space-3);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  background: var(--surface-default);
+  height: var(--control-height-sm);
+  padding: 0 var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--raised);
   color: var(--text-primary);
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
   outline: none;
+  transition: var(--transition-colors);
 }
 
 .text-input:focus {
+  background: var(--canvas);
   border-color: var(--brand-500);
 }
 
@@ -718,15 +728,14 @@ startTimer()
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  margin-bottom: 8px;
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
   color: var(--text-secondary);
   cursor: pointer;
   white-space: nowrap;
+  user-select: none;
 }
 
 .version-hint {
-  margin-bottom: 8px;
   font-size: var(--text-xs);
   color: var(--text-tertiary);
 }
@@ -736,31 +745,31 @@ startTimer()
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  margin: var(--space-3) var(--space-5) 0;
+  margin: var(--space-2) var(--space-3) 0;
   padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-md);
-  font-size: var(--text-sm);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
   flex-shrink: 0;
 }
 
 .alert.error {
-  border: 1px solid var(--error-500);
-  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.12);
   color: var(--error-500);
 }
 
 .alert.success {
-  border: 1px solid var(--success-500);
-  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  background: rgba(16, 185, 129, 0.12);
   color: var(--success-500);
 }
 
-/* 指标卡片 */
+/* 指标块：扁平，不用卡片边框 */
 .metrics-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--space-3);
-  padding: var(--space-4) var(--space-5);
+  padding: var(--space-3);
   flex-shrink: 0;
 }
 
@@ -769,9 +778,8 @@ startTimer()
   flex-direction: column;
   gap: 2px;
   padding: var(--space-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  background: var(--surface-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--raised);
   min-width: 0;
 }
 
@@ -781,16 +789,17 @@ startTimer()
 }
 
 .metric-value {
-  font-size: var(--text-xl);
+  font-size: var(--text-lg);
   font-weight: var(--font-semibold);
   color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .metric-dim {
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
   font-weight: var(--font-normal);
   color: var(--text-tertiary);
 }
@@ -805,8 +814,8 @@ startTimer()
 
 .read-write {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  align-items: baseline;
+  gap: var(--space-2);
   font-size: var(--text-sm);
   font-weight: var(--font-medium);
 }
@@ -819,18 +828,18 @@ startTimer()
   color: var(--warning-500);
 }
 
-/* 表格 */
+/* 表格：只留横线，行高与数据表一致 */
 .table-wrap {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 0 var(--space-5) var(--space-4);
 }
 
 .data-table {
   width: 100%;
-  border-collapse: collapse;
-  font-size: var(--text-sm);
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: var(--text-xs);
 }
 
 .data-table th {
@@ -838,22 +847,25 @@ startTimer()
   top: 0;
   z-index: 1;
   text-align: left;
-  padding: var(--space-2) var(--space-3);
-  background: var(--surface-subtle);
-  border-bottom: 1px solid var(--border-default);
+  height: 24px;
+  padding: 0 var(--space-3);
+  background: var(--raised);
+  border-bottom: 1px solid var(--hairline-strong);
   color: var(--text-secondary);
   font-weight: var(--font-medium);
   white-space: nowrap;
 }
 
 .data-table td {
-  padding: var(--space-2) var(--space-3);
-  border-bottom: 1px solid var(--border-subtle);
-  vertical-align: top;
+  height: var(--row-height);
+  padding: 0 var(--space-3);
+  border-bottom: 1px solid var(--hairline);
+  vertical-align: middle;
+  white-space: nowrap;
 }
 
 .data-table tbody tr:hover {
-  background: var(--surface-hover);
+  background: var(--hover-fill);
 }
 
 .mono {
@@ -886,19 +898,39 @@ startTimer()
   text-align: center;
 }
 
-.command-chip {
+.command-chip,
+.kind-chip {
   display: inline-block;
-  padding: 1px 8px;
-  border-radius: 999px;
-  font-size: var(--text-xs);
-  background: var(--selected-fill);
-  color: var(--brand-500);
+  padding: 0 5px;
+  border-radius: var(--radius-xs);
+  font-size: 10px;
+  line-height: 16px;
   white-space: nowrap;
 }
 
+.command-chip {
+  background: var(--selected-fill);
+  color: var(--brand-500);
+}
+
 .command-chip.sleeping {
-  background: var(--surface-hover);
+  background: var(--hover-fill);
   color: var(--text-tertiary);
+}
+
+.kind-chip {
+  background: var(--hover-fill);
+  color: var(--text-secondary);
+}
+
+.kind-chip.table-edit {
+  background: rgba(245, 158, 11, 0.14);
+  color: var(--warning-500);
+}
+
+.kind-chip.import {
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--success-500);
 }
 
 .state {
@@ -919,7 +951,8 @@ startTimer()
 .empty-cell {
   text-align: center;
   color: var(--text-tertiary);
-  padding: var(--space-6) !important;
+  padding: var(--space-5) !important;
+  height: auto !important;
 }
 
 /* 审计行 */
@@ -932,27 +965,7 @@ startTimer()
 }
 
 .audit-row.expanded {
-  background: var(--surface-active);
-}
-
-.kind-chip {
-  display: inline-block;
-  padding: 1px 8px;
-  border-radius: 999px;
-  font-size: var(--text-xs);
-  background: var(--surface-hover);
-  color: var(--text-secondary);
-  white-space: nowrap;
-}
-
-.kind-chip.table-edit {
-  background: rgba(245, 158, 11, 0.14);
-  color: var(--warning-500);
-}
-
-.kind-chip.import {
-  background: rgba(16, 185, 129, 0.12);
-  color: var(--success-500);
+  background: var(--selected-fill);
 }
 
 .status-ok {
@@ -966,8 +979,10 @@ startTimer()
 }
 
 .audit-detail td {
-  background: var(--surface-subtle);
-  padding: var(--space-3) var(--space-4);
+  background: var(--canvas);
+  padding: var(--space-2) var(--space-3) !important;
+  border-bottom: 1px solid var(--hairline);
+  white-space: normal;
 }
 
 .sql-detail {

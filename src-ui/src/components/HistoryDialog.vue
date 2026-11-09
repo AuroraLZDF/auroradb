@@ -1,9 +1,9 @@
 <template>
   <div v-if="open" class="history-mask" @click.self="emit('close')">
-    <div class="history-dialog">
+    <div class="history-dialog" role="dialog" aria-modal="true" :aria-label="t('history.title')">
       <div class="history-header">
         <span class="history-title">{{ t('history.title') }}</span>
-        <button class="history-close" @click="emit('close')">×</button>
+        <button class="history-close" @click="emit('close')" aria-label="关闭">×</button>
       </div>
 
       <div class="history-filters">
@@ -308,7 +308,7 @@ function showNotice(message: string) {
   word-break: break-all;
   max-height: 3.6em;
   overflow: hidden;
-  color: var(--text-primary, var(--color-text));
+  color: var(--text-primary);
 }
 
 .history-params {

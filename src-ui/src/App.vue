@@ -93,8 +93,8 @@
     </div>
 
     <!-- 连接表单弹窗 -->
-    <div v-if="showConnectionForm" class="modal-overlay">
-      <div class="modal-content modal-connection">
+    <div v-if="showConnectionForm" class="modal-overlay" role="presentation">
+      <div class="modal-content modal-connection" role="dialog" aria-modal="true">
         <ConnectionForm
           :edit-connection="editingConnection"
           @success="onConnectionSuccess"
@@ -107,47 +107,48 @@
     <div
       v-if="tableContextMenu.show"
       class="context-menu"
+      role="menu"
       :style="{ top: tableContextMenu.y + 'px', left: tableContextMenu.x + 'px' }"
       @click.stop
     >
       <!-- 多选时仅提供批量删除，避免单表操作含义不明 -->
       <template v-if="tableContextMenu.tableNames.length > 1">
-        <div class="menu-item menu-item-danger" @click="handleTableMenu('delete-table')">
+        <div class="menu-item menu-item-danger" role="menuitem" @click="handleTableMenu('delete-table')">
           <Trash2 class="menu-icon" :size="14" />
           {{ t('app.deleteSelectedTables', { count: tableContextMenu.tableNames.length }) }}
         </div>
       </template>
       <template v-else>
-        <div class="menu-item" @click="handleTableMenu('view-data')">
+        <div class="menu-item" role="menuitem" @click="handleTableMenu('view-data')">
           <Eye class="menu-icon" :size="14" /> {{ t('app.viewData') }}
         </div>
-        <div class="menu-item" @click="handleTableMenu('design-table')">
+        <div class="menu-item" role="menuitem" @click="handleTableMenu('design-table')">
           <Settings class="menu-icon" :size="14" /> {{ t('app.designTable') }}
         </div>
-        <div class="menu-item" @click="handleTableMenu('refresh-tables')">
+        <div class="menu-item" role="menuitem" @click="handleTableMenu('refresh-tables')">
           <RefreshCw class="menu-icon" :size="14" /> {{ t('common.refresh') }}
         </div>
         <div class="menu-divider"></div>
-        <div class="menu-item" @click="handleTableMenu('export')">
+        <div class="menu-item" role="menuitem" @click="handleTableMenu('export')">
           <Download class="menu-icon" :size="14" /> {{ t('app.exportData') }}
         </div>
-        <div class="menu-item" @click="handleTableMenu('import')">
+        <div class="menu-item" role="menuitem" @click="handleTableMenu('import')">
           <Upload class="menu-icon" :size="14" /> {{ t('app.importData') }}
         </div>
         <div class="menu-divider"></div>
-        <div class="menu-item" @click="handleTableMenu('copy-name')">
+        <div class="menu-item" role="menuitem" @click="handleTableMenu('copy-name')">
           <Copy class="menu-icon" :size="14" /> {{ t('app.copyName') }}
         </div>
-        <div class="menu-item" @click="handleTableMenu('copy-table')">
+        <div class="menu-item" role="menuitem" @click="handleTableMenu('copy-table')">
           <Copy class="menu-icon" :size="14" /> {{ t('app.copyTable') }}
         </div>
-        <div class="menu-item" @click="handleTableMenu('clear-table')">
+        <div class="menu-item" role="menuitem" @click="handleTableMenu('clear-table')">
           <Eraser class="menu-icon" :size="14" /> {{ t('app.clearTable') }}
         </div>
-        <div class="menu-item" @click="handleTableMenu('truncate-table')">
+        <div class="menu-item" role="menuitem" @click="handleTableMenu('truncate-table')">
           <Trash2 class="menu-icon" :size="14" /> {{ t('app.truncateTable') }}
         </div>
-        <div class="menu-item menu-item-danger" @click="handleTableMenu('delete-table')">
+        <div class="menu-item menu-item-danger" role="menuitem" @click="handleTableMenu('delete-table')">
           <Trash2 class="menu-icon" :size="14" /> {{ t('app.deleteTable') }}
         </div>
       </template>
@@ -157,6 +158,7 @@
     <div
       v-if="databaseContextMenu.show"
       class="context-menu"
+      role="menu"
       :style="{ top: databaseContextMenu.y + 'px', left: databaseContextMenu.x + 'px' }"
       @click.stop
     >
@@ -167,24 +169,24 @@
         <X class="menu-icon" :size="14" /> {{ t('app.closeDatabase') }}
       </div>
       <div class="menu-divider"></div>
-      <div class="menu-item" @click="handleDatabaseMenu('edit')">
+      <div class="menu-item" role="menuitem" @click="handleDatabaseMenu('edit')">
         <Settings class="menu-icon" :size="14" /> {{ t('app.editDatabase') }}
       </div>
-      <div class="menu-item" @click="handleDatabaseMenu('new-table')">
+      <div class="menu-item" role="menuitem" @click="handleDatabaseMenu('new-table')">
         <Plus class="menu-icon" :size="14" /> {{ t('app.newTable') }}
       </div>
-      <div class="menu-item" @click="handleDatabaseMenu('refresh')">
+      <div class="menu-item" role="menuitem" @click="handleDatabaseMenu('refresh')">
         <RefreshCw class="menu-icon" :size="14" /> {{ t('common.refresh') }}
       </div>
       <div class="menu-divider"></div>
-      <div class="menu-item" @click="handleDatabaseMenu('export-sql')">
+      <div class="menu-item" role="menuitem" @click="handleDatabaseMenu('export-sql')">
         <Download class="menu-icon" :size="14" /> {{ t('app.exportSql') }}
       </div>
-      <div class="menu-item" @click="handleDatabaseMenu('import-sql')">
+      <div class="menu-item" role="menuitem" @click="handleDatabaseMenu('import-sql')">
         <Upload class="menu-icon" :size="14" /> {{ t('app.importSql') }}
       </div>
       <div class="menu-divider"></div>
-      <div class="menu-item menu-item-danger" @click="handleDatabaseMenu('delete')">
+      <div class="menu-item menu-item-danger" role="menuitem" @click="handleDatabaseMenu('delete')">
         <Trash2 class="menu-icon" :size="14" /> {{ t('app.deleteDatabase') }}
       </div>
     </div>
@@ -193,17 +195,18 @@
     <div
       v-if="savedConnectionContextMenu.show"
       class="context-menu"
+      role="menu"
       :style="{ top: savedConnectionContextMenu.y + 'px', left: savedConnectionContextMenu.x + 'px' }"
       @click.stop
     >
-      <div class="menu-item" @click="handleSavedConnectionMenu('open')">
+      <div class="menu-item" role="menuitem" @click="handleSavedConnectionMenu('open')">
         <Plug class="menu-icon" :size="14" /> {{ t('app.openConnection') }}
       </div>
-      <div class="menu-item" @click="handleSavedConnectionMenu('edit')">
+      <div class="menu-item" role="menuitem" @click="handleSavedConnectionMenu('edit')">
         <Settings class="menu-icon" :size="14" /> {{ t('app.editConnection') }}
       </div>
       <div class="menu-divider"></div>
-      <div class="menu-item menu-item-danger" @click="handleSavedConnectionMenu('delete')">
+      <div class="menu-item menu-item-danger" role="menuitem" @click="handleSavedConnectionMenu('delete')">
         <Trash2 class="menu-icon" :size="14" /> {{ t('app.deleteConnection') }}
       </div>
     </div>
@@ -212,10 +215,11 @@
     <div
       v-if="activeConnectionContextMenu.show"
       class="context-menu"
+      role="menu"
       :style="{ top: activeConnectionContextMenu.y + 'px', left: activeConnectionContextMenu.x + 'px' }"
       @click.stop
     >
-      <div class="menu-item menu-item-danger" @click="handleActiveConnectionMenu('disconnect')">
+      <div class="menu-item menu-item-danger" role="menuitem" @click="handleActiveConnectionMenu('disconnect')">
         <X class="menu-icon" :size="14" /> {{ t('app.disconnect') }}
       </div>
       <template v-if="activeConnectionContextMenu.driver !== 'postgres'">
@@ -230,15 +234,15 @@
     </div>
 
     <!-- 关于弹窗 -->
-    <div v-if="showAbout" class="modal-overlay">
-      <div class="modal-content modal-about">
+    <div v-if="showAbout" class="modal-overlay" role="presentation">
+      <div class="modal-content modal-about" role="dialog" aria-modal="true">
         <AboutDialog @close="showAbout = false" />
       </div>
     </div>
 
     <!-- Schema 对比弹窗 -->
-    <div v-if="showSchemaDiff" class="modal-overlay">
-      <div class="modal-content modal-large">
+    <div v-if="showSchemaDiff" class="modal-overlay" role="presentation">
+      <div class="modal-content modal-large" role="dialog" aria-modal="true">
         <component
           :is="ProUi.SchemaDiff"
           v-if="ProUi.SchemaDiff"
@@ -251,8 +255,8 @@
     </div>
 
     <!-- 实例监控与审计弹窗 -->
-    <div v-if="showMonitor" class="modal-overlay">
-      <div class="modal-content modal-large">
+    <div v-if="showMonitor" class="modal-overlay" role="presentation">
+      <div class="modal-content modal-large" role="dialog" aria-modal="true">
         <component
           :is="ProUi.MonitorPanel"
           v-if="ProUi.MonitorPanel"
@@ -264,8 +268,8 @@
     </div>
 
     <!-- 备份还原弹窗 -->
-    <div v-if="showBackup" class="modal-overlay">
-      <div class="modal-content modal-backup">
+    <div v-if="showBackup" class="modal-overlay" role="presentation">
+      <div class="modal-content modal-backup" role="dialog" aria-modal="true">
         <component
           :is="ProUi.BackupDialog"
           v-if="ProUi.BackupDialog"
@@ -277,7 +281,7 @@
 
     <!-- 导入 SQL 进度弹窗：导入结束前即可看到逐条语句的执行结果 -->
     <div v-if="importTask" class="modal-overlay">
-      <div class="modal-content modal-import">
+      <div class="modal-content modal-import" role="dialog" aria-modal="true">
         <ImportProgressDialog
           :file-name="importTask.fileName"
           :database="importTask.database"
@@ -296,8 +300,8 @@
     <HistoryDialog :open="showHistory" @close="showHistory = false" @rerun="rerunHistory" />
 
     <!-- 跨库全局搜索弹窗 -->
-    <div v-if="showGlobalSearch" class="modal-overlay">
-      <div class="modal-content modal-large">
+    <div v-if="showGlobalSearch" class="modal-overlay" role="presentation">
+      <div class="modal-content modal-large" role="dialog" aria-modal="true">
         <component
           :is="ProUi.GlobalSearchDialog"
           v-if="ProUi.GlobalSearchDialog"
@@ -311,7 +315,7 @@
 
     <!-- 表格设计器弹窗 -->
     <div v-if="showTableDesigner" class="modal-overlay">
-      <div class="modal-content modal-large modal-designer">
+      <div class="modal-content modal-large modal-designer" role="dialog" aria-modal="true">
         <TableDesigner
           :connection-id="tableDesignerData.connectionId"
           :database="tableDesignerData.database"
@@ -325,7 +329,7 @@
 
     <!-- 数据库设计器弹窗 -->
     <div v-if="showDatabaseDesigner" class="modal-overlay">
-      <div class="modal-content">
+      <div class="modal-content" role="dialog" aria-modal="true">
         <DatabaseDesigner
           :connection-id="databaseDesignerData.connectionId"
           :database="databaseDesignerData.database"
@@ -391,6 +395,7 @@ import {
   Copy,
   Trash2,
   Eraser,
+  Plug,
 } from '@/components/icons'
 
 const store = useConnectionStore()
@@ -1808,6 +1813,26 @@ function onGlobalKeydown(e: KeyboardEvent) {
       return
     }
   }
+  // Esc 关闭最顶层弹窗（不抢合并态快捷键，仅在没有其它浮层接管时生效）
+  if (e.key === 'Escape' && !e.defaultPrevented) {
+    const closers: Array<[boolean, () => void]> = [
+      [showGlobalSearch.value, () => (showGlobalSearch.value = false)],
+      [showHistory.value, () => (showHistory.value = false)],
+      [showTableDesigner.value, () => (showTableDesigner.value = false)],
+      [showBackup.value, () => (showBackup.value = false)],
+      [showMonitor.value, () => (showMonitor.value = false)],
+      [showSchemaDiff.value, () => (showSchemaDiff.value = false)],
+      [showAbout.value, () => (showAbout.value = false)],
+      [showConnectionForm.value, () => (showConnectionForm.value = false)]
+    ]
+    const hit = closers.find(([open]) => open)
+    if (hit) {
+      hit[1]()
+      e.preventDefault()
+      return
+    }
+  }
+
   // 面板打开时阻止下层组件响应方向键等
   if (registry.open) {
     if (['ArrowUp', 'ArrowDown', 'Enter', 'Escape'].includes(e.key)) {

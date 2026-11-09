@@ -7,7 +7,7 @@
           <span v-if="columnType" class="viewer-type">{{ columnType }}</span>
           <span v-if="sizeLabel" class="viewer-size">{{ sizeLabel }}</span>
         </div>
-        <button class="viewer-close" :title="t('common.close')" @click="close">
+        <button class="viewer-close" :title="t('common.close')" @click="close" :aria-label="t('common.close')">
           <X :size="16" />
         </button>
       </header>

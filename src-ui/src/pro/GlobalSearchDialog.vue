@@ -9,7 +9,7 @@
           <p class="subtitle">{{ t('search.subtitle') }}</p>
         </div>
       </div>
-      <button class="icon-btn" :title="t('common.close')" @click="emit('close')">
+      <button class="icon-btn" :title="t('common.close')" @click="emit('close')" :aria-label="t('common.close')">
         <X :size="18" />
       </button>
     </div>

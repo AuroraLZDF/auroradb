@@ -5,7 +5,7 @@
         <Info :size="18" class="title-icon" />
         <h2>{{ t('about.title') }}</h2>
       </div>
-      <button class="icon-btn" :title="t('common.close')" @click="emit('close')">
+      <button class="icon-btn" :title="t('common.close')" @click="emit('close')" :aria-label="t('common.close')">
         <X :size="18" />
       </button>
     </div>

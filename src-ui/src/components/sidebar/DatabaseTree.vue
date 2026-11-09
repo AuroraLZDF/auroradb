@@ -1,5 +1,5 @@
 <template>
-  <div class="connection-databases">
+  <div class="connection-databases" role="group">
     <div
       v-for="db in visibleDatabases"
       :key="db.name"
@@ -12,7 +12,14 @@
     >
       <div
         class="database-header"
+        role="treeitem"
+        tabindex="0"
+        :aria-selected="selectedDatabase === `${connectionId}.${db.name}`"
+        :aria-expanded="activeDatabases.has(`${connectionId}.${db.name}`)"
+        :aria-label="db.name"
         @click="emit('selectDatabase', db.name)"
+        @keydown.enter.prevent="emit('selectDatabase', db.name)"
+        @keydown.space.prevent="emit('dblclickDatabase', db.name)"
         @dblclick="emit('dblclickDatabase', db.name)"
         @contextmenu.prevent="emit('showDatabaseMenu', $event, db.name)"
       >
@@ -28,7 +35,16 @@
           class="category-item"
           :class="{ expanded: isCategoryExpanded(db.name, category.type) }"
         >
-          <div class="category-header" @click="emit('toggleCategory', db.name, category.type)">
+          <div
+            class="category-header"
+            role="treeitem"
+            tabindex="0"
+            :aria-expanded="isCategoryExpanded(db.name, category.type)"
+            :aria-label="category.label"
+            @click="emit('toggleCategory', db.name, category.type)"
+            @keydown.enter.prevent="emit('toggleCategory', db.name, category.type)"
+            @keydown.space.prevent="emit('toggleCategory', db.name, category.type)"
+          >
             <span class="expand-icon">
               <component :is="isCategoryExpanded(db.name, category.type) ? ChevronDown : ChevronRight" :size="12" />
             </span>
@@ -42,11 +58,15 @@
               v-for="table in visibleTables(db.name)"
               :key="table.name"
               class="object-item"
+              role="treeitem"
+              tabindex="0"
+              :aria-selected="selectedTable === `${connectionId}.${db.name}.${table.name}`"
               :class="{
                 active: selectedTable === `${connectionId}.${db.name}.${table.name}`,
                 'viewing-structure': selectedInfoType === 'table' && selectedInfoData.tableName === table.name
               }"
               @click="emit('selectTable', db.name, table.name)"
+              @keydown.enter.prevent="emit('dblclickTable', db.name, table.name)"
               @dblclick="emit('dblclickTable', db.name, table.name)"
               @contextmenu.prevent="emit('showTableMenu', $event, db.name, table.name)"
               :title="t('tree.tableHint')"
@@ -65,8 +85,12 @@
               v-for="object in objectsOfType(db.name, category.objectType)"
               :key="object.id"
               class="object-item"
+              role="treeitem"
+              tabindex="0"
+              :aria-label="object.name"
               :title="object.name"
               @click="emit('selectObject', db.name, object)"
+              @keydown.enter.prevent="emit('dblclickObject', db.name, object)"
               @dblclick="emit('dblclickObject', db.name, object)"
             >
               <component :is="category.icon" class="object-icon" :size="12" />

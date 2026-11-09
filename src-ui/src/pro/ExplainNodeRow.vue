@@ -94,11 +94,11 @@ const isHighCost = false  // 简化：暂不做跨节点相对成本对比
 }
 
 .node-index {
-  color: var(--brand-primary);
+  color: var(--brand-500);
   font-size: 12px;
   padding: 1px 6px;
   border-radius: 10px;
-  background: var(--brand-dim);
+  background: var(--selected-fill);
 }
 
 .node-rows, .node-cost, .node-filtered {

@@ -1,5 +1,5 @@
 <template>
-  <div class="tree-section">
+  <div class="tree-section" role="tree" :aria-label="t('tree.myConnections')">
     <div class="section-header">
       <h3>{{ t('tree.myConnections') }}</h3>
       <div class="filter-wrap">
@@ -31,7 +31,13 @@
         <div
           v-if="item.type === 'saved'"
           class="connection-item saved"
+          role="treeitem"
+          tabindex="0"
+          :aria-selected="false"
+          :aria-label="`${item.name} ${item.host}:${item.port}`"
           :style="colorStyleOf(item)"
+          @keydown.enter.prevent="emit('openSavedConnection', item.saved!)"
+          @keydown.space.prevent="emit('openSavedConnection', item.saved!)"
           @dblclick="emit('openSavedConnection', item.saved!)"
           @contextmenu.prevent="emit('showSavedConnectionMenu', $event, item.saved!)"
           :title="t('tree.openSavedHint')"
@@ -67,6 +73,11 @@
         <template v-else>
           <div
             class="connection-item"
+            role="treeitem"
+            tabindex="0"
+            :aria-selected="currentConnection?.id === item.active!.id"
+            :aria-expanded="expandedConnections.has(item.active!.id)"
+            :aria-label="`${item.name} ${item.host}:${item.port}`"
             :style="colorStyleOf(item)"
             :class="{
               active: currentConnection?.id === item.active!.id,
@@ -74,6 +85,8 @@
               'viewing-info': selectedInfoType === 'connection' && selectedInfoData.connectionId === item.active!.id
             }"
             @click="emit('selectConnection', item.active!)"
+            @keydown.enter.prevent="emit('selectConnection', item.active!)"
+            @keydown.space.prevent="emit('toggleConnection', item.active!.id)"
             @contextmenu.prevent="emit('showActiveConnectionMenu', $event, item.active!)"
           >
             <span class="expand-icon" @click.stop="emit('toggleConnection', item.active!.id)">
@@ -438,12 +451,12 @@ function getConnectionStatus(state: string): 'online' | 'offline' | 'reconnectin
 }
 
 .mode-badge.readonly {
-  color: var(--color-danger);
+  color: var(--error-500);
   background: rgba(239, 68, 68, 0.12);
 }
 
 .mode-badge.safe {
-  color: var(--color-warning);
+  color: var(--warning-500);
   background: rgba(245, 158, 11, 0.14);
 }
 

@@ -5,7 +5,7 @@
       class="header-btn menu-toggle u-visible-mobile"
       @click="emit('toggleSidebar')"
       :title="t('header.toggleSidebar')"
-    >
+     :aria-label="t('header.toggleSidebar')">
       <Menu :size="16" />
     </button>
 
@@ -217,7 +217,7 @@
       :class="{ active: infoPanelOpen }"
       @click="emit('togglePanel')"
       :title="t('header.togglePanel')"
-    >
+     :aria-label="t('header.togglePanel')">
       <PanelRight :size="16" />
     </button>
   </header>

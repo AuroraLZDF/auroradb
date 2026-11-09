@@ -43,7 +43,7 @@
         </button>
       </div>
       <div class="header-right">
-        <button class="btn-close" @click="closeDesigner"><X :size="18" /></button>
+        <button class="btn-close" @click="closeDesigner" aria-label="按钮"><X :size="18" /></button>
       </div>
     </div>
 

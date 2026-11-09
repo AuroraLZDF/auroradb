@@ -3,12 +3,16 @@
     <div class="main-content">
       <template v-if="currentConnection">
         <!-- Tab 栏 -->
-        <div class="tab-bar">
+        <div class="tab-bar" role="tablist" :aria-label="t('layout.objectsTab')">
           <!-- 对象列表 Tab（始终存在） -->
           <div
             class="tab-item"
+            role="tab"
+            tabindex="0"
+            :aria-selected="activeTab?.type === 'objects'"
             :class="{ active: activeTab?.type === 'objects' }"
             @click="switchTab('objects')"
+            @keydown.enter.prevent="switchTab('objects')"
           >
             <Database :size="14" />
             <span>{{ t('layout.objectsTab') }}</span>
@@ -19,13 +23,27 @@
             v-for="tab in tableTabs"
             :key="tab.id"
             class="tab-item"
+            role="tab"
+            tabindex="0"
+            :aria-selected="activeTab?.id === tab.id"
             :class="{ active: activeTab?.id === tab.id }"
             @click="switchTab(tab.id)"
+            @keydown.enter.prevent="switchTab(tab.id)"
+            @keydown.delete.prevent="closeTab(tab.id)"
             @mousedown.middle="closeTab(tab.id)"
           >
             <Table2 :size="14" />
             <span class="tab-title">{{ tab.tableName }}</span>
-            <span class="tab-close" :title="t('common.close')" @click.stop="closeTab(tab.id)">
+            <span
+              class="tab-close"
+              role="button"
+              tabindex="0"
+              :title="t('common.close')"
+              :aria-label="t('common.close')"
+              @click.stop="closeTab(tab.id)"
+              @keydown.enter.stop.prevent="closeTab(tab.id)"
+              @keydown.space.stop.prevent="closeTab(tab.id)"
+            >
               <X :size="12" />
             </span>
           </div>
@@ -35,14 +53,28 @@
             v-for="tab in sqlTabs"
             :key="tab.id"
             class="tab-item"
+            role="tab"
+            tabindex="0"
+            :aria-selected="activeTab?.id === tab.id"
             :class="{ active: activeTab?.id === tab.id }"
             :style="tabColorStyle(tab.connectionId)"
             @click="switchTab(tab.id)"
+            @keydown.enter.prevent="switchTab(tab.id)"
+            @keydown.delete.prevent="closeTab(tab.id)"
             @mousedown.middle="closeTab(tab.id)"
           >
             <FileCode :size="14" />
             <span class="tab-title">{{ tab.title }}</span>
-            <span class="tab-close" :title="t('common.close')" @click.stop="closeTab(tab.id)">
+            <span
+              class="tab-close"
+              role="button"
+              tabindex="0"
+              :title="t('common.close')"
+              :aria-label="t('common.close')"
+              @click.stop="closeTab(tab.id)"
+              @keydown.enter.stop.prevent="closeTab(tab.id)"
+              @keydown.space.stop.prevent="closeTab(tab.id)"
+            >
               <X :size="12" />
             </span>
           </div>
@@ -52,14 +84,28 @@
             v-for="tab in consoleTabs"
             :key="tab.id"
             class="tab-item"
+            role="tab"
+            tabindex="0"
+            :aria-selected="activeTab?.id === tab.id"
             :class="{ active: activeTab?.id === tab.id }"
             :style="tabColorStyle(tab.connectionId)"
             @click="switchTab(tab.id)"
+            @keydown.enter.prevent="switchTab(tab.id)"
+            @keydown.delete.prevent="closeTab(tab.id)"
             @mousedown.middle="closeTab(tab.id)"
           >
             <Terminal :size="14" />
             <span class="tab-title">{{ tab.title }}</span>
-            <span class="tab-close" :title="t('common.close')" @click.stop="closeTab(tab.id)">
+            <span
+              class="tab-close"
+              role="button"
+              tabindex="0"
+              :title="t('common.close')"
+              :aria-label="t('common.close')"
+              @click.stop="closeTab(tab.id)"
+              @keydown.enter.stop.prevent="closeTab(tab.id)"
+              @keydown.space.stop.prevent="closeTab(tab.id)"
+            >
               <X :size="12" />
             </span>
           </div>
@@ -69,13 +115,27 @@
             v-for="tab in erTabs"
             :key="tab.id"
             class="tab-item"
+            role="tab"
+            tabindex="0"
+            :aria-selected="activeTab?.id === tab.id"
             :class="{ active: activeTab?.id === tab.id }"
             @click="switchTab(tab.id)"
+            @keydown.enter.prevent="switchTab(tab.id)"
+            @keydown.delete.prevent="closeTab(tab.id)"
             @mousedown.middle="closeTab(tab.id)"
           >
             <Network :size="14" />
             <span class="tab-title">{{ t('erDiagram.title') }} · {{ tab.database.split('.').pop() }}</span>
-            <span class="tab-close" :title="t('common.close')" @click.stop="closeTab(tab.id)">
+            <span
+              class="tab-close"
+              role="button"
+              tabindex="0"
+              :title="t('common.close')"
+              :aria-label="t('common.close')"
+              @click.stop="closeTab(tab.id)"
+              @keydown.enter.stop.prevent="closeTab(tab.id)"
+              @keydown.space.stop.prevent="closeTab(tab.id)"
+            >
               <X :size="12" />
             </span>
           </div>
@@ -105,8 +165,12 @@
                   v-for="table in tableObjects"
                   :key="table.id"
                   class="objects-row object-item"
+                  role="row"
+                  tabindex="0"
+                  :aria-selected="selectedTableNames.includes(table.name)"
                   :class="{ selected: selectedTableNames.includes(table.name) }"
                   @click="onObjectClick($event, table.name)"
+                  @keydown.enter.prevent="emit('openTable', table.name)"
                   @dblclick="emit('openTable', table.name)"
                   @contextmenu.prevent="onObjectContextMenu($event, table.name)"
                 >

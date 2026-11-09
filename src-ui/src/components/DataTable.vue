@@ -4,7 +4,7 @@
     <div class="table-toolbar" v-if="currentTab">
       <div class="toolbar-left">
         <div class="toolbar-actions">
-          <button v-if="!loading" @click="refreshData" :title="t('dataTable.refreshHint')">
+          <button v-if="!loading" @click="refreshData" :title="t('dataTable.refreshHint')" :aria-label="t('dataTable.refreshHint')">
             <RefreshCw :size="14" />
           </button>
           <!-- 加载中（大表 COUNT / 慢查询）允许取消，避免界面一直等待 -->
@@ -24,7 +24,7 @@
             <Save :size="14" />
             {{ t('common.save') }}
           </button>
-          <button @click="autoFitAllColumns" :disabled="loading || !currentTableData" :title="t('dataTable.autoFitAll')">
+          <button @click="autoFitAllColumns" :disabled="loading || !currentTableData" :title="t('dataTable.autoFitAll')" :aria-label="t('dataTable.autoFitAll')">
             <AlignHorizontalDistributeCenter :size="14" />
           </button>
           <!-- 按需列加载：宽表默认只取前 N 列，勾选后重新查询 -->
@@ -134,7 +134,7 @@
           <button :class="{ active: filterLogic === 'AND' }" @click="filterLogic = 'AND'">AND</button>
           <button :class="{ active: filterLogic === 'OR' }" @click="filterLogic = 'OR'">OR</button>
         </div>
-        <button class="filter-close" @click="showFilterPanel = false" :title="t('common.close')">
+        <button class="filter-close" @click="showFilterPanel = false" :title="t('common.close')" :aria-label="t('common.close')">
           <X :size="13" />
         </button>
       </div>
@@ -156,7 +156,7 @@
             class="filter-value"
             :placeholder="t('dataTable.filterValue')"
           />
-          <button class="filter-remove" @click="removeFilterRow(row.id)" :title="t('common.delete')">
+          <button class="filter-remove" @click="removeFilterRow(row.id)" :title="t('common.delete')" :aria-label="t('common.delete')">
             <X :size="12" />
           </button>
         </div>
@@ -222,6 +222,7 @@
                 </span>
                 <button
                   class="th-filter-btn"
+                  :aria-label="t('dataTable.filterColumnHint')"
                   :class="{ active: activeFilters.some(f => f.column === col.name) }"
                   :title="t('dataTable.filterColumnHint')"
                   @click.stop="addFilterRow(col.name)"
@@ -298,7 +299,7 @@
                         @keydown.esc="cancelEdit"
                       />
                       <!-- 打开选择器按钮 -->
-                      <button class="btn-open-picker" @click="openDateTimePicker($event)" :title="t('dataTable.pickDateTime')">
+                      <button class="btn-open-picker" @click="openDateTimePicker($event)" :title="t('dataTable.pickDateTime')" :aria-label="t('dataTable.pickDateTime')">
                         <Calendar :size="14" />
                       </button>
                       <!-- 自定义选择器弹层 -->
@@ -3036,7 +3037,7 @@ defineExpose({
 }
 
 .toolbar-actions button.btn-cancel-query {
-  color: var(--color-danger);
+  color: var(--error-500);
 }
 
 .toolbar-actions button.btn-cancel-query:hover {
@@ -3282,7 +3283,7 @@ td.is-null {
 }
 
 .type-boolean {
-  color: var(--info-500);
+  color: var(--brand-500);
 }
 
 .type-string {
@@ -3297,9 +3298,9 @@ td.is-null {
   padding: var(--space-2);
   font-size: var(--text-sm);
   outline: none;
-  background: var(--color-background);
+  background: var(--canvas);
   box-sizing: border-box;
-  color: var(--color-text);
+  color: var(--text-primary);
   box-shadow: 0 0 0 3px rgba(76, 154, 255, 0.2), 0 4px 12px rgba(0, 0, 0, 0.15);
   transition: all 0.15s ease;
 }
@@ -3333,7 +3334,7 @@ td.is-null {
   align-items: center;
   gap: 4px;
   padding: 2px;
-  background: var(--color-background);
+  background: var(--canvas);
   border: 1px solid var(--brand-500);
   box-shadow: 0 0 0 3px rgba(76, 154, 255, 0.2), 0 4px 12px rgba(0, 0, 0, 0.15);
 }
@@ -3403,18 +3404,18 @@ td.is-null {
 }
 
 .datetime-actions .btn-cancel {
-  color: var(--danger-500);
+  color: var(--error-500);
 }
 
 .datetime-actions .btn-cancel:hover {
-  background: var(--danger-100);
+  background: rgba(239, 68, 68, 0.12);
 }
 
 /* 自定义日期时间选择器弹层 */
 .datetime-picker-popup {
   position: fixed;
-  background: var(--color-background);
-  border: 1px solid var(--border-color);
+  background: var(--canvas);
+  border: 1px solid var(--hairline);
   border-radius: 8px;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.2);
   z-index: 10000;
@@ -3507,7 +3508,7 @@ td.is-null {
 .time-section {
   margin-top: 8px;
   padding-top: 8px;
-  border-top: 1px solid var(--border-color);
+  border-top: 1px solid var(--hairline);
 }
 
 .time-inputs {
@@ -3533,7 +3534,7 @@ td.is-null {
   width: 40px;
   height: 26px;
   text-align: center;
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--hairline);
   border-radius: 4px;
   font-size: 13px;
   padding: 0;
@@ -3556,15 +3557,15 @@ td.is-null {
   gap: 8px;
   margin-top: 8px;
   padding-top: 8px;
-  border-top: 1px solid var(--border-color);
+  border-top: 1px solid var(--hairline);
   justify-content: flex-end;
 }
 
 .picker-actions button {
   padding: 5px 14px;
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--hairline);
   border-radius: 4px;
-  background: var(--color-background);
+  background: var(--canvas);
   cursor: pointer;
   font-size: 12px;
   transition: all 0.15s ease;
@@ -3572,7 +3573,7 @@ td.is-null {
 
 .picker-actions .btn-cancel {
   color: var(--text-secondary);
-  border-color: var(--border-color);
+  border-color: var(--hairline);
 }
 
 .picker-actions .btn-cancel:hover {
@@ -3723,7 +3724,7 @@ td.editing::before {
 }
 
 .empty-state.error-state {
-  color: var(--color-danger);
+  color: var(--error-500);
 }
 
 /* 空表提示 */
@@ -3751,7 +3752,7 @@ td.editing::before {
   align-items: center;
   justify-content: center;
   font-size: 14px;
-  color: var(--color-text-secondary);
+  color: var(--text-secondary);
   z-index: 10;
   /* 淡入动画 */
   animation: fade-in 0.3s ease-out;
@@ -3804,22 +3805,22 @@ td.editing::before {
 
 /* 确认对话框 */
 .confirm-dialog {
-  background: var(--color-background);
+  background: var(--canvas);
   padding: 24px;
   border-radius: 8px;
-  box-shadow: 0 4px 16px var(--color-shadow);
+  box-shadow: var(--shadow-lg);
   min-width: 300px;
 }
 
 .confirm-dialog h3 {
   margin: 0 0 12px 0;
   font-size: 16px;
-  color: var(--color-text);
+  color: var(--text-primary);
 }
 
 .confirm-dialog p {
   margin: 0 0 20px 0;
-  color: var(--color-text-secondary);
+  color: var(--text-secondary);
 }
 
 .confirm-actions {
@@ -3829,7 +3830,7 @@ td.editing::before {
 }
 
 .btn-primary {
-  background: var(--color-success);
+  background: var(--success-500);
   color: white;
   border: none;
   padding: 8px 16px;
@@ -3838,9 +3839,9 @@ td.editing::before {
 }
 
 .btn-secondary {
-  background: var(--color-background-soft);
-  border: 1px solid var(--color-border);
-  color: var(--color-text);
+  background: var(--panel);
+  border: 1px solid var(--hairline);
+  color: var(--text-primary);
   padding: 8px 16px;
   border-radius: 4px;
   cursor: pointer;
@@ -4014,7 +4015,7 @@ td.editing::before {
 }
 
 .transaction-indicator {
-  color: var(--color-success);
+  color: var(--success-500);
   font-size: 16px;
   animation: pulse 1.5s infinite;
 }
@@ -4040,13 +4041,13 @@ td.editing::before {
 .preview-summary {
   margin: 0 0 6px 0;
   font-size: 13px;
-  color: var(--color-text);
+  color: var(--text-primary);
 }
 
 .preview-hint {
   margin: 0 0 12px 0;
   font-size: 12px;
-  color: var(--color-text-secondary);
+  color: var(--text-secondary);
 }
 
 .save-preview-dialog .result-textarea {
@@ -4057,17 +4058,17 @@ td.editing::before {
   font-family: monospace;
   font-size: 12px;
   line-height: 1.5;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--hairline);
   border-radius: 4px;
-  background: var(--color-background-soft);
-  color: var(--color-text);
+  background: var(--panel);
+  color: var(--text-primary);
   box-sizing: border-box;
 }
 
 .preview-error {
   margin: 12px 0 0 0;
   font-size: 12px;
-  color: var(--color-danger);
+  color: var(--error-500);
   white-space: pre-wrap;
 }
 
@@ -4078,7 +4079,7 @@ td.editing::before {
 
 /* 导入导出弹窗 */
 .dialog {
-  background: var(--color-background);
+  background: var(--canvas);
   padding: 24px;
   border-radius: 8px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
@@ -4090,9 +4091,9 @@ td.editing::before {
 .dialog h3 {
   margin: 0 0 20px 0;
   font-size: 16px;
-  border-bottom: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--hairline);
   padding-bottom: 12px;
-  color: var(--color-text);
+  color: var(--text-primary);
 }
 
 .dialog-content {
@@ -4107,18 +4108,18 @@ td.editing::before {
   display: block;
   margin-bottom: 6px;
   font-size: 13px;
-  color: var(--color-text-secondary);
+  color: var(--text-secondary);
 }
 
 .form-group textarea {
   width: 100%;
   padding: 8px 12px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--hairline);
   border-radius: 4px;
   font-size: 13px;
   font-family: inherit;
-  background: var(--color-background);
-  color: var(--color-text);
+  background: var(--canvas);
+  color: var(--text-primary);
 }
 
 /* 自定义下拉框：触发器与对话框内输入框保持相同的外观 */
@@ -4127,10 +4128,10 @@ td.editing::before {
   height: 38px;
   min-height: 38px;
   padding: 0 12px;
-  border-color: var(--color-border);
+  border-color: var(--hairline);
   border-radius: 4px;
-  background: var(--color-background);
-  color: var(--color-text);
+  background: var(--canvas);
+  color: var(--text-primary);
   font-size: 13px;
 }
 
@@ -4141,7 +4142,7 @@ td.editing::before {
 }
 
 .form-group textarea.result-textarea {
-  background: var(--color-background-soft);
+  background: var(--panel);
 }
 
 .import-dialog,
@@ -4174,14 +4175,14 @@ td.editing::before {
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  background: var(--color-background-soft);
+  background: var(--panel);
   border-radius: 4px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--hairline);
 }
 
 .file-name {
   font-weight: 500;
-  color: var(--color-text);
+  color: var(--text-primary);
   max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4189,19 +4190,19 @@ td.editing::before {
 }
 
 .file-size {
-  color: var(--color-text-secondary);
+  color: var(--text-secondary);
   font-size: 12px;
 }
 
 .file-hint {
-  color: var(--color-text-secondary);
+  color: var(--text-secondary);
   font-size: 13px;
   padding: 8px 0;
 }
 
 .file-preview {
-  background: var(--color-background-soft);
-  border: 1px solid var(--color-border);
+  background: var(--panel);
+  border: 1px solid var(--hairline);
   border-radius: 4px;
   padding: 12px;
   max-height: 150px;
@@ -4213,7 +4214,7 @@ td.editing::before {
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
   font-size: 12px;
   line-height: 1.4;
-  color: var(--color-text);
+  color: var(--text-primary);
   white-space: pre-wrap;
   word-break: break-all;
 }
@@ -4232,11 +4233,11 @@ td.editing::before {
 }
 
 .toast-message.success {
-  background: var(--color-success);
+  background: var(--success-500);
 }
 
 .toast-message.error {
-  background: var(--color-danger);
+  background: var(--error-500);
 }
 
 @keyframes slideIn {
@@ -4384,7 +4385,7 @@ td.editing::before {
 }
 
 .filter-remove:hover {
-  color: var(--color-danger);
+  color: var(--error-500);
 }
 
 .filter-empty {

@@ -2,7 +2,7 @@
   <div class="connection-form">
     <div class="form-header">
       <h2>{{ isEditMode ? t('connectionForm.editTitle') : t('connectionForm.newTitle') }}</h2>
-      <button type="button" class="btn-close" @click="emit('cancel')" :title="t('common.close')">×</button>
+      <button type="button" class="btn-close" @click="emit('cancel')" :title="t('common.close')" :aria-label="t('common.close')">×</button>
     </div>
     <form @submit.prevent="handleSubmit">
       <div class="form-tabs" role="tablist">
@@ -71,7 +71,7 @@
                 class="btn-toggle-password"
                 @click="showPassword = !showPassword"
                 :title="showPassword ? t('connectionForm.hidePassword') : t('connectionForm.showPassword')"
-              >
+               :aria-label="showPassword ? t('connectionForm.hidePassword') : t('connectionForm.showPassword')">
                 <Eye v-if="showPassword" :size="16" />
                 <EyeOff v-else :size="16" />
               </button>
@@ -107,14 +107,14 @@
                 :style="{ background: preset }"
                 :title="t('connectionForm.color')"
                 @click="form.color = form.color === preset ? '' : preset"
-              ></button>
+               :aria-label="t('connectionForm.color')"></button>
               <button
                 v-if="form.color"
                 type="button"
                 class="color-clear"
                 :title="t('common.clear')"
                 @click="form.color = ''"
-              >
+               :aria-label="t('common.clear')">
                 ×
               </button>
             </div>
@@ -199,7 +199,7 @@
                   class="btn-toggle-password"
                   @click="showSshPassword = !showSshPassword"
                   :title="showSshPassword ? t('connectionForm.hidePassword') : t('connectionForm.showPassword')"
-                >
+                 :aria-label="showSshPassword ? t('connectionForm.hidePassword') : t('connectionForm.showPassword')">
                   <Eye v-if="showSshPassword" :size="16" />
                   <EyeOff v-else :size="16" />
                 </button>
@@ -685,7 +685,7 @@ async function handleSubmit() {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--color-success);
+  background: var(--success-500);
 }
 
 .form-group {
@@ -718,14 +718,14 @@ async function handleSubmit() {
 .form-section + .form-section {
   margin-top: 18px;
   padding-top: 18px;
-  border-top: 1px solid var(--color-border);
+  border-top: 1px solid var(--hairline);
 }
 
 .section-title {
   margin: 0 0 10px;
   font-size: 13px;
   font-weight: 600;
-  color: var(--color-text);
+  color: var(--text-primary);
 }
 
 .section-body {
@@ -787,7 +787,7 @@ async function handleSubmit() {
   background: none;
   border: none;
   cursor: pointer;
-  color: var(--color-text-secondary);
+  color: var(--text-secondary);
   padding: 4px;
   display: flex;
   align-items: center;
@@ -796,8 +796,8 @@ async function handleSubmit() {
 }
 
 .btn-toggle-password:hover {
-  color: var(--color-text);
-  background: var(--color-background-hover);
+  color: var(--text-primary);
+  background: var(--hover-fill);
 }
 
 .form-footer {
@@ -811,7 +811,7 @@ async function handleSubmit() {
   flex-wrap: wrap;
   margin: 22px -20px -20px;
   padding: 16px 20px;
-  border-top: 1px solid var(--color-border);
+  border-top: 1px solid var(--hairline);
   background: var(--surface-default);
 }
 
@@ -861,7 +861,7 @@ async function handleSubmit() {
   gap: 8px;
   cursor: pointer;
   font-weight: normal !important;
-  color: var(--color-text);
+  color: var(--text-primary);
 }
 
 .checkbox-label input {
@@ -872,7 +872,7 @@ async function handleSubmit() {
   margin: 10px 0 0;
   font-size: 12px;
   line-height: 1.5;
-  color: var(--color-text-secondary);
+  color: var(--text-secondary);
 }
 
 /* 连接颜色标识色板 */
@@ -894,8 +894,8 @@ async function handleSubmit() {
 }
 
 .color-dot.active {
-  border-color: var(--color-text);
-  box-shadow: 0 0 0 2px var(--color-background), 0 0 0 3px var(--color-border);
+  border-color: var(--text-primary);
+  box-shadow: 0 0 0 2px var(--canvas), 0 0 0 3px var(--hairline);
 }
 
 .color-clear {
@@ -904,8 +904,8 @@ async function handleSubmit() {
   padding: 0;
   border: none;
   border-radius: 50%;
-  background: var(--color-border);
-  color: var(--color-text);
+  background: var(--hairline);
+  color: var(--text-primary);
   font-size: 14px;
   line-height: 1;
   cursor: pointer;
@@ -914,18 +914,18 @@ async function handleSubmit() {
 
 button {
   padding: 8px 16px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--hairline);
   border-radius: 4px;
-  background: var(--color-background);
-  color: var(--color-text);
+  background: var(--canvas);
+  color: var(--text-primary);
   cursor: pointer;
   font-size: 14px;
 }
 
 button[type="submit"] {
-  background: var(--color-success);
+  background: var(--success-500);
   color: white;
-  border-color: var(--color-success);
+  border-color: var(--success-500);
 }
 
 button:disabled {
@@ -934,7 +934,7 @@ button:disabled {
 }
 
 .error-message {
-  color: var(--color-danger);
+  color: var(--error-500);
   margin-top: 12px;
   padding: 8px;
   background: rgba(244, 67, 54, 0.1);
@@ -943,7 +943,7 @@ button:disabled {
 }
 
 .warning-message {
-  color: var(--color-warning);
+  color: var(--warning-500);
   margin-top: 12px;
   padding: 8px;
   background: rgba(243, 156, 18, 0.1);

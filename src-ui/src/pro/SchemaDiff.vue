@@ -7,7 +7,7 @@
         <h2>{{ t('schemaDiff.title') }}</h2>
         <span class="header-hint">{{ t('schemaDiff.hint') }}</span>
       </div>
-      <button class="icon-btn" :title="t('common.close')" @click="emit('close')">
+      <button class="icon-btn" :title="t('common.close')" @click="emit('close')" :aria-label="t('common.close')">
         <X :size="18" />
       </button>
     </div>
@@ -34,7 +34,7 @@
         </div>
       </div>
 
-      <button class="swap-btn" :title="t('schemaDiff.swap')" @click="swapEndpoints">
+      <button class="swap-btn" :title="t('schemaDiff.swap')" @click="swapEndpoints" :aria-label="t('schemaDiff.swap')">
         <ArrowLeftRight :size="18" />
       </button>
 

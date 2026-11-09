@@ -1,9 +1,14 @@
 <template>
   <div v-if="open" class="gen-mask" @click.self="emit('close')">
-    <div class="gen-dialog">
+    <div
+      class="gen-dialog"
+      role="dialog"
+      aria-modal="true"
+      :aria-label="t('dataGenerator.title', { table })"
+    >
       <div class="gen-header">
         <span class="gen-title">{{ t('dataGenerator.title', { table }) }}</span>
-        <button class="gen-close" @click="emit('close')">×</button>
+        <button class="gen-close" @click="emit('close')" aria-label="关闭">×</button>
       </div>
 
       <div class="gen-body">
@@ -64,7 +69,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { t } from '@/i18n'
 import { quoteIdentifier } from '@/utils/sql'
@@ -106,6 +111,17 @@ const patterns = ref<Record<string, string>>({})
 const previewSql = ref('')
 const notice = ref('')
 let noticeTimer: ReturnType<typeof setTimeout> | null = null
+
+/** Esc 关闭：本弹窗由 DataTable 管理，不在 App 的全局 closers 列表里 */
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && props.open) {
+    e.stopPropagation()
+    emit('close')
+  }
+}
+
+onMounted(() => window.addEventListener('keydown', onKeydown, true))
+onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown, true))
 
 watch(
   () => props.open,

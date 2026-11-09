@@ -16,6 +16,7 @@ export {
   Copy,
   Trash2,
   Eraser,
+  Plug,
   Save,
   Circle,
   CheckCircle,

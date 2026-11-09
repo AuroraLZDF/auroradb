@@ -66,14 +66,14 @@ const errorLineField = StateField.define<DecorationSet>({
 
 /** 语法高亮配色：使用主题 CSS 变量，亮暗主题自动适配 */
 const sqlHighlightStyle = HighlightStyle.define([
-  { tag: t.keyword, color: 'var(--syntax-keyword, #7c3aed)' },
-  { tag: [t.string, t.special(t.string)], color: 'var(--syntax-string, #16a34a)' },
-  { tag: [t.number, t.bool, t.null], color: 'var(--syntax-number, #ea580c)' },
-  { tag: [t.comment, t.lineComment, t.blockComment], color: 'var(--color-text-secondary)', fontStyle: 'italic' },
-  { tag: t.operator, color: 'var(--syntax-operator, #0891b2)' },
-  { tag: [t.punctuation, t.separator], color: 'var(--color-text)' },
-  { tag: [t.variableName, t.propertyName], color: 'var(--color-text)' },
-  { tag: [t.typeName, t.function(t.variableName)], color: 'var(--syntax-function, #2563eb)' },
+  { tag: t.keyword, color: 'var(--code-keyword)' },
+  { tag: [t.string, t.special(t.string)], color: 'var(--code-string)' },
+  { tag: [t.number, t.bool, t.null], color: 'var(--code-number)' },
+  { tag: [t.comment, t.lineComment, t.blockComment], color: 'var(--text-secondary)', fontStyle: 'italic' },
+  { tag: t.operator, color: 'var(--text-secondary)' },
+  { tag: [t.punctuation, t.separator], color: 'var(--text-primary)' },
+  { tag: [t.variableName, t.propertyName], color: 'var(--text-primary)' },
+  { tag: [t.typeName, t.function(t.variableName)], color: 'var(--code-function)' },
 ])
 
 export interface SqlEditorApi {
@@ -140,14 +140,14 @@ function editorTheme(): Extension {
       '&': {
         height: '100%',
         fontSize: '14px',
-        color: 'var(--color-text)',
-        backgroundColor: 'var(--color-background)',
+        color: 'var(--text-primary)',
+        backgroundColor: 'var(--canvas)',
       },
       '&.cm-focused': {
         outline: 'none',
       },
       '&.cm-focused .cm-selectionBackground, ::selection': {
-        backgroundColor: 'var(--color-primary-soft, rgba(59, 130, 246, 0.25))',
+        backgroundColor: 'var(--selected-fill))',
       },
       '.cm-scroller': {
         overflow: 'auto',
@@ -155,27 +155,27 @@ function editorTheme(): Extension {
         lineHeight: '1.5',
       },
       '.cm-content': {
-        caretColor: 'var(--color-text)',
+        caretColor: 'var(--text-primary)',
         paddingBottom: '16px',
       },
       '.cm-cursor': {
-        borderLeftColor: 'var(--color-text)',
+        borderLeftColor: 'var(--text-primary)',
       },
       '.cm-gutters': {
-        backgroundColor: 'var(--color-background)',
-        color: 'var(--color-text-secondary)',
+        backgroundColor: 'var(--canvas)',
+        color: 'var(--text-secondary)',
         border: 'none',
-        borderRight: '1px solid var(--color-border)',
+        borderRight: '1px solid var(--hairline)',
       },
       '.cm-activeLine': {
-        backgroundColor: 'var(--color-background-soft)',
+        backgroundColor: 'var(--panel)',
       },
       '.cm-activeLineGutter': {
-        backgroundColor: 'var(--color-background-soft)',
-        color: 'var(--color-text)',
+        backgroundColor: 'var(--panel)',
+        color: 'var(--text-primary)',
       },
       '.cm-selectionMatch': {
-        backgroundColor: 'var(--color-primary-soft, rgba(59, 130, 246, 0.2))',
+        backgroundColor: 'var(--selected-fill))',
       },
       '.cm-tooltip.cm-tooltip-autocomplete > ul': {
         fontFamily: "'Consolas', 'Monaco', 'Courier New', monospace",
@@ -186,7 +186,7 @@ function editorTheme(): Extension {
         fontSize: '12px',
       },
       '.cm-errorLine': {
-        backgroundColor: 'var(--danger-soft, rgba(244, 67, 54, 0.12))',
+        backgroundColor: 'rgba(239, 68, 68, 0.12)',
       },
     },
     { dark: false }

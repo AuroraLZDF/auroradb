@@ -66,11 +66,11 @@ const showRaw = ref(false)
 
 .explain-driver {
   font-weight: 600;
-  color: var(--brand-primary);
+  color: var(--brand-500);
   font-size: 12px;
   padding: 2px 8px;
   border-radius: 4px;
-  background: var(--brand-dim);
+  background: var(--selected-fill);
 }
 
 .explain-time {
@@ -91,7 +91,7 @@ const showRaw = ref(false)
 
 .btn-toggle-raw:hover {
   color: var(--text-primary);
-  border-color: var(--border-hover);
+  border-color: var(--hairline-strong);
 }
 
 .explain-nodes {

@@ -399,27 +399,16 @@
 
 
 /* ========================================
-   COMPAT SHIMS - 未定义变量兜底（历史代码引用，逐个收敛后删除）
+   LEGACY COMPAT SHIMS
+   历史上组件引用过但从未定义的变量，现已全部收敛到语义 token：
+   - bg-hover → hover-fill、border-color → hairline、border-hover → hairline-strong
+   - brand-primary / info-500 → brand-500、brand-dim / danger-100 → 语义 fill
+   - color-{danger,success,warning}-{bg,border,text} → rgba 淡色底 + --{error,success,warning}-500
+   此处仅保留 --brand-500-rgb（供 rgba(var(--brand-500-rgb), a) 色阶用法），
+   新代码请直接使用语义 token，不要再新增别名。
    ======================================== */
 :root {
-  --bg-hover: var(--hover-fill);
-  --border-color: var(--border-subtle);
-  --border-hover: var(--hairline-strong);
   --brand-500-rgb: 76, 154, 255;
-  --brand-dim: var(--text-tertiary);
-  --brand-primary: var(--brand-500);
-  --color-danger-bg: rgba(239, 68, 68, 0.12);
-  --color-danger-border: rgba(239, 68, 68, 0.35);
-  --color-danger-text: var(--error-500);
-  --color-success-bg: rgba(16, 185, 129, 0.12);
-  --color-success-border: rgba(16, 185, 129, 0.35);
-  --color-success-text: var(--success-500);
-  --color-warning-bg: rgba(245, 158, 11, 0.14);
-  --color-warning-border: rgba(245, 158, 11, 0.35);
-  --color-warning-text: var(--warning-500);
-  --danger-100: rgba(239, 68, 68, 0.12);
-  --danger-500: var(--error-500);
-  --info-500: var(--brand-500);
 }
 
 /* ========================================
@@ -1240,4 +1229,49 @@ img[data-loading="false"] {
 
 [aria-invalid="false"]:focus {
   box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.15);
+}
+
+/* ========================================
+   KEYBOARD / A11Y（2026-11-09 补充）
+   ======================================== */
+
+/* 自定义交互元素（树项、tab、菜单项）的键盘焦点环：内描避免被容器裁切 */
+[role="treeitem"]:focus-visible,
+[role="tab"]:focus-visible,
+[role="menuitem"]:focus-visible,
+[role="button"]:focus-visible,
+[tabindex]:not(input):not(textarea):not(select):focus-visible {
+  outline: 2px solid var(--brand-500);
+  outline-offset: -2px;
+  border-radius: var(--radius-sm);
+}
+
+/* 树项在获得焦点时给出与 hover 一致的视觉反馈 */
+[role="treeitem"]:focus-visible {
+  background: var(--hover-fill);
+}
+
+/* 屏幕阅读器专用文本 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* 尊重系统「减少动态效果」设置 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

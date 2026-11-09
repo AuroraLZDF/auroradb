@@ -228,7 +228,7 @@
           </button>
         </div>
         <input v-model="librarySearch" class="library-search" :placeholder="t('sqlEditor.searchLibrary')" />
-        <button class="btn-clear-history" :title="t('common.close')" @click="panelOpen = false">
+        <button class="btn-clear-history" :title="t('common.close')" @click="panelOpen = false" :aria-label="t('common.close')">
           <X :size="14" />
         </button>
       </div>
@@ -247,7 +247,7 @@
           <span class="history-sql">{{ truncateSql(item.sql) }}</span>
           <span v-if="!item.success" class="history-failed">{{ t('common.failed') }}</span>
           <span class="history-time">{{ formatTime(item.executedAt) }}</span>
-          <button class="btn-item-delete" :title="t('common.delete')" @click.stop="queryLibrary.removeHistory(item.id)">
+          <button class="btn-item-delete" :title="t('common.delete')" @click.stop="queryLibrary.removeHistory(item.id)" :aria-label="t('common.delete')">
             ×
           </button>
         </div>
@@ -275,7 +275,7 @@
           >
             <span class="history-sql">{{ item.name }}</span>
             <span class="history-time">{{ formatTime(item.updatedAt) }}</span>
-            <button class="btn-item-delete" :title="t('common.delete')" @click.stop="queryLibrary.deleteSavedQuery(item.id)">
+            <button class="btn-item-delete" :title="t('common.delete')" @click.stop="queryLibrary.deleteSavedQuery(item.id)" :aria-label="t('common.delete')">
               ×
             </button>
           </div>
@@ -299,7 +299,7 @@
       <div class="param-dialog">
         <div class="param-header">
           <span>{{ t('sqlEditor.paramsTitle') }}</span>
-          <button class="param-close" @click="cancelSqlParams">×</button>
+          <button class="param-close" @click="cancelSqlParams" aria-label="关闭">×</button>
         </div>
         <p class="param-hint">{{ t('sqlEditor.paramsHint') }}</p>
         <div class="param-list">
@@ -1517,7 +1517,7 @@ onUnmounted(() => {
   flex: 1;
   display: flex;
   flex-direction: column;
-  background: var(--color-background);
+  background: var(--canvas);
   overflow: hidden;
 }
 
@@ -1693,7 +1693,7 @@ onUnmounted(() => {
 /* 错误行高亮（A6）：执行失败的语句所在行 */
 .cm-host :deep(.cm-line.cm-errorLine) {
   background: rgba(244, 67, 54, 0.14);
-  box-shadow: inset 3px 0 0 var(--color-danger, #ef4444);
+  box-shadow: inset 3px 0 0 var(--error-500);
 }
 
 /* 补全弹窗类型角标 */
@@ -2008,7 +2008,7 @@ onUnmounted(() => {
   flex: 0 0 220px;
   display: flex;
   flex-direction: column;
-  border-top: 1px solid var(--color-border);
+  border-top: 1px solid var(--hairline);
   overflow: hidden;
 }
 
@@ -2017,8 +2017,8 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  background: var(--color-background-soft);
-  border-bottom: 1px solid var(--color-border);
+  background: var(--panel);
+  border-bottom: 1px solid var(--hairline);
   flex-shrink: 0;
 }
 
@@ -2033,51 +2033,51 @@ onUnmounted(() => {
   padding: 5px 9px;
   border-radius: 4px;
   font-size: 12px;
-  color: var(--color-text-secondary);
+  color: var(--text-secondary);
   cursor: pointer;
 }
 
 .library-tab:hover {
-  background: var(--color-background-hover);
+  background: var(--hover-fill);
 }
 
 .library-tab.active {
-  background: var(--color-background);
-  color: var(--color-text);
+  background: var(--canvas);
+  color: var(--text-primary);
   font-weight: 500;
-  box-shadow: inset 0 0 0 1px var(--color-border);
+  box-shadow: inset 0 0 0 1px var(--hairline);
 }
 
 .library-search {
   flex: 1;
   min-width: 0;
   padding: 5px 8px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--hairline);
   border-radius: 4px;
   font-size: 12px;
-  background: var(--color-background);
-  color: var(--color-text);
+  background: var(--canvas);
+  color: var(--text-primary);
 }
 
 .library-search:focus {
   outline: none;
-  border-color: var(--color-primary);
+  border-color: var(--brand-500);
 }
 
 .library-empty {
   padding: 24px 16px;
   text-align: center;
   font-size: 12px;
-  color: var(--color-text-secondary);
+  color: var(--text-secondary);
 }
 
 .library-folder {
   padding: 6px 16px;
   font-size: 11px;
   font-weight: 500;
-  color: var(--color-text-secondary);
-  background: var(--color-background-soft);
-  border-bottom: 1px solid var(--color-border);
+  color: var(--text-secondary);
+  background: var(--panel);
+  border-bottom: 1px solid var(--hairline);
   position: sticky;
   top: 0;
 }
@@ -2093,7 +2093,7 @@ onUnmounted(() => {
 
 .history-failed {
   font-size: 10px;
-  color: var(--color-danger);
+  color: var(--error-500);
   border: 1px solid currentColor;
   border-radius: 3px;
   padding: 0 4px;
@@ -2104,7 +2104,7 @@ onUnmounted(() => {
 .btn-item-delete {
   background: none;
   border: none;
-  color: var(--color-text-secondary);
+  color: var(--text-secondary);
   cursor: pointer;
   font-size: 14px;
   line-height: 1;
@@ -2114,13 +2114,13 @@ onUnmounted(() => {
 }
 
 .btn-item-delete:hover {
-  color: var(--color-danger);
+  color: var(--error-500);
 }
 
 .btn-clear-history {
   background: none;
   border: none;
-  color: var(--color-text-secondary);
+  color: var(--text-secondary);
   cursor: pointer;
   font-size: 12px;
   padding: 4px;
@@ -2129,21 +2129,21 @@ onUnmounted(() => {
 }
 
 .btn-clear-history:hover {
-  color: var(--color-danger);
+  color: var(--error-500);
 }
 
 .btn-clear-history.block {
   display: block;
   width: 100%;
   padding: 8px;
-  border-top: 1px solid var(--color-border);
+  border-top: 1px solid var(--hairline);
   font-size: 12px;
 }
 
 .btn-format.is-active {
-  background: var(--color-background-hover);
-  border-color: var(--color-primary);
-  color: var(--color-primary);
+  background: var(--hover-fill);
+  border-color: var(--brand-500);
+  color: var(--brand-500);
 }
 
 .history-list {
@@ -2157,12 +2157,12 @@ onUnmounted(() => {
   align-items: center;
   padding: 8px 16px;
   cursor: pointer;
-  border-bottom: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--hairline);
   font-size: 12px;
 }
 
 .history-item:hover {
-  background: var(--color-background-hover);
+  background: var(--hover-fill);
 }
 
 .history-sql {
@@ -2175,7 +2175,7 @@ onUnmounted(() => {
 }
 
 .history-time {
-  color: var(--color-text-secondary);
+  color: var(--text-secondary);
   font-size: 11px;
 }
 
@@ -2193,8 +2193,8 @@ onUnmounted(() => {
 .param-dialog {
   width: 420px;
   max-width: 90vw;
-  background: var(--surface-default, var(--color-background));
-  border: 1px solid var(--border-default, var(--color-border));
+  background: var(--panel);
+  border: 1px solid var(--hairline-strong);
   border-radius: 8px;
   padding: 16px;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25);
@@ -2211,7 +2211,7 @@ onUnmounted(() => {
 .param-close {
   background: none;
   border: none;
-  color: var(--text-secondary, var(--color-text-secondary));
+  color: var(--text-secondary);
   font-size: 18px;
   line-height: 1;
   cursor: pointer;
@@ -2220,7 +2220,7 @@ onUnmounted(() => {
 .param-hint {
   margin: 0 0 12px;
   font-size: 12px;
-  color: var(--text-secondary, var(--color-text-secondary));
+  color: var(--text-secondary);
 }
 
 .param-list {
@@ -2241,16 +2241,16 @@ onUnmounted(() => {
   min-width: 110px;
   font-family: monospace;
   font-size: 12px;
-  color: var(--color-primary);
+  color: var(--brand-500);
 }
 
 .param-row input {
   flex: 1;
   padding: 6px 8px;
-  border: 1px solid var(--border-default, var(--color-border));
+  border: 1px solid var(--hairline-strong);
   border-radius: 4px;
-  background: var(--bg-secondary, var(--color-background-soft));
-  color: var(--text-primary, var(--color-text));
+  background: var(--panel);
+  color: var(--text-primary);
 }
 
 .param-actions {
@@ -2261,7 +2261,7 @@ onUnmounted(() => {
 }
 
 .param-primary {
-  background: var(--color-primary);
+  background: var(--brand-500);
   color: #fff;
   border: none;
   border-radius: 4px;

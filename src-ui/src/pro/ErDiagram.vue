@@ -9,7 +9,7 @@
           :class="{ flash: undoFlash }"
           :disabled="!canUndo"
           :title="t('erDiagram.undo')"
-        >
+         :aria-label="t('erDiagram.undo')">
           <Undo2 :size="14" />
         </button>
         <Transition name="er-undo-pop">
@@ -27,10 +27,10 @@
         {{ t('erDiagram.empty') }}
       </div>
       <div class="er-driver" v-if="data">{{ data.driver.toUpperCase() }}</div>
-      <button @click="fitToView" class="btn-icon" :title="t('erDiagram.fitView')" :disabled="!data">
+      <button @click="fitToView" class="btn-icon" :title="t('erDiagram.fitView')" :disabled="!data" :aria-label="t('erDiagram.fitView')">
         <Scan :size="14" />
       </button>
-      <button @click="resetView" class="btn-icon" :title="t('erDiagram.resetView')">
+      <button @click="resetView" class="btn-icon" :title="t('erDiagram.resetView')" :aria-label="t('erDiagram.resetView')">
         <RotateCcw :size="14" />
       </button>
       <div class="er-export" @click.stop>
@@ -39,7 +39,7 @@
           :title="t('erDiagram.exportImage')"
           :disabled="!data || exporting"
           @click="exportMenuOpen = !exportMenuOpen"
-        >
+         :aria-label="t('erDiagram.exportImage')">
           <Loader2 v-if="exporting" :size="14" class="spinning" />
           <Download v-else :size="14" />
         </button>
@@ -56,7 +56,7 @@
         <div class="er-tip-header">
           <Lightbulb :size="14" />
           <span>{{ t('erDiagram.tipTitle') }}</span>
-          <button class="er-tip-close" :title="t('common.close')" @click="dismissTip">
+          <button class="er-tip-close" :title="t('common.close')" @click="dismissTip" :aria-label="t('common.close')">
             <X :size="12" />
           </button>
         </div>
@@ -1058,15 +1058,15 @@ function buildExportSvg(): { svg: string; width: number; height: number } {
   clone.setAttribute('viewBox', `${vbX} ${vbY} ${width} ${height}`)
 
   const bg = cssVar('--bg-primary', '#ffffff')
-  const tableBg = cssVar('--surface-subtle', '#f7f7f7')
-  const border = cssVar('--border-default', '#d4d4d4')
-  const headerBg = cssVar('--surface-hover', '#f0f0f0')
-  const selectedBg = cssVar('--surface-selected', 'rgba(33,150,243,0.12)')
+  const tableBg = cssVar('--raised', '#232325')
+  const border = cssVar('--hairline-strong', '#343436')
+  const headerBg = cssVar('--hover-fill', 'rgba(255,255,255,0.055)')
+  const selectedBg = cssVar('--selected-fill', 'rgba(76,154,255,0.16)')
   const textPrimary = cssVar('--text-primary', '#1a1a1a')
   const textSecondary = cssVar('--text-secondary', '#444444')
   const textTertiary = cssVar('--text-tertiary', '#6F6F75')
   const brand = cssVar('--brand-500', '#4C9AFF')
-  const linkColor = cssVar('--border-strong', '#999999')
+  const linkColor = cssVar('--hairline-strong', '#5A5A60')
   const fontFamily = "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif"
 
   // scoped 样式不会跟随克隆的 SVG，导出时内联一份等效样式
@@ -1080,9 +1080,9 @@ function buildExportSvg(): { svg: string; width: number; height: number } {
     .er-col.pk { fill: ${brand}; font-weight: 600; }
     .er-pk-mark { font-size: 10px; }
     .er-col-type { fill: ${textTertiary}; font-size: 10px; text-anchor: end; font-family: ${fontFamily}; }
-    .er-col-flag { fill: ${brand}; font-size: 9px; }
-    .er-col-extra { fill: ${textTertiary}; font-size: 9px; font-family: ${fontFamily}; }
-    .er-col-default { fill: ${textTertiary}; font-size: 9px; }
+    .er-col-flag { fill: ${brand}; font-size: 10px; }
+    .er-col-extra { fill: ${textTertiary}; font-size: 10px; font-family: ${fontFamily}; }
+    .er-col-default { fill: ${textTertiary}; font-size: 10px; }
     .er-links path { fill: none; stroke: ${linkColor}; stroke-width: 1.5; }
     .er-links path.active { stroke: ${brand}; stroke-width: 2; }
     .er-links path.manual { stroke: ${brand}; stroke-dasharray: 5 4; }
@@ -1230,16 +1230,19 @@ function onKeydown(e: KeyboardEvent) {
   height: 100%;
   min-height: 0;
   position: relative;
-  background: var(--bg-primary);
+  background: var(--canvas);
 }
 
+/* 工具栏：与全局工具栏同高，按钮 ghost 化 */
 .er-toolbar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--border-default);
-  background: var(--surface-subtle);
+  gap: var(--space-1);
+  height: var(--toolbar-height);
+  padding: 0 var(--space-2);
+  border-bottom: 1px solid var(--hairline);
+  background: var(--canvas);
+  flex-shrink: 0;
 }
 
 .btn-icon {
@@ -1247,20 +1250,21 @@ function onKeydown(e: KeyboardEvent) {
   align-items: center;
   justify-content: center;
   gap: 5px;
-  padding: 5px 8px;
-  border: 1px solid var(--border-default);
-  border-radius: 6px;
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  font-size: 12px;
+  height: var(--control-height-sm);
+  padding: 0 var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
   line-height: 1;
   white-space: nowrap;
   flex-shrink: 0;
   cursor: pointer;
-  transition: border-color 150ms;
+  transition: var(--transition-colors);
 }
-.btn-icon:hover { border-color: var(--brand-500); }
-.btn-icon:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-icon:hover:not(:disabled) { background: var(--hover-fill); color: var(--text-primary); }
+.btn-icon:disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* 撤销按钮 + 「已撤销」浮动提示 */
 .er-undo-wrap {
@@ -1273,10 +1277,10 @@ function onKeydown(e: KeyboardEvent) {
   left: 50%;
   transform: translateX(-50%);
   padding: 2px 8px;
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   background: var(--brand-500);
   color: #fff;
-  font-size: 11px;
+  font-size: 10px;
   line-height: 16px;
   white-space: nowrap;
   pointer-events: none;
@@ -1300,9 +1304,9 @@ function onKeydown(e: KeyboardEvent) {
 .btn-icon.flash:disabled { opacity: 1; }
 .btn-icon.flash svg { animation: er-undo-spin 700ms ease; }
 @keyframes er-undo-ring {
-  0% { box-shadow: 0 0 0 0 var(--surface-selected); }
-  50% { box-shadow: 0 0 0 5px var(--surface-selected); }
-  100% { box-shadow: 0 0 0 0 var(--surface-selected); }
+  0% { box-shadow: 0 0 0 0 var(--selected-fill); }
+  50% { box-shadow: 0 0 0 5px var(--selected-fill); }
+  100% { box-shadow: 0 0 0 0 var(--selected-fill); }
 }
 @keyframes er-undo-spin {
   from { transform: rotate(0deg); }
@@ -1324,22 +1328,24 @@ function onKeydown(e: KeyboardEvent) {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  border: 1px solid var(--border-default);
+  padding: var(--space-1);
+  border: 1px solid var(--hairline-strong);
   border-radius: var(--radius-md);
-  background: var(--surface-default);
-  box-shadow: var(--shadow-md);
+  background: var(--overlay);
+  box-shadow: var(--shadow-lg);
 }
 .er-export-menu button {
-  padding: 5px 10px;
+  height: var(--control-height-sm);
+  padding: 0 var(--space-2);
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: var(--text-xs);
   text-align: left;
   cursor: pointer;
 }
-.er-export-menu button:hover { background: var(--surface-hover); }
+.er-export-menu button:hover { background: var(--hover-fill); }
 
 .spinning { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -1353,12 +1359,12 @@ function onKeydown(e: KeyboardEvent) {
   width: 300px;
   max-width: calc(100% - 32px);
   padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-lg);
-  background: var(--surface-default);
-  box-shadow: var(--shadow-md);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-md);
+  background: var(--overlay);
+  box-shadow: var(--shadow-lg);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--text-xs);
   line-height: 1.6;
 }
 
@@ -1383,7 +1389,7 @@ function onKeydown(e: KeyboardEvent) {
   cursor: pointer;
   border-radius: var(--radius-sm);
 }
-.er-tip-close:hover { color: var(--text-primary); background: var(--surface-hover); }
+.er-tip-close:hover { color: var(--text-primary); background: var(--hover-fill); }
 
 .er-tip-list {
   margin: 0 0 var(--space-3);
@@ -1394,12 +1400,13 @@ function onKeydown(e: KeyboardEvent) {
 }
 
 .er-tip-ok {
-  padding: 4px 12px;
+  height: var(--control-height-sm);
+  padding: 0 var(--space-3);
   border: none;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   background: var(--brand-500);
   color: #fff;
-  font-size: 12px;
+  font-size: var(--text-xs);
   cursor: pointer;
 }
 .er-tip-ok:hover { background: var(--brand-600); }
@@ -1414,9 +1421,9 @@ function onKeydown(e: KeyboardEvent) {
 
 .er-stats {
   display: flex;
-  gap: 12px;
+  gap: var(--space-3);
   color: var(--text-tertiary);
-  font-size: 12px;
+  font-size: var(--text-xs);
   white-space: nowrap;
   flex-shrink: 0;
 }
@@ -1429,7 +1436,7 @@ function onKeydown(e: KeyboardEvent) {
 
 .er-empty {
   color: var(--text-tertiary);
-  font-size: 12px;
+  font-size: var(--text-xs);
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1438,11 +1445,11 @@ function onKeydown(e: KeyboardEvent) {
 
 .er-driver {
   margin-left: auto;
-  font-size: 11px;
-  color: var(--brand-500);
-  padding: 2px 8px;
-  border-radius: 4px;
-  background: var(--surface-selected);
+  font-size: 10px;
+  color: var(--text-secondary);
+  padding: 0 5px;
+  border-radius: var(--radius-xs);
+  background: var(--selected-fill);
   flex-shrink: 0;
 }
 
@@ -1467,7 +1474,7 @@ svg {
 /* 连线 */
 .er-links path {
   fill: none;
-  stroke: var(--border-strong);
+  stroke: var(--hairline-strong);
   stroke-width: 1.5;
   pointer-events: stroke;
   cursor: pointer;
@@ -1498,7 +1505,7 @@ svg {
 
 /* 外键连线终点箭头 */
 .er-arrow-head {
-  fill: var(--border-strong);
+  fill: var(--hairline-strong);
 }
 .er-arrow-head.manual {
   fill: var(--brand-500);
@@ -1506,18 +1513,18 @@ svg {
 
 /* 表框 */
 .er-table-bg {
-  fill: var(--surface-subtle);
-  stroke: var(--border-default);
+  fill: var(--raised);
+  stroke: var(--hairline-strong);
   stroke-width: 1;
   transition: stroke 150ms, fill 150ms;
 }
 .er-table-bg.highlighted {
   stroke: var(--brand-500);
-  fill: var(--surface-selected);
+  fill: var(--selected-fill);
 }
 
 .er-table-header {
-  fill: var(--surface-hover);
+  fill: var(--hover-fill);
   rx: 6;
   cursor: move;
 }
@@ -1541,14 +1548,14 @@ svg {
   font-size: 10px;
   text-anchor: end;
 }
-.er-col-flag { fill: var(--brand-500); font-size: 9px; }
+.er-col-flag { fill: var(--brand-500); font-size: 10px; }
 
 /* 列下方的注释 / 默认值 */
 .er-col-extra {
   fill: var(--text-tertiary);
-  font-size: 9px;
+  font-size: 10px;
 }
-.er-col-default { fill: var(--text-tertiary); font-size: 9px; }
+.er-col-default { fill: var(--text-tertiary); font-size: 10px; }
 
 /* 拖拽建关联：字段右侧的起点圆点，悬停表时才显示 */
 .er-connect-dot {
@@ -1580,7 +1587,7 @@ svg {
 /* 选中手动关联后的删除按钮 */
 .er-edge-del { cursor: pointer; }
 .er-edge-del circle {
-  fill: var(--surface-default);
+  fill: var(--overlay);
   stroke: var(--brand-500);
   stroke-width: 1;
 }
@@ -1598,7 +1605,7 @@ svg {
 /* 拖动中的表 */
 g.dragging .er-table-bg {
   stroke: var(--brand-500);
-  filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.18));
+  filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.35));
 }
 
 /* 节点组 hover */
@@ -1614,23 +1621,24 @@ g:hover .er-table-bg {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  background: rgba(0,0,0,0.2);
+  background: var(--bg-overlay);
   color: var(--text-tertiary);
-  font-size: 13px;
+  font-size: var(--text-sm);
   backdrop-filter: blur(2px);
 }
-.er-overlay.error { color: #dc2626; }
+.er-overlay.error { color: var(--error-500); }
 
 /* 缩放指示 */
 .er-zoom-indicator {
   position: absolute;
   bottom: 12px;
   right: 12px;
-  font-size: 11px;
-  color: var(--text-tertiary);
-  background: var(--surface-subtle);
-  border: 1px solid var(--border-default);
-  padding: 2px 8px;
-  border-radius: 4px;
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  padding: 0 6px;
+  line-height: 18px;
+  border-radius: var(--radius-xs);
 }
 </style>

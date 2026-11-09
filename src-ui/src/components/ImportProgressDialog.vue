@@ -11,7 +11,7 @@
         :title="t('common.close')"
         :disabled="!done"
         @click="emit('close')"
-      >
+       :aria-label="t('common.close')">
         <X :size="18" />
       </button>
     </div>

@@ -888,7 +888,7 @@ onMounted(() => {
 }
 
 .btn-cancel:hover {
-  background: var(--color-danger-bg);
+  background: rgba(239, 68, 68, 0.12);
 }
 
 @keyframes pulse {
