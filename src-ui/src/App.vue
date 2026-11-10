@@ -301,7 +301,12 @@
     </div>
 
     <!-- 全局执行历史（跨标签页） -->
-    <HistoryDialog :open="showHistory" @close="showHistory = false" @rerun="rerunHistory" />
+    <HistoryDialog
+      :open="showHistory"
+      :active-connections="activeConnections"
+      @close="showHistory = false"
+      @rerun="rerunHistory"
+    />
 
     <!-- 跨库全局搜索弹窗 -->
     <div v-if="showGlobalSearch" class="modal-overlay" role="presentation">
@@ -558,13 +563,53 @@ const showGlobalSearch = ref(false)
 // 全局执行历史
 const showHistory = ref(false)
 
-/** 从历史重跑：新建查询页、带原参数并自动执行 */
-function rerunHistory(entry: QueryHistoryEntry) {
+/** 从历史重跑：优先复用仍打开的连接；连接已关则按保存的连接重连后再执行 */
+async function rerunHistory(entry: QueryHistoryEntry) {
   showHistory.value = false
+
+  const active = activeConnections.value.find(conn => conn.id === entry.connectionId)
+  if (active) {
+    mainContentRef.value?.openSqlWithContent(
+      entry.sql,
+      t('history.rerunTitle'),
+      active.id,
+      entry.params,
+      true,
+    )
+    return
+  }
+
+  // 会话 id 会随重连变化，按「名字 + 地址」在保存的连接里找回目标
+  const saved = savedStore.savedConnections.find(
+    conn =>
+      (entry.connectionId && conn.id === entry.connectionId) ||
+      (entry.connectionName &&
+        conn.name === entry.connectionName &&
+        conn.host === entry.connectionHost &&
+        conn.port === entry.connectionPort),
+  )
+
+  if (!saved) {
+    // 找不到连接：只把 SQL 放进编辑器，不自动执行，避免打到别的库上
+    mainContentRef.value?.openSqlWithContent(entry.sql, t('history.rerunTitle'))
+    showError(t('history.rerunUnavailable'))
+    return
+  }
+
+  await openSavedConnection(saved)
+  const connected = activeConnections.value.find(
+    conn => conn.name === saved.name && conn.host === saved.host && conn.port === saved.port,
+  )
+  if (!connected) {
+    // 需要用户补密码等情况：连接表单已经弹出，SQL 先落到查询页但不执行
+    mainContentRef.value?.openSqlWithContent(entry.sql, t('history.rerunTitle'))
+    showError(t('history.rerunNeedsConnection'))
+    return
+  }
   mainContentRef.value?.openSqlWithContent(
     entry.sql,
     t('history.rerunTitle'),
-    entry.connectionId,
+    connected.id,
     entry.params,
     true,
   )

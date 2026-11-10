@@ -6,8 +6,13 @@ import { t } from '@/i18n'
 export interface QueryHistoryEntry {
   id: string
   sql: string
-  /** 所属连接；空串表示无法归属（旧版本历史迁移而来） */
+  /** 所属连接（会话 id，仅当次连接有效）；空串表示无法归属（旧版本历史迁移而来） */
   connectionId: string
+  /** 连接显示名（会话 id 会随重连变化，名字才是给用户看的身份） */
+  connectionName?: string
+  /** 连接地址，与名字组合用于重新定位保存的连接 */
+  connectionHost?: string
+  connectionPort?: number
   database: string
   /** ISO 时间字符串，便于 localStorage 序列化 */
   executedAt: string

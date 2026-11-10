@@ -498,12 +498,13 @@ const effectiveConnectionId = computed(() =>
   resolveTabConnectionId({ connectionId: props.connectionId }, connStore.currentConnection?.id)
 )
 
-// 连接对象：优先按 id 从活跃连接中查找，连接已断开时回退全局当前连接
-const effectiveConnection = computed(
-  () =>
-    connStore.activeConnections.find(conn => conn.id === effectiveConnectionId.value) ??
-    connStore.currentConnection,
-)
+// 连接对象：tab 指定了连接就只认它——连接已断开时不能回退到「当前连接」，
+// 否则会在另一个库上执行（历史重跑、切连接后的旧 tab 都会踩到）
+const effectiveConnection = computed(() => {
+  const id = effectiveConnectionId.value
+  if (!id) return connStore.currentConnection
+  return connStore.activeConnections.find(conn => conn.id === id)
+})
 
 // 当前连接是否为 PostgreSQL（PG 的「库」在连接时固定，下拉里这一层应为 schema）
 const isPostgres = computed(() => effectiveConnection.value?.driver === 'postgres')
@@ -1143,9 +1144,13 @@ function recordHistory(
 ) {
   const connectionId = effectiveConnectionId.value
   if (!connectionId) return
+  const conn = effectiveConnection.value
   queryLibrary.addHistory({
     sql: extra.sqlText ?? sql.value,
     connectionId,
+    connectionName: conn?.name,
+    connectionHost: conn?.host,
+    connectionPort: conn?.port,
     database: selectedDatabase.value,
     success,
     error: errorMessage,

@@ -25,6 +25,10 @@
         <span class="history-count">{{ t('history.count', { count: filtered.length }) }}</span>
       </div>
 
+      <div v-if="activeConnections.length === 0" class="history-hint">
+        {{ t('history.offlineHint') }}
+      </div>
+
       <div class="history-list">
         <div v-if="filtered.length === 0" class="history-empty">{{ t('history.empty') }}</div>
         <div v-for="entry in filtered" :key="entry.id" class="history-item">
@@ -33,7 +37,9 @@
               <span class="history-status" :class="entry.success ? 'ok' : 'fail'">
                 {{ entry.success ? t('history.success') : t('history.failed') }}
               </span>
-              <span class="history-conn">{{ connectionName(entry.connectionId) }}</span>
+              <span class="history-conn" :class="{ closed: !activeFor(entry) }">
+                {{ connectionLabel(entry) }}
+              </span>
               <span v-if="entry.database" class="history-db">{{ entry.database }}</span>
               <span class="history-time">{{ formatTime(entry.executedAt) }}</span>
               <span v-if="entry.durationMs != null" class="history-stat">
@@ -56,7 +62,14 @@
           </div>
           <div class="history-item-actions">
             <button class="history-action" @click="copySql(entry.sql)">{{ t('common.copy') }}</button>
-            <button class="history-action primary" @click="emit('rerun', entry)">{{ t('history.rerun') }}</button>
+            <button
+              class="history-action primary"
+              :disabled="!rerunTarget(entry)"
+              :title="rerunHint(entry)"
+              @click="emit('rerun', entry)"
+            >
+              {{ t('history.rerun') }}
+            </button>
           </div>
         </div>
       </div>
@@ -78,7 +91,11 @@ import { useQueryLibraryStore, type QueryHistoryEntry } from '@/stores/queryLibr
 import { useSavedConnectionsStore } from '@/stores/savedConnections'
 import { t } from '@/i18n'
 
-defineProps<{ open: boolean }>()
+const props = defineProps<{
+  open: boolean
+  /** 当前已打开的连接，用于判断某条历史能否直接重跑 */
+  activeConnections: Array<{ id: string; name: string; host: string; port: number }>
+}>()
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'rerun', entry: QueryHistoryEntry): void
@@ -118,10 +135,41 @@ const filtered = computed(() => {
   })
 })
 
-function connectionName(connectionId: string): string {
-  return (
-    savedConnections.savedConnections.find(conn => conn.id === connectionId)?.name ?? connectionId
-  )
+function activeFor(entry: QueryHistoryEntry) {
+  return props.activeConnections.find(conn => conn.id === entry.connectionId)
+}
+
+/** 这条历史对应的「保存的连接」：优先按 id，其次按名字 + 地址重新定位 */
+function savedFor(entry: QueryHistoryEntry) {
+  const list = savedConnections.savedConnections
+  if (entry.connectionId) {
+    const byId = list.find(conn => conn.id === entry.connectionId)
+    if (byId) return byId
+  }
+  if (entry.connectionName) {
+    return list.find(
+      conn =>
+        conn.name === entry.connectionName &&
+        conn.host === entry.connectionHost &&
+        conn.port === entry.connectionPort
+    )
+  }
+  return undefined
+}
+
+function rerunTarget(entry: QueryHistoryEntry) {
+  return activeFor(entry) ?? savedFor(entry)
+}
+
+function rerunHint(entry: QueryHistoryEntry): string {
+  if (activeFor(entry)) return t('history.rerun')
+  if (savedFor(entry)) return t('history.rerunReconnect')
+  return t('history.rerunUnavailable')
+}
+
+/** 连接名：历史记录里存了名字就用它，否则回退保存的连接名，最后才显示占位 */
+function connectionLabel(entry: QueryHistoryEntry): string {
+  return entry.connectionName || savedFor(entry)?.name || (entry.connectionId ? t('history.unknownConnection') : '—')
 }
 
 function formatTime(value: string): string {
@@ -251,6 +299,16 @@ function showNotice(message: string) {
   white-space: nowrap;
 }
 
+.history-hint {
+  margin: 0 var(--space-3) var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--hover-fill);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+
 .history-list {
   flex: 1;
   overflow: auto;
@@ -300,6 +358,10 @@ function showNotice(message: string) {
 
 .history-status.fail {
   color: var(--error-500);
+}
+
+.history-conn.closed {
+  color: var(--text-tertiary);
 }
 
 .history-conn {
@@ -372,7 +434,7 @@ function showNotice(message: string) {
   color: #fff;
 }
 
-.history-action.primary:hover {
+.history-action.primary:hover:not(:disabled) {
   background: var(--brand-600);
   color: #fff;
 }
