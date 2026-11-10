@@ -29,7 +29,7 @@
           :class="{ 'is-active': panelOpen }"
         >
           <History :size="14" />
-          {{ t('sqlEditor.queryLibrary') }}
+          {{ t('sqlEditor.savedQueries') }}
         </button>
       </div>
       <div class="toolbar-right">
@@ -117,10 +117,6 @@
       <div class="result-header">
         <CheckCircle class="success-icon" :size="16" />
         <span>{{ t('sqlEditor.executeSuccess') }}</span>
-        <span class="execution-info">
-          {{ result.rows_affected != null ? t('sqlEditor.rowsAffected', { count: result.rows_affected }) : t('sqlEditor.rowsReturned', { count: result.rows_returned }) }}
-          · {{ t('sqlEditor.executionTime', { ms: result.execution_time_ms }) }}
-        </span>
         <button @click="exportResults" :disabled="!result.rows || result.rows.length === 0" class="btn-export">
           <Download :size="14" />
           {{ t('common.export') }}
@@ -208,24 +204,38 @@
       <div v-else class="no-results">
         {{ t('sqlEditor.querySuccessEmpty') }}
       </div>
+
+      <!-- 结果统计：行数范围 / 列数 / 耗时，与表视图脚注同一套语言 -->
+      <div class="result-footer">
+        <span v-if="result.rows && result.rows.length > 0" class="footer-stat">
+          {{
+            resultVirtualEnabled
+              ? t('sqlEditor.resultRows', {
+                  start: resultVirtualStart + 1,
+                  end: resultVirtualEnd,
+                  total: result.rows.length,
+                })
+              : t('sqlEditor.resultRowsTotal', { total: result.rows.length })
+          }}
+        </span>
+        <span v-else-if="result.rows_affected != null" class="footer-stat">
+          {{ t('sqlEditor.rowsAffected', { count: result.rows_affected }) }}
+        </span>
+        <span v-if="result.columns && result.columns.length" class="footer-stat">
+          {{ t('sqlEditor.columnsCount', { count: result.columns.length }) }}
+        </span>
+        <span class="footer-spacer" />
+        <span class="footer-stat">{{ t('sqlEditor.executionTime', { ms: result.execution_time_ms }) }}</span>
+      </div>
     </div>
 
-    <!-- 查询历史 / 已保存查询 -->
+    <!-- 已保存查询 -->
     <div v-if="panelOpen" class="library-panel">
       <div class="library-header">
         <div class="library-tabs">
-          <button
-            :class="['library-tab', { active: panelTab === 'history' }]"
-            @click="panelTab = 'history'"
-          >
-            {{ t('sqlEditor.historyTab', { count: currentHistory.length }) }}
-          </button>
-          <button
-            :class="['library-tab', { active: panelTab === 'saved' }]"
-            @click="panelTab = 'saved'"
-          >
+          <span class="library-title">
             {{ t('sqlEditor.savedTab', { count: queryLibrary.savedQueries.length }) }}
-          </button>
+          </span>
         </div>
         <input v-model="librarySearch" class="library-search" :placeholder="t('sqlEditor.searchLibrary')" />
         <button class="btn-clear-history" :title="t('common.close')" @click="panelOpen = false" :aria-label="t('common.close')">
@@ -233,34 +243,7 @@
         </button>
       </div>
 
-      <div v-if="panelTab === 'history'" class="history-list">
-        <div v-if="filteredHistory.length === 0" class="library-empty">
-          {{ t('sqlEditor.noHistory') }}
-        </div>
-        <div
-          v-for="item in filteredHistory"
-          :key="item.id"
-          class="history-item"
-          :title="item.sql"
-          @click="loadHistoryItem(item)"
-        >
-          <span class="history-sql">{{ truncateSql(item.sql) }}</span>
-          <span v-if="!item.success" class="history-failed">{{ t('common.failed') }}</span>
-          <span class="history-time">{{ formatTime(item.executedAt) }}</span>
-          <button class="btn-item-delete" :title="t('common.delete')" @click.stop="queryLibrary.removeHistory(item.id)" :aria-label="t('common.delete')">
-            ×
-          </button>
-        </div>
-        <button
-          v-if="currentHistory.length > 0"
-          class="btn-clear-history block"
-          @click="queryLibrary.clearHistory(effectiveConnectionId)"
-        >
-          {{ t('sqlEditor.clearConnectionHistory') }}
-        </button>
-      </div>
-
-      <div v-else class="history-list">
+      <div class="history-list">
         <div v-if="savedGroups.length === 0" class="library-empty">
           {{ t('sqlEditor.noSaved') }}
         </div>
@@ -337,7 +320,7 @@ import { useConnectionStore } from '@/stores/connection'
 import { resolveTabConnectionId } from '@/utils/tabConnection'
 import { useDataBrowserStore } from '@/stores/dataBrowser'
 import { useEditorTabsStore } from '@/stores/editorTabs'
-import { useQueryLibraryStore, type QueryHistoryEntry, type SavedQuery } from '@/stores/queryLibrary'
+import { useQueryLibraryStore, type SavedQuery } from '@/stores/queryLibrary'
 import { Play, FileText, Trash2, Download, XCircle, CheckCircle, Loader2, Square, History, X, Cpu } from 'lucide-vue-next'
 import { t } from '@/i18n'
 import { findDangerousStatements, formatSql, quoteIdentifier } from '@/utils/sql'
@@ -429,7 +412,6 @@ const explaining = ref(false)
 const resultView = ref<'result' | 'explain'>('result')
 // 查询历史 / 已保存查询面板
 const panelOpen = ref(false)
-const panelTab = ref<'history' | 'saved'>('history')
 const librarySearch = ref('')
 
 // 导出格式
@@ -640,7 +622,7 @@ const {
   paddingBottom: virtualPaddingBottom,
   onScroll: handleResultScroll,
 } = useVirtualRows(resultContainer, () => result.value?.rows.length ?? 0, {
-  rowHeight: 36,
+  rowHeight: 28,
   threshold: 100,
 })
 
@@ -1085,15 +1067,7 @@ function viewResultCell() {
   openResultCellViewer(resultCellMenu.value.cell, resultCellMenu.value.columnIndex)
 }
 
-// ===== 查询历史 / 已保存查询 =====
-const currentHistory = computed(() => queryLibrary.historyFor(effectiveConnectionId.value))
-
-const filteredHistory = computed(() => {
-  const keyword = librarySearch.value.trim().toLowerCase()
-  if (!keyword) return currentHistory.value
-  return currentHistory.value.filter(item => item.sql.toLowerCase().includes(keyword))
-})
-
+// ===== 已保存查询 =====
 const savedGroups = computed(() => {
   const keyword = librarySearch.value.trim().toLowerCase()
   const items = queryLibrary.savedQueries.filter(item =>
@@ -1119,11 +1093,6 @@ const savedGroups = computed(() => {
     })
     .map(([folder, list]) => ({ folder, items: list }))
 })
-
-function loadHistoryItem(item: QueryHistoryEntry) {
-  editorApi?.replaceDoc(item.sql)
-  nextTick(() => editorApi?.focus())
-}
 
 function loadSavedQuery(item: SavedQuery) {
   editorApi?.replaceDoc(item.sql)
@@ -1839,6 +1808,29 @@ onUnmounted(() => {
   background: rgba(239, 68, 68, 0.08);
 }
 
+.result-footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  height: var(--tabbar-height);
+  padding: 0 var(--space-3);
+  background: var(--canvas);
+  border-top: 1px solid var(--hairline);
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.footer-stat {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.footer-spacer {
+  flex: 1;
+}
+
 .result-header {
   display: flex;
   align-items: center;
@@ -2025,6 +2017,12 @@ onUnmounted(() => {
   background: var(--panel);
   border-bottom: 1px solid var(--hairline);
   flex-shrink: 0;
+}
+
+.library-title {
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  color: var(--text-secondary);
 }
 
 .library-tabs {
