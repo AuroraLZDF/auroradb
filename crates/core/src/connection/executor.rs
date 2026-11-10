@@ -1280,29 +1280,18 @@ impl ConnectionManager {
 
         // 游标翻页能力：单列主键 + 未指定排序 + 主键类型可比较。
         // 主键是二进制/空间类型时无法安全回传比较，退回 OFFSET 翻页。
-        let cursor_supported = request
-            .sort_column
-            .as_deref()
-            .map_or(true, |col| col.trim().is_empty())
-            && pk_columns.len() == 1
-            && column_types
-                .get(&pk_columns[0])
-                .map_or(true, |data_type| is_searchable_type(data_type));
-        let cursor_column: Option<String> = if cursor_supported {
-            Some(pk_columns[0].clone())
-        } else {
-            None
-        };
+        let cursor_column = keyset_column(
+            request.sort_column.as_deref(),
+            &pk_columns,
+            pk_columns
+                .first()
+                .and_then(|pk| column_types.get(pk))
+                .map_or(true, |data_type| is_searchable_type(data_type)),
+        );
         // 只有续页请求（带游标）才走 keyset 条件；首页仍按 OFFSET 取，便于前端同时拿到总数
         let use_cursor = cursor_column.is_some() && request.after.is_some();
-        if use_cursor {
-            if let (Some(pk), Some(cursor)) = (&cursor_column, &request.after) {
-                conditions.push(format!(
-                    "`{}` > {}",
-                    pk,
-                    quote_value(cursor, DriverKind::MySql)?
-                ));
-            }
+        if let (true, Some(pk), Some(cursor)) = (use_cursor, &cursor_column, &request.after) {
+            conditions.push(keyset_condition(&format!("`{}`", pk), cursor, DriverKind::MySql)?);
         }
 
         let where_clause = if conditions.is_empty() {
@@ -1336,12 +1325,7 @@ impl ConnectionManager {
         }
 
         // LIMIT：游标翻页不带 OFFSET，页间靠主键游标衔接
-        if use_cursor {
-            sql.push_str(&format!(" LIMIT {}", request.page_size));
-        } else {
-            let offset = (request.page - 1) * request.page_size;
-            sql.push_str(&format!(" LIMIT {} OFFSET {}", request.page_size, offset));
-        }
+        sql.push_str(&limit_clause(use_cursor, request.page, request.page_size));
 
         // 数据与总数放在同一只读事务里：MySQL 默认可重复读，快照在首个读语句建立，
         // 避免两次查询之间数据变化导致「总数」与当前页不一致
@@ -1576,6 +1560,25 @@ impl ConnectionManager {
             }
         }
 
+        // 游标翻页能力：单列主键 + 未指定排序 + 主键类型可比较（bytea 等无法安全回传比较）。
+        let cursor_column = keyset_column(
+            request.sort_column.as_deref(),
+            &pk_columns,
+            pk_columns
+                .first()
+                .and_then(|pk| column_meta.iter().find(|(name, _, _)| name == pk))
+                .map_or(true, |(_, _, udt)| is_orderable_pg_type(udt)),
+        );
+        // 只有续页请求（带游标）才走 keyset 条件；首页仍按 OFFSET 取，便于前端同时拿到总数
+        let use_cursor = cursor_column.is_some() && request.after.is_some();
+        if let (true, Some(pk), Some(cursor)) = (use_cursor, &cursor_column, &request.after) {
+            conditions.push(keyset_condition(
+                &quote_pg_identifier(pk)?,
+                cursor,
+                DriverKind::Postgres,
+            )?);
+        }
+
         let where_clause = if conditions.is_empty() {
             String::new()
         } else {
@@ -1583,22 +1586,28 @@ impl ConnectionManager {
         };
         sql.push_str(&where_clause);
 
-        if let Some(col) = &request.sort_column {
-            if !col.trim().is_empty() {
-                let direction = request.sort_direction.unwrap_or(SortDirection::Asc);
-                sql.push_str(&format!(
-                    " ORDER BY {} {}",
-                    quote_pg_identifier(col)?,
-                    match direction {
-                        SortDirection::Asc => "ASC",
-                        SortDirection::Desc => "DESC",
-                    }
-                ));
+        // 游标翻页必须按主键升序，保证跨批次连续且不重复
+        if let Some(pk) = &cursor_column {
+            sql.push_str(&format!(" ORDER BY {} ASC", quote_pg_identifier(pk)?));
+        }
+
+        if cursor_column.is_none() {
+            if let Some(col) = &request.sort_column {
+                if !col.trim().is_empty() {
+                    let direction = request.sort_direction.unwrap_or(SortDirection::Asc);
+                    sql.push_str(&format!(
+                        " ORDER BY {} {}",
+                        quote_pg_identifier(col)?,
+                        match direction {
+                            SortDirection::Asc => "ASC",
+                            SortDirection::Desc => "DESC",
+                        }
+                    ));
+                }
             }
         }
 
-        let offset = (request.page - 1) * request.page_size;
-        sql.push_str(&format!(" LIMIT {} OFFSET {}", request.page_size, offset));
+        sql.push_str(&limit_clause(use_cursor, request.page, request.page_size));
 
         // 数据与总数放在同一只读事务里：PG 默认读已提交，需显式提升到可重复读，
         // 否则两条语句各取一次快照，会出现「总数」与当前页不一致
@@ -1616,13 +1625,18 @@ impl ConnectionManager {
         )
         .await?;
 
-        let count_sql = format!("SELECT COUNT(*) FROM {}{}", qualified, where_clause);
-        let total_count: i64 = run_query(
-            sqlx::query_scalar(&count_sql).fetch_one(&mut *tx),
-            query_cancel,
-            query_notify,
-        )
-        .await?;
+        // 游标翻页不重复执行 COUNT：千万行表的 COUNT 同样昂贵，总数由前端沿用首页结果。
+        let total_count: i64 = if use_cursor {
+            0
+        } else {
+            let count_sql = format!("SELECT COUNT(*) FROM {}{}", qualified, where_clause);
+            run_query(
+                sqlx::query_scalar(&count_sql).fetch_one(&mut *tx),
+                query_cancel,
+                query_notify,
+            )
+            .await?
+        };
         tx.commit().await?;
 
         let execution_time_ms = start.elapsed().as_millis() as u64;
@@ -1696,6 +1710,17 @@ impl ConnectionManager {
             rows.push(row_data);
         }
 
+        // 下一次游标：整批取满（可能还有下一批）才给出，末批不足一页时为 None，
+        // 前端据此停止自动预取、回到普通分页。
+        let next_cursor = match (&cursor_column, result.last()) {
+            (Some(pk), Some(last_row)) if result.len() == request.page_size => columns
+                .iter()
+                .position(|c| &c.name == pk)
+                .and_then(|index| convert_pg_value(last_row, index, kinds[index]).ok())
+                .and_then(|value| serde_json::to_value(value).ok()),
+            _ => None,
+        };
+
         Ok(DataQueryResponse {
             columns,
             rows,
@@ -1703,8 +1728,7 @@ impl ConnectionManager {
             page: request.page,
             page_size: request.page_size,
             execution_time_ms,
-            // PG 表浏览暂未接入 keyset 翻页，前端据此走 OFFSET 分页
-            next_cursor: None,
+            next_cursor,
         })
     }
 
@@ -2306,6 +2330,61 @@ fn is_searchable_pg_type(udt_name: &str) -> bool {
     !udt_name.eq_ignore_ascii_case("bytea")
 }
 
+/// 主键能否用于 keyset 比较：需要 btree 排序语义。
+///
+/// 比 `is_searchable_pg_type` 更严格——`json`（无比较操作符）、几何/全文类型
+/// 虽然能做文本搜索，但用在 `pk > '...'` 里会直接报错。
+fn is_orderable_pg_type(udt_name: &str) -> bool {
+    !matches!(
+        udt_name.to_ascii_lowercase().as_str(),
+        "bytea"
+            | "json"
+            | "xml"
+            | "tsvector"
+            | "tsquery"
+            | "point"
+            | "line"
+            | "lseg"
+            | "box"
+            | "path"
+            | "polygon"
+            | "circle"
+            | "geometry"
+            | "geography"
+    )
+}
+
+/// keyset 翻页可用性判定：未指定排序 + 单列主键 + 主键类型可安全比较。
+///
+/// 返回用于游标比较的列名；不可用时返回 None，调用方退回 OFFSET 翻页。
+fn keyset_column(
+    sort_column: Option<&str>,
+    pk_columns: &[String],
+    pk_comparable: bool,
+) -> Option<String> {
+    let no_sort = sort_column.map_or(true, |col| col.trim().is_empty());
+    if no_sort && pk_comparable && pk_columns.len() == 1 {
+        Some(pk_columns[0].clone())
+    } else {
+        None
+    }
+}
+
+/// keyset 的续页条件：`<pk> > <上一批最后一行主键值>`。
+fn keyset_condition(quoted_column: &str, cursor: &serde_json::Value, driver: DriverKind) -> Result<String> {
+    Ok(format!("{} > {}", quoted_column, quote_value(cursor, driver)?))
+}
+
+/// keyset 续页不带 OFFSET（页间靠主键游标衔接）；首页与回退分页仍用 OFFSET。
+fn limit_clause(use_cursor: bool, page: usize, page_size: usize) -> String {
+    if use_cursor {
+        format!(" LIMIT {}", page_size)
+    } else {
+        let offset = (page.max(1) - 1) * page_size;
+        format!(" LIMIT {} OFFSET {}", page_size, offset)
+    }
+}
+
 /// 转义 LIKE 模式中的通配符，避免用户输入的 `%`/`_` 被当成模式。
 fn escape_like_keyword(keyword: &str) -> String {
     keyword
@@ -2482,6 +2561,69 @@ mod tests {
         ))
         .expect("build pg like with quote");
         assert_eq!(cond, "\"name\" LIKE '%O''Brien%'");
+    }
+
+    /// keyset 只在「未排序 + 单列主键 + 主键可比较」时启用，其余退回 OFFSET。
+    #[test]
+    fn keyset_column_requires_single_comparable_pk_without_sort() {
+        let pk = vec!["id".to_string()];
+        assert_eq!(keyset_column(None, &pk, true).as_deref(), Some("id"));
+        assert_eq!(keyset_column(Some(""), &pk, true).as_deref(), Some("id"));
+        assert_eq!(keyset_column(Some("   "), &pk, true).as_deref(), Some("id"));
+
+        // 指定排序 / 复合主键 / 不可比较类型都不走游标
+        assert_eq!(keyset_column(Some("name"), &pk, true), None);
+        assert_eq!(
+            keyset_column(None, &["a".to_string(), "b".to_string()], true),
+            None
+        );
+        assert_eq!(keyset_column(None, &pk, false), None);
+        assert_eq!(keyset_column(None, &[], true), None);
+    }
+
+    /// 续页条件是严格大于，且按驱动各自的字面量转义规则拼接。
+    #[test]
+    fn keyset_condition_quotes_cursor_per_driver() {
+        let cond = keyset_condition("`id`", &serde_json::json!(42), DriverKind::MySql)
+            .expect("mysql int cursor");
+        assert_eq!(cond, "`id` > 42");
+
+        let cond = keyset_condition(
+            "\"name\"",
+            &serde_json::json!("O'Brien"),
+            DriverKind::Postgres,
+        )
+        .expect("pg text cursor");
+        assert_eq!(cond, "\"name\" > 'O''Brien'");
+
+        let cond = keyset_condition("`id`", &serde_json::json!("abc"), DriverKind::MySql)
+            .expect("mysql text cursor");
+        assert_eq!(cond, "`id` > 'abc'");
+
+        // 对象/数组无法作为 SQL 字面量：必须报错而不是拼出必然语法错误的 SQL
+        assert!(keyset_condition("`id`", &serde_json::json!({"a": 1}), DriverKind::MySql).is_err());
+    }
+
+    /// 游标续页不带 OFFSET；首页与回退分页仍按页号算偏移，且页号 0 不能算出负数。
+    #[test]
+    fn limit_clause_uses_offset_only_without_cursor() {
+        assert_eq!(limit_clause(true, 1, 100), " LIMIT 100");
+        assert_eq!(limit_clause(true, 7, 100), " LIMIT 100");
+        assert_eq!(limit_clause(false, 1, 100), " LIMIT 100 OFFSET 0");
+        assert_eq!(limit_clause(false, 3, 50), " LIMIT 50 OFFSET 100");
+        assert_eq!(limit_clause(false, 0, 50), " LIMIT 50 OFFSET 0");
+    }
+
+    /// keyset 比较比 LIKE 更严格：没有 btree 排序语义的类型要排除。
+    #[test]
+    fn orderable_pg_type_excludes_nonsortable_types() {
+        assert!(is_orderable_pg_type("int4"));
+        assert!(is_orderable_pg_type("uuid"));
+        assert!(is_orderable_pg_type("timestamptz"));
+        assert!(is_orderable_pg_type("jsonb"));
+        assert!(!is_orderable_pg_type("json"));
+        assert!(!is_orderable_pg_type("bytea"));
+        assert!(!is_orderable_pg_type("geometry"));
     }
 
     #[test]
