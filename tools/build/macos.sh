@@ -66,6 +66,11 @@ if [[ ! -d node_modules && ! -d src-ui/node_modules ]]; then
     echo -e "${YELLOW}  前端依赖缺失，执行 npm ci${NC}"
     (cd src-ui && npm ci)
 fi
+# 未预装 Tauri CLI 时现场编译（CI 里 taiki-e/install-action 会提前装好）
+if ! cargo tauri --version >/dev/null 2>&1; then
+    echo -e "${YELLOW}  未找到 cargo tauri，执行 cargo install tauri-cli --locked${NC}"
+    cargo install tauri-cli --locked
+fi
 echo -e "${GREEN}  ✓ 环境就绪${NC}"
 
 # 更新包签名：Tauri CLI 只读取这些环境变量（内容，不是路径）

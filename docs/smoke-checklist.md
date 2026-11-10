@@ -1,6 +1,6 @@
-# 发版冒烟清单（Linux / Windows）
+# 发版冒烟清单（Linux / Windows / macOS）
 
-每次发版前在 Linux 与 Windows 上各按本清单跑一遍，结果回填到「结果」列。
+每次发版前在 Linux 与 Windows 上各按本清单跑一遍，macOS 版按第 11 节补充检查，结果回填到「结果」列。
 同一版本只跑一次；发布补丁版本时至少覆盖第 1、2、3、4、8 节。
 
 ## 0. 记录
@@ -108,3 +108,19 @@
 - 记录失败项编号、复现步骤、截图与日志路径（Linux：`~/.local/share/mysql-client/logs/`；Windows：`%APPDATA%\mysql-client\logs\`）。
 - 阻塞发版的失败项：安装/启动失败、连接不可用、查询结果错误、数据编辑或导入导出丢数据、全功能入口不可用或出现激活/试用提示。
 - 非阻塞项记入下个版本的修复清单，并在发布说明中注明。
+
+## 11. macOS（Apple Silicon · 未签名预览版）
+
+macOS 版只在 `macos-14` runner 上构建，本地需要一台 Apple Silicon 机器验收。
+
+| # | 操作 | 预期 |
+| --- | --- | --- |
+| 11.1 | 下载 `AuroraDB_<版本>_aarch64.dmg`，双击挂载后拖入「应用程序」 | 无「已损坏」提示即说明 dmg 本身完好 |
+| 11.2 | 首次打开（不右键） | 被 Gatekeeper 拦截，提示「无法验证开发者」 |
+| 11.3 | 右键 →「打开」→ 确认打开 | 应用正常启动，之后可双击启动 |
+| 11.4 | 或执行 `xattr -dr com.apple.quarantine /Applications/AuroraDB.app` 后双击 | 应用正常启动 |
+| 11.5 | 应用内「设置 → 检查更新」 | 能读到 `darwin-aarch64` 条目；有新版本时下载 `.app.tar.gz` 并提示重启 |
+| 11.6 | 连接 MySQL / PostgreSQL（含 SSH 隧道） | 与 Linux/Windows 行为一致 |
+| 11.7 | 密码保存后重启应用 | 从 Keychain 读取，首次授权弹窗只出现一次 |
+| 11.8 | 备份 / 还原（调用 `mysqldump` / `pg_dump`） | 能找到 Homebrew 或官方安装路径下的二进制 |
+| 11.9 | 菜单栏 / 关闭窗口 / 退出 | 行为符合 macOS 习惯，无残留进程 |
