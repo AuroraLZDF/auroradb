@@ -6,7 +6,7 @@ use super::tunnel::{Tunnel, TunnelFactory};
 use super::types::*;
 use anyhow::{anyhow, Result};
 use sqlx::pool::PoolConnection;
-use sqlx::{MySql, MySqlPool, PgPool};
+use sqlx::{MySql, MySqlPool, PgPool, Postgres};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -47,6 +47,10 @@ pub struct ManagedConnection {
     /// 且不能随语句结束归还连接池（否则会话语义丢失并污染池中连接的默认库）。
     /// 懒创建：只有在用户执行过会话语句后才占用一条物理连接。
     pub session: Arc<Mutex<Option<PoolConnection<MySql>>>>,
+    /// PostgreSQL 持久会话连接：`SET search_path` / `SET ...` 是会话级设置，
+    /// 必须与后续查询落在同一条物理连接上，不能随语句结束归还连接池。
+    /// 懒创建：只有执行过（或即将执行可能带会话设置的）语句后才占用一条物理连接。
+    pub pg_session: Arc<Mutex<Option<PoolConnection<Postgres>>>>,
     /// 元数据缓存：对象树/表结构带 TTL，避免每次展开都打 INFORMATION_SCHEMA
     pub(crate) metadata_cache: Arc<Mutex<HashMap<String, (Instant, MetadataCacheValue)>>>,
     /// SSH 隧道：连接期间必须存活，断开时置 None 触发 Drop 关闭
@@ -59,10 +63,7 @@ pub struct ManagedConnection {
 impl ManagedConnection {
     /// 取 MySQL 池的克隆；仅供尚未迁移方言的模块使用，PG 连接返回带功能名的明确错误
     pub fn mysql_pool(&self, feature: &str) -> Result<MySqlPool> {
-        let pool = self
-            .pool
-            .as_ref()
-            .ok_or_else(|| anyhow!("连接尚未建立"))?;
+        let pool = self.pool.as_ref().ok_or_else(|| anyhow!("连接尚未建立"))?;
         Ok(pool.as_mysql(feature)?.clone())
     }
 
@@ -120,9 +121,13 @@ impl ConnectionManager {
     /// 连接的展示信息（名称、主机、端口），供审计日志记录操作来源
     pub async fn connection_meta(&self, connection_id: &str) -> Option<(String, String, u16)> {
         let connections = self.connections.read().await;
-        connections
-            .get(connection_id)
-            .map(|conn| (conn.config.name.clone(), conn.config.host.clone(), conn.config.port))
+        connections.get(connection_id).map(|conn| {
+            (
+                conn.config.name.clone(),
+                conn.config.host.clone(),
+                conn.config.port,
+            )
+        })
     }
 
     /// 连接资源快照：供专业版模块读取配置与连接池，避免长时间持有连接表读锁。

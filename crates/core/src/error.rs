@@ -52,7 +52,10 @@ const KNOWN_MYSQL_ERRORS: &[(&str, &str)] = &[
 /// 已收录的 PostgreSQL 错误码（SQLSTATE）→ 中文提示
 const KNOWN_PG_ERRORS: &[(&str, &str)] = &[
     // 连接与认证
-    ("08001", "无法连接到数据库服务器：请检查主机地址、端口及网络"),
+    (
+        "08001",
+        "无法连接到数据库服务器：请检查主机地址、端口及网络",
+    ),
     ("08006", "连接已断开：查询执行期间与服务器失去连接，请重试"),
     ("28P01", "认证失败：用户名或密码错误，请检查连接配置"),
     ("3D000", "数据库不存在：请检查默认数据库名称"),
@@ -254,7 +257,10 @@ mod tests {
             ("1146", "Table 'test.users' doesn't exist"),
             ("1045", "Access denied for user 'root'@'localhost'"),
             ("2013", "Lost connection to MySQL server during query"),
-            ("1205", "Lock wait timeout exceeded; try restarting transaction"),
+            (
+                "1205",
+                "Lock wait timeout exceeded; try restarting transaction",
+            ),
             ("2002", "Can't connect to local MySQL server through socket"),
         ];
 
@@ -318,7 +324,10 @@ mod tests {
             translate(&SqlxError::ColumnNotFound("name".to_string())),
             "列不存在：name"
         );
-        assert_eq!(translate(&SqlxError::PoolClosed), "连接池已关闭，请重新连接");
+        assert_eq!(
+            translate(&SqlxError::PoolClosed),
+            "连接池已关闭，请重新连接"
+        );
     }
 
     #[test]
@@ -360,8 +369,7 @@ mod tests {
         assert!(user_message(&err).contains("重复键冲突"));
 
         // 包装了上下文的驱动错误 → 仍能沿链翻译
-        let wrapped: anyhow::Error = db_error("1146", "Table 'test.t' doesn't exist")
-            .into();
+        let wrapped: anyhow::Error = db_error("1146", "Table 'test.t' doesn't exist").into();
         let wrapped = wrapped.context("执行查询失败");
         let msg = user_message(&wrapped);
         assert!(msg.contains("表不存在"), "got: {msg}");

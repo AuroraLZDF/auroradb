@@ -296,7 +296,9 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].sql, "SELECT 2");
         assert_eq!(items[1].sql, "SELECT 1");
-        assert!(items.iter().all(|item| !item.id.is_empty() && !item.timestamp.is_empty()));
+        assert!(items
+            .iter()
+            .all(|item| !item.id.is_empty() && !item.timestamp.is_empty()));
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
@@ -314,11 +316,32 @@ mod tests {
         log.record(failure).await;
 
         assert_eq!(log.list(10, None, Some(true), None).await.unwrap().len(), 1);
-        assert_eq!(log.list(10, None, Some(false), None).await.unwrap().len(), 1);
+        assert_eq!(
+            log.list(10, None, Some(false), None).await.unwrap().len(),
+            1
+        );
         assert_eq!(log.list(10, Some("c1"), None, None).await.unwrap().len(), 2);
-        assert_eq!(log.list(10, Some("missing"), None, None).await.unwrap().len(), 0);
-        assert_eq!(log.list(10, None, None, Some("orders")).await.unwrap().len(), 1);
-        assert_eq!(log.list(10, None, None, Some("PERMISSION")).await.unwrap().len(), 1);
+        assert_eq!(
+            log.list(10, Some("missing"), None, None)
+                .await
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(
+            log.list(10, None, None, Some("orders"))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            log.list(10, None, None, Some("PERMISSION"))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }

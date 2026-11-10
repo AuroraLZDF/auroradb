@@ -22,8 +22,21 @@ pub const SAFE_MODE_MESSAGE: &str =
 ///
 /// 不含 `WITH`：CTE 可以前缀 DELETE/UPDATE，兜底模式下无法判定其后真实动作，按 fail-closed 拒绝。
 const READ_ONLY_KEYWORDS: &[&str] = &[
-    "SELECT", "SHOW", "DESC", "DESCRIBE", "EXPLAIN", "USE", "SET", "TABLE", "VALUES", "BEGIN",
-    "START", "COMMIT", "ROLLBACK", "SAVEPOINT", "RELEASE",
+    "SELECT",
+    "SHOW",
+    "DESC",
+    "DESCRIBE",
+    "EXPLAIN",
+    "USE",
+    "SET",
+    "TABLE",
+    "VALUES",
+    "BEGIN",
+    "START",
+    "COMMIT",
+    "ROLLBACK",
+    "SAVEPOINT",
+    "RELEASE",
 ];
 
 /// 校验 SQL 是否允许在当前访问模式下执行（MySQL 方言，兼容旧调用点）。
@@ -146,9 +159,7 @@ fn executable_comment_bodies(sql: &str) -> Vec<String> {
                     let body_start = chars.peek().map_or(sql.len(), |&(index, _)| index);
                     let mut body_end = sql.len();
                     while let Some((index, next)) = chars.next() {
-                        if next == '*'
-                            && chars.peek().map(|&(_, after)| after) == Some('/')
-                        {
+                        if next == '*' && chars.peek().map(|&(_, after)| after) == Some('/') {
                             chars.next();
                             body_end = index;
                             break;
@@ -186,13 +197,15 @@ fn has_destructive_statement(sql: &str, driver: DriverKind) -> bool {
         DriverKind::Postgres => PG_DESTRUCTIVE_KEYWORDS,
     };
 
-    crate::sql::split_sql_statements(sql).iter().any(|statement| {
-        let keyword = leading_keyword(statement);
-        keywords.contains(&keyword.as_str())
-            || (driver == DriverKind::MySql
-                && (contains_keyword(statement, "OUTFILE")
-                    || contains_keyword(statement, "DUMPFILE")))
-    })
+    crate::sql::split_sql_statements(sql)
+        .iter()
+        .any(|statement| {
+            let keyword = leading_keyword(statement);
+            keywords.contains(&keyword.as_str())
+                || (driver == DriverKind::MySql
+                    && (contains_keyword(statement, "OUTFILE")
+                        || contains_keyword(statement, "DUMPFILE")))
+        })
 }
 
 /// 校验前端提交的定位条件（WHERE 片段），MySQL 方言入口。
@@ -214,8 +227,8 @@ pub fn validate_where_clause_for(
         return Err(anyhow!("定位条件不能为空"));
     }
     let probe = format!("SELECT 1 FROM {} WHERE {}", table, where_clause);
-    let statements = parse_statements(driver, &probe)
-        .map_err(|e| anyhow!("定位条件无法解析：{}", e))?;
+    let statements =
+        parse_statements(driver, &probe).map_err(|e| anyhow!("定位条件无法解析：{}", e))?;
     if statements.len() != 1 {
         return Err(anyhow!("定位条件只能是一条表达式"));
     }
@@ -507,7 +520,10 @@ mod tests {
             "COMMIT",
             "WITH x AS (SELECT 1) SELECT * FROM x",
         ] {
-            assert!(enforce(SafetyMode::ReadOnly, sql).is_ok(), "should allow: {sql}");
+            assert!(
+                enforce(SafetyMode::ReadOnly, sql).is_ok(),
+                "should allow: {sql}"
+            );
         }
     }
 
@@ -548,9 +564,12 @@ mod tests {
 
     #[test]
     fn safe_blocks_delete_without_where_in_batch() {
-        let err = enforce(SafetyMode::Safe, "UPDATE t SET a = 1 WHERE id = 1; DELETE FROM t")
-            .unwrap_err()
-            .to_string();
+        let err = enforce(
+            SafetyMode::Safe,
+            "UPDATE t SET a = 1 WHERE id = 1; DELETE FROM t",
+        )
+        .unwrap_err()
+        .to_string();
         assert_eq!(err, SAFE_MODE_MESSAGE);
     }
 
@@ -562,7 +581,10 @@ mod tests {
             "INSERT INTO t VALUES (1)",
             "SELECT * FROM t",
         ] {
-            assert!(enforce(SafetyMode::Safe, sql).is_ok(), "should allow: {sql}");
+            assert!(
+                enforce(SafetyMode::Safe, sql).is_ok(),
+                "should allow: {sql}"
+            );
         }
     }
 
@@ -584,9 +606,12 @@ mod tests {
 
     #[test]
     fn read_only_blocks_outfile_write() {
-        let err = enforce(SafetyMode::ReadOnly, "SELECT * FROM t INTO OUTFILE '/tmp/t.csv'")
-            .unwrap_err()
-            .to_string();
+        let err = enforce(
+            SafetyMode::ReadOnly,
+            "SELECT * FROM t INTO OUTFILE '/tmp/t.csv'",
+        )
+        .unwrap_err()
+        .to_string();
         assert_eq!(err, READ_ONLY_MESSAGE);
     }
 
@@ -603,8 +628,14 @@ mod tests {
             "WITH c AS (SELECT 1) DELETE FROM t",
             "WITH c AS (SELECT 1) UPDATE t SET a = 1",
         ] {
-            assert!(enforce(SafetyMode::ReadOnly, sql).is_err(), "read-only should block: {sql}");
-            assert!(enforce(SafetyMode::Safe, sql).is_err(), "safe should block: {sql}");
+            assert!(
+                enforce(SafetyMode::ReadOnly, sql).is_err(),
+                "read-only should block: {sql}"
+            );
+            assert!(
+                enforce(SafetyMode::Safe, sql).is_err(),
+                "safe should block: {sql}"
+            );
         }
         // 带 WHERE 的 CTE 写操作在安全模式下放行，只读模式仍拦截
         let sql = "WITH c AS (SELECT 1) DELETE FROM t WHERE id = 1";
@@ -652,8 +683,14 @@ mod tests {
             "/*!40101 SET NAMES utf8 */; SELECT 1",
             "SELECT 1; /*!40101 SET NAMES utf8 */",
         ] {
-            assert!(enforce(SafetyMode::ReadOnly, sql).is_ok(), "should allow: {sql}");
-            assert!(enforce(SafetyMode::Safe, sql).is_ok(), "should allow: {sql}");
+            assert!(
+                enforce(SafetyMode::ReadOnly, sql).is_ok(),
+                "should allow: {sql}"
+            );
+            assert!(
+                enforce(SafetyMode::Safe, sql).is_ok(),
+                "should allow: {sql}"
+            );
         }
     }
 
@@ -666,8 +703,14 @@ mod tests {
             "/* 普通注释里的 /*! DROP TABLE t */ SELECT 1",
             "SELECT `/*! DROP TABLE t */` FROM t",
         ] {
-            assert!(enforce(SafetyMode::ReadOnly, sql).is_ok(), "should allow: {sql}");
-            assert!(enforce(SafetyMode::Safe, sql).is_ok(), "should allow: {sql}");
+            assert!(
+                enforce(SafetyMode::ReadOnly, sql).is_ok(),
+                "should allow: {sql}"
+            );
+            assert!(
+                enforce(SafetyMode::Safe, sql).is_ok(),
+                "should allow: {sql}"
+            );
         }
     }
 
@@ -730,13 +773,13 @@ mod tests {
     #[test]
     fn postgres_where_clause_accepts_double_quoted_identifiers() {
         // PG 的标识符用双引号；MySQL 方言会把双引号当字符串，必须按驱动选方言
-        assert!(
-            validate_where_clause_for("\"crm\".\"orders\"", "\"id\" = 1", DriverKind::Postgres)
-                .is_ok()
-        );
-        assert!(
-            validate_where_clause_for("`orders`", "id = 1", DriverKind::MySql).is_ok()
-        );
+        assert!(validate_where_clause_for(
+            "\"crm\".\"orders\"",
+            "\"id\" = 1",
+            DriverKind::Postgres
+        )
+        .is_ok());
+        assert!(validate_where_clause_for("`orders`", "id = 1", DriverKind::MySql).is_ok());
     }
 
     #[test]

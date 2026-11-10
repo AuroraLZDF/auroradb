@@ -14,9 +14,7 @@ use super::resultset::{
     ColumnKind, PgColumnKind,
 };
 use super::types::CellValue;
-use super::validation::{
-    escape_string_pg, quote_pg_identifier, quote_pg_table_reference,
-};
+use super::validation::{escape_string_pg, quote_pg_identifier, quote_pg_table_reference};
 use anyhow::{anyhow, Result};
 use sqlx::postgres::PgRow;
 use sqlx::{Column, Row, ValueRef};
@@ -354,21 +352,26 @@ fn format_pg_sql_value(row: &PgRow, column_name: &str, data_type: &str) -> Resul
             Ok(None) => Ok("NULL".to_string()),
             Err(e) => Err(decode_error(e)),
         },
-        PgColumnKind::Numeric => match row.try_get::<Option<rust_decimal::Decimal>, _>(column_name) {
+        PgColumnKind::Numeric => match row.try_get::<Option<rust_decimal::Decimal>, _>(column_name)
+        {
             Ok(Some(v)) => Ok(v.to_string()),
             Ok(None) => Ok("NULL".to_string()),
             Err(e) => Err(decode_error(e)),
         },
-        PgColumnKind::Timestamp => match row.try_get::<Option<chrono::NaiveDateTime>, _>(column_name) {
-            Ok(Some(v)) => Ok(format!("'{}'", v.format("%Y-%m-%d %H:%M:%S%.f"))),
-            Ok(None) => Ok("NULL".to_string()),
-            Err(e) => Err(decode_error(e)),
-        },
-        PgColumnKind::TimestampTz => match row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(column_name) {
-            Ok(Some(v)) => Ok(format!("'{}'", v.format("%Y-%m-%d %H:%M:%S%.f+00"))),
-            Ok(None) => Ok("NULL".to_string()),
-            Err(e) => Err(decode_error(e)),
-        },
+        PgColumnKind::Timestamp => {
+            match row.try_get::<Option<chrono::NaiveDateTime>, _>(column_name) {
+                Ok(Some(v)) => Ok(format!("'{}'", v.format("%Y-%m-%d %H:%M:%S%.f"))),
+                Ok(None) => Ok("NULL".to_string()),
+                Err(e) => Err(decode_error(e)),
+            }
+        }
+        PgColumnKind::TimestampTz => {
+            match row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(column_name) {
+                Ok(Some(v)) => Ok(format!("'{}'", v.format("%Y-%m-%d %H:%M:%S%.f+00"))),
+                Ok(None) => Ok("NULL".to_string()),
+                Err(e) => Err(decode_error(e)),
+            }
+        }
         PgColumnKind::Date => match row.try_get::<Option<chrono::NaiveDate>, _>(column_name) {
             Ok(Some(v)) => Ok(format!("'{}'", v.format("%Y-%m-%d"))),
             Ok(None) => Ok("NULL".to_string()),
@@ -406,8 +409,7 @@ fn format_pg_sql_value(row: &PgRow, column_name: &str, data_type: &str) -> Resul
                     Ok(raw) if raw.is_null() => Ok("NULL".to_string()),
                     Ok(raw) => match raw.as_bytes() {
                         Ok(bytes) => {
-                            let hex: String =
-                                bytes.iter().map(|b| format!("{:02x}", b)).collect();
+                            let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
                             Ok(format!("'\\x{}'", hex))
                         }
                         Err(err) => Err(anyhow!(
@@ -574,7 +576,10 @@ pub fn parse_csv(text: &str) -> Vec<Vec<CsvField>> {
 
     // 文件以换行结束时，残留记录为空，不追加多余行
     if !field.is_empty() || quoted || !record.is_empty() {
-        record.push(CsvField { value: field, quoted });
+        record.push(CsvField {
+            value: field,
+            quoted,
+        });
         records.push(record);
     }
 
@@ -587,8 +592,13 @@ mod tests {
 
     /// 用内存 writer 跑一遍流式写出，得到完整文本
     fn render(data: &TableExportData, format: ExportFormat) -> String {
-        let mut sink =
-            TableExportSink::new(Vec::new(), format, "t", data.columns.clone(), DriverKind::MySql);
+        let mut sink = TableExportSink::new(
+            Vec::new(),
+            format,
+            "t",
+            data.columns.clone(),
+            DriverKind::MySql,
+        );
         for row in &data.rows {
             sink.write_cells(row).unwrap();
         }
@@ -607,11 +617,26 @@ mod tests {
     fn sample() -> TableExportData {
         TableExportData {
             columns: vec![
-                ExportColumn { name: "id".into(), data_type: "int".into() },
-                ExportColumn { name: "name".into(), data_type: "varchar".into() },
-                ExportColumn { name: "note".into(), data_type: "text".into() },
-                ExportColumn { name: "created_at".into(), data_type: "datetime".into() },
-                ExportColumn { name: "score".into(), data_type: "decimal".into() },
+                ExportColumn {
+                    name: "id".into(),
+                    data_type: "int".into(),
+                },
+                ExportColumn {
+                    name: "name".into(),
+                    data_type: "varchar".into(),
+                },
+                ExportColumn {
+                    name: "note".into(),
+                    data_type: "text".into(),
+                },
+                ExportColumn {
+                    name: "created_at".into(),
+                    data_type: "datetime".into(),
+                },
+                ExportColumn {
+                    name: "score".into(),
+                    data_type: "decimal".into(),
+                },
             ],
             rows: vec![
                 vec![
@@ -635,7 +660,10 @@ mod tests {
     #[test]
     fn csv_neutralizes_formula_injection() {
         let data = TableExportData {
-            columns: vec![ExportColumn { name: "v".into(), data_type: "varchar".into() }],
+            columns: vec![ExportColumn {
+                name: "v".into(),
+                data_type: "varchar".into(),
+            }],
             rows: vec![
                 vec![CellValue::String("=HYPERLINK(\"http://evil\")".into())],
                 vec![CellValue::String("+1+1".into())],
@@ -681,7 +709,10 @@ mod tests {
     #[test]
     fn null_text_is_quoted_to_avoid_ambiguity() {
         let data = TableExportData {
-            columns: vec![ExportColumn { name: "v".into(), data_type: "varchar".into() }],
+            columns: vec![ExportColumn {
+                name: "v".into(),
+                data_type: "varchar".into(),
+            }],
             rows: vec![
                 vec![CellValue::String("NULL".into())],
                 vec![CellValue::Null],
@@ -702,7 +733,10 @@ mod tests {
         let id_pos = json.find("\"id\"").unwrap();
         let name_pos = json.find("\"name\"").unwrap();
         let note_pos = json.find("\"note\"").unwrap();
-        assert!(id_pos < name_pos && name_pos < note_pos, "JSON 字段必须保持列顺序");
+        assert!(
+            id_pos < name_pos && name_pos < note_pos,
+            "JSON 字段必须保持列顺序"
+        );
         assert!(json.contains("\"id\": 1"));
         assert!(json.contains("\"created_at\": \"2026-10-22 10:00:00\""));
         assert!(json.contains("\"score\": \"12.50\""));

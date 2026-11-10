@@ -89,12 +89,24 @@ pub struct PoolConfig {
     pub heartbeat_interval: u64,
 }
 
-fn default_max_connections() -> u32 { 10 }
-fn default_min_connections() -> u32 { 2 }
-fn default_connect_timeout() -> u64 { 10 }
-fn default_idle_timeout() -> u64 { 300 }
-fn default_max_lifetime() -> u64 { 1800 }
-fn default_heartbeat_interval() -> u64 { 30 }
+fn default_max_connections() -> u32 {
+    10
+}
+fn default_min_connections() -> u32 {
+    2
+}
+fn default_connect_timeout() -> u64 {
+    10
+}
+fn default_idle_timeout() -> u64 {
+    300
+}
+fn default_max_lifetime() -> u64 {
+    1800
+}
+fn default_heartbeat_interval() -> u64 {
+    30
+}
 
 impl Default for PoolConfig {
     fn default() -> Self {
@@ -138,7 +150,9 @@ pub struct SshConfig {
     pub passphrase: Option<String>,
 }
 
-fn default_ssh_port() -> u16 { 22 }
+fn default_ssh_port() -> u16 {
+    22
+}
 
 /// SSH 认证方式
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -484,7 +498,10 @@ mod tests {
         for (text, expected) in cases {
             let mode: SslMode = serde_json::from_str(&format!("\"{}\"", text)).unwrap();
             assert_eq!(mode, expected);
-            assert_eq!(serde_json::to_string(&mode).unwrap(), format!("\"{}\"", text));
+            assert_eq!(
+                serde_json::to_string(&mode).unwrap(),
+                format!("\"{}\"", text)
+            );
         }
     }
 
@@ -496,9 +513,18 @@ mod tests {
                           "cert_path":"/etc/mysql/client.pem","key_path":"/etc/mysql/client.key"}}"#;
         let config: ConnectionConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.ssl_config.mode, SslMode::VerifyCa);
-        assert_eq!(config.ssl_config.ca_path.as_deref(), Some("/etc/mysql/ca.pem"));
-        assert_eq!(config.ssl_config.cert_path.as_deref(), Some("/etc/mysql/client.pem"));
-        assert_eq!(config.ssl_config.key_path.as_deref(), Some("/etc/mysql/client.key"));
+        assert_eq!(
+            config.ssl_config.ca_path.as_deref(),
+            Some("/etc/mysql/ca.pem")
+        );
+        assert_eq!(
+            config.ssl_config.cert_path.as_deref(),
+            Some("/etc/mysql/client.pem")
+        );
+        assert_eq!(
+            config.ssl_config.key_path.as_deref(),
+            Some("/etc/mysql/client.key")
+        );
     }
 
     #[test]
@@ -511,7 +537,10 @@ mod tests {
         for (text, expected) in cases {
             let parsed: SshAuthType = serde_json::from_str(&format!("\"{}\"", text)).unwrap();
             assert_eq!(parsed, expected);
-            assert_eq!(serde_json::to_string(&parsed).unwrap(), format!("\"{}\"", text));
+            assert_eq!(
+                serde_json::to_string(&parsed).unwrap(),
+                format!("\"{}\"", text)
+            );
         }
     }
 

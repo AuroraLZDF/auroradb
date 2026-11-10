@@ -145,9 +145,7 @@ mod tests {
     async fn postgres_reports_feature_name_for_unmigrated_pool() {
         // 未迁移模块在 PG 下必须给出可读提示，而不是让 MySQL 语法错误暴露给用户
         let pool = PgPool::connect_lazy("postgres://user@localhost/db").unwrap();
-        let err = AnyPool::Postgres(pool)
-            .as_mysql("浏览表数据")
-            .unwrap_err();
+        let err = AnyPool::Postgres(pool).as_mysql("浏览表数据").unwrap_err();
         assert_eq!(
             err.to_string(),
             "「浏览表数据」尚未支持 PostgreSQL，将在后续批次提供"

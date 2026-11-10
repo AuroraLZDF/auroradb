@@ -347,25 +347,38 @@ fn first_keyword(sql: &str) -> String {
 /// 建表/删表后若不失效，界面刷新会拿到旧快照。
 pub fn is_schema_changing(sql: &str) -> bool {
     // 注释可能出现在 DDL 之前，直接 trim_start 会漏判；先剥离注释（保留可执行注释体）
-    let upper = strip_comments_keep_executable(sql).trim_start().to_uppercase();
+    let upper = strip_comments_keep_executable(sql)
+        .trim_start()
+        .to_uppercase();
     const PREFIXES: &[&str] = &[
         "CREATE TABLE",
         "CREATE TEMPORARY TABLE",
         "CREATE VIEW",
         "CREATE OR REPLACE VIEW",
+        "CREATE MATERIALIZED VIEW",
         "CREATE INDEX",
         "CREATE UNIQUE INDEX",
         "CREATE DATABASE",
         "CREATE SCHEMA",
+        "CREATE TRIGGER",
+        "CREATE FUNCTION",
+        "CREATE PROCEDURE",
         "ALTER TABLE",
         "ALTER VIEW",
+        "ALTER MATERIALIZED VIEW",
         "ALTER DATABASE",
         "ALTER SCHEMA",
         "DROP TABLE",
         "DROP VIEW",
+        "DROP MATERIALIZED VIEW",
         "DROP INDEX",
         "DROP DATABASE",
         "DROP SCHEMA",
+        "DROP TRIGGER",
+        "DROP FUNCTION",
+        "DROP PROCEDURE",
+        "REFRESH MATERIALIZED VIEW",
+        "COMMENT ON",
         "RENAME TABLE",
     ];
     PREFIXES.iter().any(|prefix| upper.starts_with(prefix))
@@ -583,8 +596,7 @@ mod tests {
 
     #[test]
     fn test_rewrite_simple_select() {
-        let (sql, parsed) =
-            rewrite_table_names("mydb", "SELECT * FROM users", DriverKind::MySql);
+        let (sql, parsed) = rewrite_table_names("mydb", "SELECT * FROM users", DriverKind::MySql);
         assert!(parsed);
         assert!(sql.contains("`mydb`.`users`"), "got: {sql}");
         assert!(!sql.contains("FROM users"), "got: {sql}");
@@ -648,8 +660,7 @@ mod tests {
 
     #[test]
     fn test_rewrite_truncate() {
-        let (sql, parsed) =
-            rewrite_table_names("mydb", "TRUNCATE TABLE users", DriverKind::MySql);
+        let (sql, parsed) = rewrite_table_names("mydb", "TRUNCATE TABLE users", DriverKind::MySql);
         assert!(parsed);
         assert!(sql.contains("`mydb`.`users`"), "got: {sql}");
     }
@@ -680,11 +691,8 @@ mod tests {
 
     #[test]
     fn test_rewrite_drop_table() {
-        let (sql, parsed) = rewrite_table_names(
-            "mydb",
-            "DROP TABLE IF EXISTS `users`",
-            DriverKind::MySql,
-        );
+        let (sql, parsed) =
+            rewrite_table_names("mydb", "DROP TABLE IF EXISTS `users`", DriverKind::MySql);
         assert!(parsed);
         assert!(sql.contains("`mydb`.`users`"), "got: {sql}");
     }
@@ -748,7 +756,10 @@ mod tests {
         assert_eq!(strip_sql_comments("SELECT 5--"), "SELECT 5--");
         // 后随空白或换行才是注释
         assert_eq!(strip_sql_comments("SELECT 1 -- note"), "SELECT 1 ");
-        assert_eq!(strip_sql_comments("SELECT 1 --\nFROM t"), "SELECT 1 \nFROM t");
+        assert_eq!(
+            strip_sql_comments("SELECT 1 --\nFROM t"),
+            "SELECT 1 \nFROM t"
+        );
         // `--` 后跟制表符同样算注释
         assert_eq!(strip_sql_comments("SELECT 1 --\tnote"), "SELECT 1 ");
     }
@@ -770,7 +781,10 @@ mod tests {
                    SELECT 3;\n";
         let statements = split_sql_statements(sql);
         assert_eq!(statements.len(), 2, "got: {statements:?}");
-        assert!(statements[0].starts_with("CREATE PROCEDURE p()"), "got: {statements:?}");
+        assert!(
+            statements[0].starts_with("CREATE PROCEDURE p()"),
+            "got: {statements:?}"
+        );
         assert!(statements[0].contains("SELECT 2;"), "got: {statements:?}");
         assert!(!statements[0].contains("DELIMITER"), "got: {statements:?}");
         assert_eq!(statements[1], "SELECT 3");
@@ -785,8 +799,14 @@ mod tests {
                    INSERT INTO t VALUES (1);";
         let statements = split_sql_statements(sql);
         assert_eq!(statements.len(), 2, "got: {statements:?}");
-        assert!(statements[0].starts_with("CREATE TRIGGER"), "got: {statements:?}");
-        assert!(statements[0].contains("SET NEW.a = 1;"), "got: {statements:?}");
+        assert!(
+            statements[0].starts_with("CREATE TRIGGER"),
+            "got: {statements:?}"
+        );
+        assert!(
+            statements[0].contains("SET NEW.a = 1;"),
+            "got: {statements:?}"
+        );
         assert_eq!(statements[1], "INSERT INTO t VALUES (1)");
     }
 
@@ -804,6 +824,15 @@ mod tests {
         assert!(!is_schema_changing("SELECT * FROM t"));
         assert!(!is_schema_changing("INSERT INTO t VALUES (1)"));
         assert!(!is_schema_changing("TRUNCATE TABLE t"));
+        // PostgreSQL 专有 DDL 同样要失效元数据缓存（对象树/表结构 30s TTL）
+        assert!(is_schema_changing(
+            "CREATE MATERIALIZED VIEW mv AS SELECT 1"
+        ));
+        assert!(is_schema_changing(
+            "DROP MATERIALIZED VIEW IF EXISTS mv"
+        ));
+        assert!(is_schema_changing("REFRESH MATERIALIZED VIEW mv"));
+        assert!(is_schema_changing("COMMENT ON TABLE t IS 'x'"));
         assert!(!is_schema_changing("/*!40101 SET NAMES utf8 */"));
     }
 
@@ -869,7 +898,10 @@ mod tests {
         );
         // 没有前置 USE，或 USE 出现在普通语句之后，都不改变目标库
         assert_eq!(leading_use_database("SELECT * FROM t"), None);
-        assert_eq!(leading_use_database("SELECT 1; USE db2; SELECT * FROM t"), None);
+        assert_eq!(
+            leading_use_database("SELECT 1; USE db2; SELECT * FROM t"),
+            None
+        );
     }
 
     #[test]

@@ -24,7 +24,14 @@ type TableMetaRow = (String, Option<i64>, Option<String>, Option<i64>);
 type ReferencingFkRow = (String, String, String, Option<String>, Option<String>);
 
 /// PG 引用外键查询的一行：约束名、子 schema、子表、子表列、DELETE_RULE、UPDATE_RULE
-type PgReferencingFkRow = (String, String, String, String, Option<String>, Option<String>);
+type PgReferencingFkRow = (
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+);
 
 /// PG 列信息查询的一行：列名、带修饰的类型、基础类型、atttypmod、是否非空、
 /// 默认值表达式、identity 标记（a=ALWAYS / d=BY DEFAULT）、列注释
@@ -313,11 +320,7 @@ async fn fetch_pg_indexes(pool: &PgPool, schema: &str, table: &str) -> Result<Ve
 }
 
 /// 取外键信息（多列外键按位置逐列展开）
-async fn fetch_pg_foreign_keys(
-    pool: &PgPool,
-    schema: &str,
-    table: &str,
-) -> Result<Vec<PgFkRow>> {
+async fn fetch_pg_foreign_keys(pool: &PgPool, schema: &str, table: &str) -> Result<Vec<PgFkRow>> {
     let foreign_keys: Vec<PgFkRow> = with_metadata_timeout(
         sqlx::query_as::<_, PgFkRow>(
             "SELECT con.conname::text, att.attname::text,
@@ -390,7 +393,16 @@ fn map_pg_column_infos(
     columns
         .iter()
         .map(
-            |(name, _column_type, base_type, typmod, not_null, default_value, identity, comment)| {
+            |(
+                name,
+                _column_type,
+                base_type,
+                typmod,
+                not_null,
+                default_value,
+                identity,
+                comment,
+            )| {
                 let (length, decimals) = parse_pg_type_precision(base_type, *typmod);
                 TableColumnInfo {
                     name: name.clone(),
@@ -453,8 +465,8 @@ impl ConnectionManager {
 
         if let Some(db) = database {
             // 获取表 - 按字母顺序排序，顺带取自增值/修改时间/占用空间供中间面板展示
-            let tables: Vec<TableMetaRow> =
-                with_metadata_timeout(sqlx::query_as(
+            let tables: Vec<TableMetaRow> = with_metadata_timeout(
+                sqlx::query_as(
                     "SELECT TABLE_NAME,
                             CAST(AUTO_INCREMENT AS SIGNED),
                             CAST(UPDATE_TIME AS CHAR),
@@ -464,8 +476,9 @@ impl ConnectionManager {
                      ORDER BY TABLE_NAME ASC",
                 )
                 .bind(db)
-                .fetch_all(pool))
-                .await?;
+                .fetch_all(pool),
+            )
+            .await?;
 
             for (table_name, auto_increment, updated_at, size_bytes) in tables {
                 objects.push(DatabaseObject {
@@ -481,13 +494,15 @@ impl ConnectionManager {
             }
 
             // 获取视图 - 按字母顺序排序
-            let views: Vec<(String,)> = with_metadata_timeout(sqlx::query_as(
-                "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES 
+            let views: Vec<(String,)> = with_metadata_timeout(
+                sqlx::query_as(
+                    "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES 
                  WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'VIEW'
                  ORDER BY TABLE_NAME ASC",
+                )
+                .bind(db)
+                .fetch_all(pool),
             )
-            .bind(db)
-            .fetch_all(pool))
             .await?;
 
             for (view_name,) in views {
@@ -520,7 +535,11 @@ impl ConnectionManager {
                 } else {
                     ObjectType::Procedure
                 };
-                let prefix = if object_type == ObjectType::Function { "func" } else { "proc" };
+                let prefix = if object_type == ObjectType::Function {
+                    "func"
+                } else {
+                    "proc"
+                };
                 objects.push(DatabaseObject {
                     id: format!("{}:{}.{}", prefix, db, routine_name),
                     name: routine_name,
@@ -606,7 +625,10 @@ impl ConnectionManager {
 
         conn.metadata_cache.lock().await.insert(
             cache_key,
-            (Instant::now(), MetadataCacheValue::ObjectTree(objects.clone())),
+            (
+                Instant::now(),
+                MetadataCacheValue::ObjectTree(objects.clone()),
+            ),
         );
 
         Ok(objects)
@@ -632,17 +654,16 @@ impl ConnectionManager {
             let conn = connections
                 .get(connection_id)
                 .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
-            let cached = conn
-                .metadata_cache
-                .lock()
-                .await
-                .get(&cache_key)
-                .and_then(|(at, value)| match value {
-                    MetadataCacheValue::ObjectTree(objects) if at.elapsed() < METADATA_CACHE_TTL => {
+            let cached = conn.metadata_cache.lock().await.get(&cache_key).and_then(
+                |(at, value)| match value {
+                    MetadataCacheValue::ObjectTree(objects)
+                        if at.elapsed() < METADATA_CACHE_TTL =>
+                    {
                         Some(objects.clone())
                     }
                     _ => None,
-                });
+                },
+            );
             cached
         };
         if let Some(objects) = cached {
@@ -656,28 +677,32 @@ impl ConnectionManager {
                 let pool = self.pg_pool_for(connection_id, db).await?;
 
                 // table_type 分两段查询，保持「表在前、视图在后」的顺序
-                let tables: Vec<(String, String)> = with_metadata_timeout(sqlx::query_as(
-                    "SELECT table_schema, table_name FROM information_schema.tables
+                let tables: Vec<(String, String)> = with_metadata_timeout(
+                    sqlx::query_as(
+                        "SELECT table_schema, table_name FROM information_schema.tables
                      WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
                        AND table_schema NOT LIKE 'pg\\_%'
                        AND table_type = 'BASE TABLE'
                      ORDER BY (table_schema = 'public') DESC, table_schema ASC, table_name ASC",
+                    )
+                    .fetch_all(&pool),
                 )
-                .fetch_all(&pool))
                 .await?;
 
                 for (schema, table_name) in tables {
                     objects.push(pg_object(db, &schema, &table_name, ObjectType::Table));
                 }
 
-                let views: Vec<(String, String)> = with_metadata_timeout(sqlx::query_as(
-                    "SELECT table_schema, table_name FROM information_schema.tables
+                let views: Vec<(String, String)> = with_metadata_timeout(
+                    sqlx::query_as(
+                        "SELECT table_schema, table_name FROM information_schema.tables
                      WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
                        AND table_schema NOT LIKE 'pg\\_%'
                        AND table_type = 'VIEW'
                      ORDER BY (table_schema = 'public') DESC, table_schema ASC, table_name ASC",
+                    )
+                    .fetch_all(&pool),
                 )
-                .fetch_all(&pool))
                 .await?;
 
                 for (schema, view_name) in views {
@@ -735,12 +760,14 @@ impl ConnectionManager {
             None => {
                 // 第一层为真实数据库：排除模板库与不允许连接的库
                 let (pool, _) = self.pg_main_pool(connection_id).await?;
-                let databases: Vec<(String,)> = with_metadata_timeout(sqlx::query_as(
-                    "SELECT datname FROM pg_database
+                let databases: Vec<(String,)> = with_metadata_timeout(
+                    sqlx::query_as(
+                        "SELECT datname FROM pg_database
                      WHERE datistemplate = false AND datallowconn = true
                      ORDER BY datname ASC",
+                    )
+                    .fetch_all(&pool),
                 )
-                .fetch_all(&pool))
                 .await?;
 
                 for (db_name,) in databases {
@@ -762,7 +789,10 @@ impl ConnectionManager {
         if let Some(conn) = connections.get(connection_id) {
             conn.metadata_cache.lock().await.insert(
                 cache_key,
-                (Instant::now(), MetadataCacheValue::ObjectTree(objects.clone())),
+                (
+                    Instant::now(),
+                    MetadataCacheValue::ObjectTree(objects.clone()),
+                ),
             );
         }
 
@@ -918,12 +948,13 @@ impl ConnectionManager {
         connection_id: &str,
         database: &str,
     ) -> Result<SchemaSnapshot> {
-        validate_identifier(database)
-            .map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
+        validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
 
         // PG 的 database 只是连接目标，元数据分散在多个 schema 中，走独立实现
         if self.driver_of(connection_id).await? == DriverKind::Postgres {
-            return self.get_postgres_schema_snapshot(connection_id, database).await;
+            return self
+                .get_postgres_schema_snapshot(connection_id, database)
+                .await;
         }
 
         let connections = self.connections.read().await;
@@ -1139,8 +1170,8 @@ impl ConnectionManager {
             }
         }
 
-        for (constraint, child_table, child_schema, column, ref_schema, ref_table, ref_column)
-            in fk_rows
+        for (constraint, child_table, child_schema, column, ref_schema, ref_table, ref_column) in
+            fk_rows
         {
             let child_display = pg_display_name(&child_schema, &child_table);
             if let Some(index) = by_name.get(&child_display) {
@@ -1182,10 +1213,8 @@ impl ConnectionManager {
         table: &str,
     ) -> Result<TableStructure> {
         // 输入验证
-        validate_identifier(database)
-            .map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
-        validate_identifier(table)
-            .map_err(|e| anyhow!("表名验证失败: {}", e))?;
+        validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
+        validate_identifier(table).map_err(|e| anyhow!("表名验证失败: {}", e))?;
 
         if self.driver_of(connection_id).await? == DriverKind::Postgres {
             return self
@@ -1194,10 +1223,13 @@ impl ConnectionManager {
         }
 
         let connections = self.connections.read().await;
-        let conn = connections.get(connection_id)
+        let conn = connections
+            .get(connection_id)
             .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
 
-        let pool = conn.pool.as_ref()
+        let pool = conn
+            .pool
+            .as_ref()
             .ok_or_else(|| anyhow!("连接尚未建立"))?
             .as_mysql("表结构")?;
 
@@ -1212,15 +1244,28 @@ impl ConnectionManager {
         }
 
         // 获取表的基本信息
-        let table_info = with_metadata_timeout(sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, String)>(
-            "SELECT TABLE_NAME, ENGINE, TABLE_COLLATION, TABLE_COMMENT, 
+        let table_info = with_metadata_timeout(
+            sqlx::query_as::<
+                _,
+                (
+                    String,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                    String,
+                ),
+            >(
+                "SELECT TABLE_NAME, ENGINE, TABLE_COLLATION, TABLE_COMMENT, 
              CAST(CREATE_TIME AS CHAR), CAST(UPDATE_TIME AS CHAR), CAST(TABLE_ROWS AS CHAR)
              FROM INFORMATION_SCHEMA.TABLES
-             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?"
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
+            )
+            .bind(database)
+            .bind(table)
+            .fetch_one(pool),
         )
-        .bind(database)
-        .bind(table)
-        .fetch_one(pool))
         .await?;
 
         // 获取列信息
@@ -1237,65 +1282,70 @@ impl ConnectionManager {
         .fetch_all(pool))
         .await?;
 
-        let column_info: Vec<TableColumnInfo> = columns.iter().map(|col| {
-            let is_auto_increment = col.5.to_lowercase().contains("auto_increment");
-            let on_update_current_timestamp = col.5.to_lowercase().contains("on update");
+        let column_info: Vec<TableColumnInfo> = columns
+            .iter()
+            .map(|col| {
+                let is_auto_increment = col.5.to_lowercase().contains("auto_increment");
+                let on_update_current_timestamp = col.5.to_lowercase().contains("on update");
 
-            // 从 COLUMN_TYPE（如 decimal(10,2)、int(11) unsigned）解析精度/小数位/显示宽度。
-            let data_type = col.1.clone();
-            let lower_type = data_type.to_lowercase();
-            let has_precision = matches!(
-                lower_type.as_str(),
-                "decimal" | "numeric" | "float" | "double" | "real"
-            );
-            let is_integer = matches!(
-                lower_type.as_str(),
-                "tinyint" | "smallint" | "mediumint" | "int" | "integer" | "bigint"
-            );
+                // 从 COLUMN_TYPE（如 decimal(10,2)、int(11) unsigned）解析精度/小数位/显示宽度。
+                let data_type = col.1.clone();
+                let lower_type = data_type.to_lowercase();
+                let has_precision = matches!(
+                    lower_type.as_str(),
+                    "decimal" | "numeric" | "float" | "double" | "real"
+                );
+                let is_integer = matches!(
+                    lower_type.as_str(),
+                    "tinyint" | "smallint" | "mediumint" | "int" | "integer" | "bigint"
+                );
 
-            let (length, decimals) = if has_precision || is_integer {
-                parse_column_type_precision(&col.2)
-            } else {
-                let length = if col.7.is_empty() || col.7 == "0" {
-                    None
+                let (length, decimals) = if has_precision || is_integer {
+                    parse_column_type_precision(&col.2)
                 } else {
-                    col.7.parse::<u32>().ok()
+                    let length = if col.7.is_empty() || col.7 == "0" {
+                        None
+                    } else {
+                        col.7.parse::<u32>().ok()
+                    };
+                    (length, None)
                 };
-                (length, None)
-            };
 
-            // 无符号标识只出现在 COLUMN_TYPE 中，如 int(11) unsigned
-            let unsigned = col.2.to_lowercase().contains("unsigned");
+                // 无符号标识只出现在 COLUMN_TYPE 中，如 int(11) unsigned
+                let unsigned = col.2.to_lowercase().contains("unsigned");
 
-            TableColumnInfo {
-                name: col.0.clone(),
-                data_type,
-                length,
-                decimals,
-                is_nullable: col.3 == "YES",
-                default_value: col.4.clone(),
-                is_auto_increment,
-                is_primary: false, // Will be set later from indexes
-                unsigned,
-                on_update_current_timestamp,
-                comment: match &col.6 {
-                    Some(s) if !s.is_empty() => Some(s.clone()),
-                    _ => None,
-                },
-            }
-        }).collect();
+                TableColumnInfo {
+                    name: col.0.clone(),
+                    data_type,
+                    length,
+                    decimals,
+                    is_nullable: col.3 == "YES",
+                    default_value: col.4.clone(),
+                    is_auto_increment,
+                    is_primary: false, // Will be set later from indexes
+                    unsigned,
+                    on_update_current_timestamp,
+                    comment: match &col.6 {
+                        Some(s) if !s.is_empty() => Some(s.clone()),
+                        _ => None,
+                    },
+                }
+            })
+            .collect();
 
         // 获取索引信息
         // 使用 CAST 将数值转为字符串，兼容不同 MySQL 版本
-        let indexes = with_metadata_timeout(sqlx::query_as::<_, (String, String, String, String, i64)>(
-            "SELECT INDEX_NAME, COLUMN_NAME, INDEX_TYPE, CAST(SEQ_IN_INDEX AS CHAR), NON_UNIQUE
+        let indexes = with_metadata_timeout(
+            sqlx::query_as::<_, (String, String, String, String, i64)>(
+                "SELECT INDEX_NAME, COLUMN_NAME, INDEX_TYPE, CAST(SEQ_IN_INDEX AS CHAR), NON_UNIQUE
              FROM INFORMATION_SCHEMA.STATISTICS
              WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
-             ORDER BY INDEX_NAME, SEQ_IN_INDEX"
+             ORDER BY INDEX_NAME, SEQ_IN_INDEX",
+            )
+            .bind(database)
+            .bind(table)
+            .fetch_all(pool),
         )
-        .bind(database)
-        .bind(table)
-        .fetch_all(pool))
         .await?;
 
         let mut index_map: HashMap<String, (String, Vec<String>, bool)> = HashMap::new();
@@ -1313,15 +1363,18 @@ impl ConnectionManager {
             }
         }
 
-        let index_info: Vec<TableIndexInfo> = index_map.into_iter().map(|(name, (ty, cols, unique))| {
-            let name_clone = name.clone();
-            TableIndexInfo {
-                name,
-                r#type: ty,
-                columns: cols,
-                is_unique: unique || name_clone == "PRIMARY",
-            }
-        }).collect();
+        let index_info: Vec<TableIndexInfo> = index_map
+            .into_iter()
+            .map(|(name, (ty, cols, unique))| {
+                let name_clone = name.clone();
+                TableIndexInfo {
+                    name,
+                    r#type: ty,
+                    columns: cols,
+                    is_unique: unique || name_clone == "PRIMARY",
+                }
+            })
+            .collect();
 
         // 标记主键列
         let mut columns_with_pk = column_info.clone();
@@ -1340,8 +1393,9 @@ impl ConnectionManager {
         // 获取外键信息 - 从 REFERENTIAL_CONSTRAINTS 获取更新/删除规则
         // REFERENCED_TABLE_NAME IS NOT NULL 已足够识别外键，不再按约束名前缀过滤，
         // 避免漏掉命名不规范（非 fk_ 前缀）的外键约束。
-        let foreign_keys = with_metadata_timeout(sqlx::query_as::<_, (String, String, String, String)>(
-            "SELECT 
+        let foreign_keys = with_metadata_timeout(
+            sqlx::query_as::<_, (String, String, String, String)>(
+                "SELECT 
                 kcu.CONSTRAINT_NAME, 
                 kcu.COLUMN_NAME, 
                 kcu.REFERENCED_TABLE_NAME,
@@ -1349,26 +1403,29 @@ impl ConnectionManager {
              FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
              WHERE kcu.TABLE_SCHEMA = ? 
                AND kcu.TABLE_NAME = ?
-               AND kcu.REFERENCED_TABLE_NAME IS NOT NULL"
+               AND kcu.REFERENCED_TABLE_NAME IS NOT NULL",
+            )
+            .bind(database)
+            .bind(table)
+            .fetch_all(pool),
         )
-        .bind(database)
-        .bind(table)
-        .fetch_all(pool))
         .await?;
 
         // 获取外键的更新/删除规则
         let mut fk_info: Vec<TableForeignKeyInfo> = Vec::new();
         for fk in &foreign_keys {
             // 尝试获取外键约束的详细信息
-            let fk_detail = with_metadata_timeout(sqlx::query_as::<_, (Option<String>, Option<String>)>(
-                "SELECT rc.DELETE_RULE, rc.UPDATE_RULE
+            let fk_detail = with_metadata_timeout(
+                sqlx::query_as::<_, (Option<String>, Option<String>)>(
+                    "SELECT rc.DELETE_RULE, rc.UPDATE_RULE
                  FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS rc
                  WHERE rc.CONSTRAINT_SCHEMA = ?
-                   AND rc.CONSTRAINT_NAME = ?"
+                   AND rc.CONSTRAINT_NAME = ?",
+                )
+                .bind(database)
+                .bind(&fk.0)
+                .fetch_optional(pool),
             )
-            .bind(database)
-            .bind(&fk.0)
-            .fetch_optional(pool))
             .await
             // 不能静默回落 RESTRICT：会把 CASCADE / SET NULL 误报成 RESTRICT
             .map_err(|e| anyhow!("查询外键 {} 的更新/删除规则失败: {}", fk.0, e))?;
@@ -1376,9 +1433,9 @@ impl ConnectionManager {
             let (on_delete, on_update) = match fk_detail {
                 Some(d) => (
                     d.0.unwrap_or_else(|| "RESTRICT".to_string()),
-                    d.1.unwrap_or_else(|| "RESTRICT".to_string())
+                    d.1.unwrap_or_else(|| "RESTRICT".to_string()),
                 ),
-                None => ("RESTRICT".to_string(), "RESTRICT".to_string())
+                None => ("RESTRICT".to_string(), "RESTRICT".to_string()),
             };
 
             fk_info.push(TableForeignKeyInfo {
@@ -1392,41 +1449,44 @@ impl ConnectionManager {
         }
 
         // 获取建表语句 - SHOW CREATE TABLE 返回两列: Table 和 Create Table
-        let create_stmt = with_metadata_timeout(sqlx::query_as::<_, (String, String)>(
-            &format!("SHOW CREATE TABLE `{}`.`{}`", database, table)
+        let create_stmt = with_metadata_timeout(
+            sqlx::query_as::<_, (String, String)>(&format!(
+                "SHOW CREATE TABLE `{}`.`{}`",
+                database, table
+            ))
+            .fetch_one(pool),
         )
-        .fetch_one(pool))
         .await?;
 
         // 获取表大小信息
         // 使用 CAST 将数值转为字符串，兼容不同 MySQL 版本
-        let size_info = with_metadata_timeout(sqlx::query_as::<_, (Option<String>, Option<String>)>(
-            "SELECT CAST(DATA_LENGTH AS CHAR), CAST(INDEX_LENGTH AS CHAR)
+        let size_info = with_metadata_timeout(
+            sqlx::query_as::<_, (Option<String>, Option<String>)>(
+                "SELECT CAST(DATA_LENGTH AS CHAR), CAST(INDEX_LENGTH AS CHAR)
              FROM INFORMATION_SCHEMA.TABLES
-             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?"
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
+            )
+            .bind(database)
+            .bind(table)
+            .fetch_one(pool),
         )
-        .bind(database)
-        .bind(table)
-        .fetch_one(pool))
         .await?;
 
         // 解析时间
-        let parse_time = |opt: Option<String>| -> Option<String> {
-            opt.filter(|s| !s.is_empty())
-        };
+        let parse_time = |opt: Option<String>| -> Option<String> { opt.filter(|s| !s.is_empty()) };
 
         // 解析行数
-        let row_count = if table_info.6.is_empty() { 
-            None 
-        } else { 
-            table_info.6.parse::<u64>().ok() 
+        let row_count = if table_info.6.is_empty() {
+            None
+        } else {
+            table_info.6.parse::<u64>().ok()
         };
 
         // 从排序规则解析字符集
         let charset = table_info.2.as_ref().and_then(|s| {
-            if s.is_empty() { 
-                None 
-            } else { 
+            if s.is_empty() {
+                None
+            } else {
                 // utf8mb4_unicode_ci -> utf8mb4
                 s.split('_').next().map(|c| c.to_string())
             }
@@ -1449,7 +1509,10 @@ impl ConnectionManager {
 
         conn.metadata_cache.lock().await.insert(
             cache_key,
-            (Instant::now(), MetadataCacheValue::TableStructure(Box::new(structure.clone()))),
+            (
+                Instant::now(),
+                MetadataCacheValue::TableStructure(Box::new(structure.clone())),
+            ),
         );
 
         Ok(structure)
@@ -1489,7 +1552,10 @@ impl ConnectionManager {
         let pool = self.pg_pool_for(connection_id, database).await?;
 
         // 视图与表走不同 catalog：视图没有索引/外键/占用空间，定义来自 pg_get_viewdef
-        match fetch_pg_relkind(&pool, &schema, &table_name).await?.as_deref() {
+        match fetch_pg_relkind(&pool, &schema, &table_name)
+            .await?
+            .as_deref()
+        {
             Some("v") => {
                 let columns = fetch_pg_columns(&pool, &schema, &table_name).await?;
                 let create_statement = fetch_pg_view_statement(&pool, &schema, &table_name).await?;
@@ -1563,14 +1629,16 @@ impl ConnectionManager {
 
         let index_infos: Vec<TableIndexInfo> = indexes
             .iter()
-            .map(|(name, access_method, is_unique, _is_primary, _is_partial, _has_expr, columns)| {
-                TableIndexInfo {
-                    name: name.clone(),
-                    r#type: access_method.clone(),
-                    columns: columns.clone(),
-                    is_unique: *is_unique,
-                }
-            })
+            .map(
+                |(name, access_method, is_unique, _is_primary, _is_partial, _has_expr, columns)| {
+                    TableIndexInfo {
+                        name: name.clone(),
+                        r#type: access_method.clone(),
+                        columns: columns.clone(),
+                        is_unique: *is_unique,
+                    }
+                },
+            )
             .collect();
 
         let fk_infos: Vec<TableForeignKeyInfo> = foreign_keys
@@ -1635,12 +1703,9 @@ impl ConnectionManager {
         table: &str,
         column: &str,
     ) -> Result<Vec<TableForeignKeyInfo>> {
-        validate_identifier(database)
-            .map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
-        validate_identifier(table)
-            .map_err(|e| anyhow!("表名验证失败: {}", e))?;
-        validate_identifier(column)
-            .map_err(|e| anyhow!("列名验证失败: {}", e))?;
+        validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
+        validate_identifier(table).map_err(|e| anyhow!("表名验证失败: {}", e))?;
+        validate_identifier(column).map_err(|e| anyhow!("列名验证失败: {}", e))?;
 
         if self.driver_of(connection_id).await? == DriverKind::Postgres {
             return self
@@ -1658,8 +1723,8 @@ impl ConnectionManager {
             .ok_or_else(|| anyhow!("连接尚未建立"))?
             .as_mysql("外键引用查询")?;
 
-        let rows: Vec<ReferencingFkRow> =
-            with_metadata_timeout(sqlx::query_as(
+        let rows: Vec<ReferencingFkRow> = with_metadata_timeout(
+            sqlx::query_as(
                 "SELECT kcu.CONSTRAINT_NAME, kcu.TABLE_NAME, kcu.COLUMN_NAME,
                         rc.DELETE_RULE, rc.UPDATE_RULE
                  FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
@@ -1674,8 +1739,9 @@ impl ConnectionManager {
             .bind(database)
             .bind(table)
             .bind(column)
-            .fetch_all(pool))
-            .await?;
+            .fetch_all(pool),
+        )
+        .await?;
 
         Ok(rows
             .into_iter()
@@ -1706,8 +1772,8 @@ impl ConnectionManager {
         };
         let pool = self.pg_pool_for(connection_id, database).await?;
 
-        let rows: Vec<PgReferencingFkRow> =
-            with_metadata_timeout(sqlx::query_as(
+        let rows: Vec<PgReferencingFkRow> = with_metadata_timeout(
+            sqlx::query_as(
                 "SELECT tc.constraint_name, kcu.table_schema, kcu.table_name, kcu.column_name,
                         rc.delete_rule, rc.update_rule
                  FROM information_schema.table_constraints tc
@@ -1729,8 +1795,9 @@ impl ConnectionManager {
             .bind(&schema)
             .bind(&table_name)
             .bind(column)
-            .fetch_all(&pool))
-            .await?;
+            .fetch_all(&pool),
+        )
+        .await?;
 
         Ok(rows
             .into_iter()
@@ -1756,14 +1823,19 @@ impl ConnectionManager {
         database: &str,
     ) -> Result<DatabaseInfo> {
         if self.driver_of(connection_id).await? == DriverKind::Postgres {
-            return self.get_postgres_database_info(connection_id, database).await;
+            return self
+                .get_postgres_database_info(connection_id, database)
+                .await;
         }
 
         let connections = self.connections.read().await;
-        let conn = connections.get(connection_id)
+        let conn = connections
+            .get(connection_id)
             .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
 
-        let pool = conn.pool.as_ref()
+        let pool = conn
+            .pool
+            .as_ref()
             .ok_or_else(|| anyhow!("连接尚未建立"))?
             .as_mysql("数据库信息")?;
 
@@ -1782,13 +1854,15 @@ impl ConnectionManager {
 
         // 获取数据库大小
         // 使用 CAST 将数值转为字符串，兼容不同 MySQL 版本
-        let size_info = with_metadata_timeout(sqlx::query_as::<_, (Option<String>, Option<String>)>(
-            "SELECT CAST(SUM(DATA_LENGTH) AS CHAR), CAST(SUM(INDEX_LENGTH) AS CHAR)
+        let size_info = with_metadata_timeout(
+            sqlx::query_as::<_, (Option<String>, Option<String>)>(
+                "SELECT CAST(SUM(DATA_LENGTH) AS CHAR), CAST(SUM(INDEX_LENGTH) AS CHAR)
              FROM INFORMATION_SCHEMA.TABLES
-             WHERE TABLE_SCHEMA = ?"
+             WHERE TABLE_SCHEMA = ?",
+            )
+            .bind(database)
+            .fetch_one(pool),
         )
-        .bind(database)
-        .fetch_one(pool))
         .await;
 
         // 查询失败时保持「未知」（界面显示 `-`），不能伪装成 0 字节
@@ -1951,7 +2025,11 @@ mod tests {
         let scoped = format!("qa_meta_scoped_{}", suffix);
 
         manager
-            .execute(&id, &db, &format!("DROP SCHEMA IF EXISTS {} CASCADE", schema))
+            .execute(
+                &id,
+                &db,
+                &format!("DROP SCHEMA IF EXISTS {} CASCADE", schema),
+            )
             .await
             .unwrap();
         manager
@@ -2005,9 +2083,7 @@ mod tests {
             .execute(
                 &id,
                 &db,
-                &format!(
-                    "INSERT INTO {parent} (code, amount) VALUES ('c1', 1.50), ('c2', 2.50)"
-                ),
+                &format!("INSERT INTO {parent} (code, amount) VALUES ('c1', 1.50), ('c2', 2.50)"),
             )
             .await
             .unwrap();
@@ -2016,7 +2092,10 @@ mod tests {
             .await
             .unwrap();
 
-        let structure = manager.get_table_structure(&id, &db, &parent).await.unwrap();
+        let structure = manager
+            .get_table_structure(&id, &db, &parent)
+            .await
+            .unwrap();
 
         // 表级属性：PG 无 engine/创建时间，字符集沿用数据库
         assert!(structure.engine.is_none(), "PG 不应返回存储引擎");
@@ -2111,10 +2190,7 @@ mod tests {
 
         let child_ddl = &child_structure.create_statement;
         assert!(child_ddl.contains("FOREIGN KEY (\"parent_id\")"));
-        assert!(child_ddl.contains(&format!(
-            "REFERENCES \"public\".\"{}\" (\"id\")",
-            parent
-        )));
+        assert!(child_ddl.contains(&format!("REFERENCES \"public\".\"{}\" (\"id\")", parent)));
         assert!(child_ddl.contains("ON DELETE CASCADE"));
 
         // 非 public schema：用「schema.table」展示名访问
@@ -2137,10 +2213,9 @@ mod tests {
             .get_table_structure(&id, &db, &format!("{}.{}", schema, scoped))
             .await
             .unwrap();
-        assert!(scoped_structure.create_statement.contains(&format!(
-            "CREATE TABLE \"{}\".\"{}\"",
-            schema, scoped
-        )));
+        assert!(scoped_structure
+            .create_statement
+            .contains(&format!("CREATE TABLE \"{}\".\"{}\"", schema, scoped)));
         assert_eq!(scoped_structure.columns.len(), 2);
 
         // 不存在的表给出明确错误
@@ -2155,11 +2230,19 @@ mod tests {
             .await
             .unwrap();
         manager
-            .execute(&id, &db, &format!("DROP TABLE IF EXISTS {} CASCADE", parent))
+            .execute(
+                &id,
+                &db,
+                &format!("DROP TABLE IF EXISTS {} CASCADE", parent),
+            )
             .await
             .unwrap();
         manager
-            .execute(&id, &db, &format!("DROP SCHEMA IF EXISTS {} CASCADE", schema))
+            .execute(
+                &id,
+                &db,
+                &format!("DROP SCHEMA IF EXISTS {} CASCADE", schema),
+            )
             .await
             .unwrap();
     }
@@ -2178,7 +2261,11 @@ mod tests {
         let scoped = format!("qa_snap_scoped_{}", suffix);
 
         manager
-            .execute(&id, &db, &format!("DROP SCHEMA IF EXISTS {} CASCADE", schema))
+            .execute(
+                &id,
+                &db,
+                &format!("DROP SCHEMA IF EXISTS {} CASCADE", schema),
+            )
             .await
             .unwrap();
         manager
@@ -2271,11 +2358,19 @@ mod tests {
             .await
             .unwrap();
         manager
-            .execute(&id, &db, &format!("DROP TABLE IF EXISTS {} CASCADE", parent))
+            .execute(
+                &id,
+                &db,
+                &format!("DROP TABLE IF EXISTS {} CASCADE", parent),
+            )
             .await
             .unwrap();
         manager
-            .execute(&id, &db, &format!("DROP SCHEMA IF EXISTS {} CASCADE", schema))
+            .execute(
+                &id,
+                &db,
+                &format!("DROP SCHEMA IF EXISTS {} CASCADE", schema),
+            )
             .await
             .unwrap();
     }
@@ -2308,7 +2403,10 @@ mod tests {
 
         let info = manager.get_database_info(&id, &db).await.unwrap();
         assert_eq!(info.name, db);
-        assert!(info.charset.as_deref().is_some_and(|value| !value.is_empty()));
+        assert!(info
+            .charset
+            .as_deref()
+            .is_some_and(|value| !value.is_empty()));
         assert!(info
             .collation
             .as_deref()
@@ -2342,11 +2440,7 @@ mod tests {
         let scoped_view = format!("qa_def_scoped_view_{}", suffix);
 
         manager
-            .execute(
-                &id,
-                &db,
-                &format!("DROP SCHEMA IF EXISTS {schema} CASCADE"),
-            )
+            .execute(&id, &db, &format!("DROP SCHEMA IF EXISTS {schema} CASCADE"))
             .await
             .unwrap();
         manager
@@ -2458,16 +2552,12 @@ mod tests {
             .get_object_definition(&id, &db, Some(&schema), &scoped_view, ObjectType::View)
             .await
             .unwrap();
-        assert!(scoped_ddl.starts_with(&format!(
-            "CREATE VIEW \"{schema}\".\"{scoped_view}\" AS"
-        )));
+        assert!(scoped_ddl.starts_with(&format!("CREATE VIEW \"{schema}\".\"{scoped_view}\" AS")));
         let scoped_table_ddl = manager
             .get_object_definition(&id, &db, Some(&schema), &scoped_table, ObjectType::Table)
             .await
             .unwrap();
-        assert!(scoped_table_ddl.contains(&format!(
-            "CREATE TABLE \"{schema}\".\"{scoped_table}\""
-        )));
+        assert!(scoped_table_ddl.contains(&format!("CREATE TABLE \"{schema}\".\"{scoped_table}\"")));
 
         // 不存在的表/视图：明确报错
         let missing = manager
@@ -2513,11 +2603,7 @@ mod tests {
             .await
             .unwrap();
         manager
-            .execute(
-                &id,
-                &db,
-                &format!("DROP SCHEMA IF EXISTS {schema} CASCADE"),
-            )
+            .execute(&id, &db, &format!("DROP SCHEMA IF EXISTS {schema} CASCADE"))
             .await
             .unwrap();
     }

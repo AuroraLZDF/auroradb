@@ -126,7 +126,7 @@ pub fn convert_value(
                     value |= (byte as u64) << ((v.len() - 1 - i) * 8);
                 }
                 Ok(CellValue::Integer(value as i64))
-            },
+            }
             Ok(None) => Ok(CellValue::Null),
             Err(e) => Err(fail(&e)),
         },
@@ -149,7 +149,7 @@ pub fn convert_value(
                             value |= (byte as u64) << ((v.len() - 1 - i) * 8);
                         }
                         Ok(CellValue::String(value.to_string()))
-                    },
+                    }
                     Ok(None) => Ok(CellValue::Null),
                     Err(e1) => Err(fail(&e1)),
                 }
@@ -181,7 +181,9 @@ pub fn convert_value(
         },
         ColumnKind::Timestamp => {
             match row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(index) {
-                Ok(Some(v)) => Ok(CellValue::DateTime(v.format("%Y-%m-%d %H:%M:%S%.f").to_string())),
+                Ok(Some(v)) => Ok(CellValue::DateTime(
+                    v.format("%Y-%m-%d %H:%M:%S%.f").to_string(),
+                )),
                 Ok(None) => Ok(CellValue::Null),
                 Err(e0) => {
                     tracing::debug!("Timestamp 按类型读取失败，尝试按字符串读取: {}", e0);
@@ -192,18 +194,18 @@ pub fn convert_value(
                     }
                 }
             }
-        },
-        ColumnKind::DateTime => {
-            match row.try_get::<Option<chrono::NaiveDateTime>, _>(index) {
-                Ok(Some(v)) => Ok(CellValue::DateTime(v.format("%Y-%m-%d %H:%M:%S%.f").to_string())),
-                Ok(None) => Ok(CellValue::Null),
-                Err(e0) => {
-                    tracing::debug!("DateTime 按类型读取失败，尝试按字符串读取: {}", e0);
-                    match row.try_get::<Option<String>, _>(index) {
-                        Ok(Some(v)) => Ok(CellValue::DateTime(v)),
-                        Ok(None) => Ok(CellValue::Null),
-                        Err(e1) => Err(fail(&e1)),
-                    }
+        }
+        ColumnKind::DateTime => match row.try_get::<Option<chrono::NaiveDateTime>, _>(index) {
+            Ok(Some(v)) => Ok(CellValue::DateTime(
+                v.format("%Y-%m-%d %H:%M:%S%.f").to_string(),
+            )),
+            Ok(None) => Ok(CellValue::Null),
+            Err(e0) => {
+                tracing::debug!("DateTime 按类型读取失败，尝试按字符串读取: {}", e0);
+                match row.try_get::<Option<String>, _>(index) {
+                    Ok(Some(v)) => Ok(CellValue::DateTime(v)),
+                    Ok(None) => Ok(CellValue::Null),
+                    Err(e1) => Err(fail(&e1)),
                 }
             }
         },
@@ -362,24 +364,26 @@ pub fn convert_pg_value(
             Err(e) => Err(fail(&e)),
         },
         // TIMESTAMP（无时区）
-        PgColumnKind::Timestamp => {
-            match row.try_get::<Option<chrono::NaiveDateTime>, _>(index) {
-                Ok(Some(v)) => Ok(CellValue::DateTime(v.format("%Y-%m-%d %H:%M:%S%.f").to_string())),
-                Ok(None) => Ok(CellValue::Null),
-                Err(e0) => {
-                    tracing::debug!("Timestamp 按类型读取失败，尝试按字符串读取: {}", e0);
-                    match row.try_get::<Option<String>, _>(index) {
-                        Ok(Some(v)) => Ok(CellValue::DateTime(v)),
-                        Ok(None) => Ok(CellValue::Null),
-                        Err(e1) => Err(fail(&e1)),
-                    }
+        PgColumnKind::Timestamp => match row.try_get::<Option<chrono::NaiveDateTime>, _>(index) {
+            Ok(Some(v)) => Ok(CellValue::DateTime(
+                v.format("%Y-%m-%d %H:%M:%S%.f").to_string(),
+            )),
+            Ok(None) => Ok(CellValue::Null),
+            Err(e0) => {
+                tracing::debug!("Timestamp 按类型读取失败，尝试按字符串读取: {}", e0);
+                match row.try_get::<Option<String>, _>(index) {
+                    Ok(Some(v)) => Ok(CellValue::DateTime(v)),
+                    Ok(None) => Ok(CellValue::Null),
+                    Err(e1) => Err(fail(&e1)),
                 }
             }
         },
         // TIMESTAMPTZ：按 UTC 展示，与 MySQL TIMESTAMP 保持一致
         PgColumnKind::TimestampTz => {
             match row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(index) {
-                Ok(Some(v)) => Ok(CellValue::DateTime(v.format("%Y-%m-%d %H:%M:%S%.f").to_string())),
+                Ok(Some(v)) => Ok(CellValue::DateTime(
+                    v.format("%Y-%m-%d %H:%M:%S%.f").to_string(),
+                )),
                 Ok(None) => Ok(CellValue::Null),
                 Err(e0) => {
                     tracing::debug!("TimestampTz 按类型读取失败，尝试按字符串读取: {}", e0);
@@ -390,7 +394,7 @@ pub fn convert_pg_value(
                     }
                 }
             }
-        },
+        }
         PgColumnKind::Date => match row.try_get::<Option<chrono::NaiveDate>, _>(index) {
             Ok(Some(v)) => Ok(CellValue::DateTime(v.to_string())),
             Ok(None) => Ok(CellValue::Null),
@@ -445,7 +449,10 @@ pub fn convert_pg_value(
                         Ok(text) => text.to_string(),
                         Err(_) => format!(
                             "\\x{}",
-                            bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+                            bytes
+                                .iter()
+                                .map(|b| format!("{:02x}", b))
+                                .collect::<String>()
                         ),
                     }))
                 }
@@ -484,14 +491,9 @@ pub(super) fn format_sql_value(
     column_name: &str,
     data_type: &str,
 ) -> Result<String> {
-    let raw = row.try_get_raw(column_name).map_err(|e| {
-        anyhow!(
-            "读取列 `{}`（{}）失败：{}",
-            column_name,
-            data_type,
-            e
-        )
-    })?;
+    let raw = row
+        .try_get_raw(column_name)
+        .map_err(|e| anyhow!("读取列 `{}`（{}）失败：{}", column_name, data_type, e))?;
     let is_null = raw.is_null();
 
     let value = format_sql_value_legacy(row, column_name, data_type);
@@ -512,7 +514,11 @@ fn format_sql_value_legacy(
     data_type: &str,
 ) -> String {
     let lower_type = data_type.to_lowercase();
-    tracing::debug!("format_sql_value: column='{}', type='{}'", column_name, lower_type);
+    tracing::debug!(
+        "format_sql_value: column='{}', type='{}'",
+        column_name,
+        lower_type
+    );
 
     // BIT 类型必须在整数类型之前检查，避免 BIT(8) 被错误识别
     // BIT 类型在 sqlx 中显示为 "BIT" 或 "BIT(8)" 等
@@ -520,15 +526,29 @@ fn format_sql_value_legacy(
         // BIT(1) 作为布尔值处理
         if lower_type == "bit(1)" || lower_type == "bit" {
             return match row.try_get::<Option<bool>, _>(column_name) {
-                Ok(Some(v)) => if v { "1".to_string() } else { "0".to_string() },
+                Ok(Some(v)) => {
+                    if v {
+                        "1".to_string()
+                    } else {
+                        "0".to_string()
+                    }
+                }
                 Ok(None) => "NULL".to_string(),
                 Err(e) => {
-                    tracing::warn!("Failed to read BIT(1) column '{}' as bool, trying Vec<u8>: {}", column_name, e);
+                    tracing::warn!(
+                        "Failed to read BIT(1) column '{}' as bool, trying Vec<u8>: {}",
+                        column_name,
+                        e
+                    );
                     match row.try_get::<Option<Vec<u8>>, _>(column_name) {
                         Ok(Some(v)) => {
                             let val = !v.is_empty() && v[0] != 0;
-                            if val { "1".to_string() } else { "0".to_string() }
-                        },
+                            if val {
+                                "1".to_string()
+                            } else {
+                                "0".to_string()
+                            }
+                        }
                         _ => "NULL".to_string(),
                     }
                 }
@@ -542,10 +562,14 @@ fn format_sql_value_legacy(
                     value |= (byte as u64) << ((v.len() - 1 - i) * 8);
                 }
                 value.to_string()
-            },
+            }
             Ok(None) => "NULL".to_string(),
             Err(e) => {
-                tracing::error!("Failed to read BIT column '{}' as Vec<u8>: {}", column_name, e);
+                tracing::error!(
+                    "Failed to read BIT column '{}' as Vec<u8>: {}",
+                    column_name,
+                    e
+                );
                 "NULL".to_string()
             }
         };
@@ -557,15 +581,24 @@ fn format_sql_value_legacy(
             Ok(Some(v)) => (v as i8).to_string(),
             Ok(None) => "NULL".to_string(),
             Err(e) => {
-                tracing::warn!("Failed to read boolean column '{}' type '{}': {}", column_name, data_type, e);
+                tracing::warn!(
+                    "Failed to read boolean column '{}' type '{}': {}",
+                    column_name,
+                    data_type,
+                    e
+                );
                 "NULL".to_string()
             }
         };
     }
 
     // 整数类型（排除 BIT，避免字节长度不匹配）
-    if (lower_type.contains("int") || lower_type.contains("tiny") || lower_type.contains("small")
-        || lower_type.contains("medium") || lower_type.contains("bigint") || lower_type.contains("year"))
+    if (lower_type.contains("int")
+        || lower_type.contains("tiny")
+        || lower_type.contains("small")
+        || lower_type.contains("medium")
+        || lower_type.contains("bigint")
+        || lower_type.contains("year"))
         && !lower_type.contains("bit")
     {
         // 根据类型选择合适的 Rust 类型
@@ -580,7 +613,12 @@ fn format_sql_value_legacy(
                         Ok(Some(v)) => (v as i8).to_string(),
                         Ok(None) => "NULL".to_string(),
                         Err(e) => {
-                            tracing::warn!("Failed to read tinyint column '{}' type '{}': {}", column_name, data_type, e);
+                            tracing::warn!(
+                                "Failed to read tinyint column '{}' type '{}': {}",
+                                column_name,
+                                data_type,
+                                e
+                            );
                             "NULL".to_string()
                         }
                     }
@@ -593,7 +631,12 @@ fn format_sql_value_legacy(
                 Ok(Some(v)) => v.to_string(),
                 Ok(None) => "NULL".to_string(),
                 Err(e) => {
-                    tracing::warn!("Failed to read smallint column '{}' type '{}': {}", column_name, data_type, e);
+                    tracing::warn!(
+                        "Failed to read smallint column '{}' type '{}': {}",
+                        column_name,
+                        data_type,
+                        e
+                    );
                     "NULL".to_string()
                 }
             };
@@ -609,7 +652,12 @@ fn format_sql_value_legacy(
                         Ok(Some(v)) => v.to_string(),
                         Ok(None) => "NULL".to_string(),
                         Err(e) => {
-                            tracing::warn!("Failed to read int column '{}' type '{}': {}", column_name, data_type, e);
+                            tracing::warn!(
+                                "Failed to read int column '{}' type '{}': {}",
+                                column_name,
+                                data_type,
+                                e
+                            );
                             "NULL".to_string()
                         }
                     }
@@ -626,7 +674,12 @@ fn format_sql_value_legacy(
                     Ok(Some(v)) => v.to_string(),
                     Ok(None) => "NULL".to_string(),
                     Err(e) => {
-                        tracing::warn!("Failed to read bigint column '{}' type '{}': {}", column_name, data_type, e);
+                        tracing::warn!(
+                            "Failed to read bigint column '{}' type '{}': {}",
+                            column_name,
+                            data_type,
+                            e
+                        );
                         "NULL".to_string()
                     }
                 }
@@ -658,7 +711,10 @@ fn format_sql_value_legacy(
         }
         // 方式3: 作为 f64 读取并格式化
         return match row.try_get::<Option<f64>, _>(column_name) {
-            Ok(Some(v)) => format!("{:.10}", v).trim_end_matches('0').trim_end_matches('.').to_string(),
+            Ok(Some(v)) => format!("{:.10}", v)
+                .trim_end_matches('0')
+                .trim_end_matches('.')
+                .to_string(),
             Ok(None) => "NULL".to_string(),
             Err(_) => "NULL".to_string(),
         };
@@ -676,7 +732,10 @@ fn format_sql_value_legacy(
     // 二进制类型
     if lower_type.contains("binary") || lower_type.contains("blob") {
         return match row.try_get::<Option<Vec<u8>>, _>(column_name) {
-            Ok(Some(v)) => format!("X'{}'", v.iter().map(|b| format!("{:02X}", b)).collect::<String>()),
+            Ok(Some(v)) => format!(
+                "X'{}'",
+                v.iter().map(|b| format!("{:02X}", b)).collect::<String>()
+            ),
             Ok(None) => "NULL".to_string(),
             Err(_) => "NULL".to_string(),
         };
@@ -723,7 +782,12 @@ fn format_sql_value_legacy(
                     Ok(Some(v)) => format!("'{}'", v),
                     Ok(None) => "NULL".to_string(),
                     Err(e) => {
-                        tracing::warn!("Failed to read date column '{}' type '{}': {}", column_name, data_type, e);
+                        tracing::warn!(
+                            "Failed to read date column '{}' type '{}': {}",
+                            column_name,
+                            data_type,
+                            e
+                        );
                         "NULL".to_string()
                     }
                 }
@@ -740,7 +804,12 @@ fn format_sql_value_legacy(
                     Ok(Some(v)) => format!("'{}'", v),
                     Ok(None) => "NULL".to_string(),
                     Err(e) => {
-                        tracing::warn!("Failed to read time column '{}' type '{}': {}", column_name, data_type, e);
+                        tracing::warn!(
+                            "Failed to read time column '{}' type '{}': {}",
+                            column_name,
+                            data_type,
+                            e
+                        );
                         "NULL".to_string()
                     }
                 }
@@ -753,7 +822,12 @@ fn format_sql_value_legacy(
         Ok(Some(v)) => format!("'{}'", v.replace('\\', "\\\\").replace('\'', "''")),
         Ok(None) => "NULL".to_string(),
         Err(e) => {
-            tracing::warn!("Failed to read string column '{}' type '{}': {}", column_name, data_type, e);
+            tracing::warn!(
+                "Failed to read string column '{}' type '{}': {}",
+                column_name,
+                data_type,
+                e
+            );
             "NULL".to_string()
         }
     }
