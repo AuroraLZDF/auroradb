@@ -37,7 +37,11 @@
               <span class="history-status" :class="entry.success ? 'ok' : 'fail'">
                 {{ entry.success ? t('history.success') : t('history.failed') }}
               </span>
-              <span class="history-conn" :class="{ closed: !activeFor(entry) }">
+              <span
+                class="history-conn"
+                :class="{ closed: !activeFor(entry) }"
+                :title="connectionTitle(entry)"
+              >
                 {{ connectionLabel(entry) }}
               </span>
               <span v-if="entry.database" class="history-db">{{ entry.database }}</span>
@@ -164,12 +168,20 @@ function rerunTarget(entry: QueryHistoryEntry) {
 function rerunHint(entry: QueryHistoryEntry): string {
   if (activeFor(entry)) return t('history.rerun')
   if (savedFor(entry)) return t('history.rerunReconnect')
+  // 没有连接名说明是旧版本写入的记录，和「连接被删掉」不是一回事
+  if (!entry.connectionName) return t('history.rerunLegacy')
   return t('history.rerunUnavailable')
 }
 
-/** 连接名：历史记录里存了名字就用它，否则回退保存的连接名，最后才显示占位 */
+/** 连接名：记录里的名字 → 当前活动连接 → 保存的连接；都拿不到就显示破折号，不要满屏「未知连接」 */
 function connectionLabel(entry: QueryHistoryEntry): string {
-  return entry.connectionName || savedFor(entry)?.name || (entry.connectionId ? t('history.unknownConnection') : '—')
+  return entry.connectionName || activeFor(entry)?.name || savedFor(entry)?.name || '—'
+}
+
+/** 旧记录说不出是哪个连接，用 tooltip 解释清楚，避免误以为连接丢了 */
+function connectionTitle(entry: QueryHistoryEntry): string | undefined {
+  if (connectionLabel(entry) !== '—') return undefined
+  return t('history.legacyNoConnection')
 }
 
 function formatTime(value: string): string {
