@@ -4,10 +4,10 @@
 //! 前端据此渲染 SVG ER 图。复用 metadata 模块的 INFORMATION_SCHEMA 查询路径
 //! 与超时兜底，避免和 get_table_structure 逐表调用重复打 N 次元数据。
 
+use anyhow::{anyhow, Context, Result};
 use auroradb_core::connection::driver::{AnyPool, DriverKind};
 use auroradb_core::connection::validation::validate_identifier;
 use auroradb_core::connection::ConnectionManager;
-use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -125,39 +125,39 @@ async fn resolve_pg_schema(pool: &sqlx::postgres::PgPool, database: &str) -> Res
 }
 
 async fn fetch_mysql_er(
-        pool: &sqlx::mysql::MySqlPool,
-        database: &str,
-    ) -> Result<(Vec<ErTableNode>, Vec<ErForeignKey>)> {
-        // 1. 拉取所有表
-        let table_names: Vec<(String,)> = timeout(
-            ER_QUERY_TIMEOUT,
-            sqlx::query_as(
-                "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES
+    pool: &sqlx::mysql::MySqlPool,
+    database: &str,
+) -> Result<(Vec<ErTableNode>, Vec<ErForeignKey>)> {
+    // 1. 拉取所有表
+    let table_names: Vec<(String,)> = timeout(
+        ER_QUERY_TIMEOUT,
+        sqlx::query_as(
+            "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES
                  WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'
                  ORDER BY TABLE_NAME ASC",
-            )
-            .bind(database)
-            .fetch_all(pool),
         )
-        .await
-        .context("ER 图查询超时")??;
+        .bind(database)
+        .fetch_all(pool),
+    )
+    .await
+    .context("ER 图查询超时")??;
 
-        // 2. 拉取所有列（含主键/唯一键标记、可空、默认值、注释）
-        type MySqlErColumn = (
-            String,
-            String,
-            String,
-            String,
-            bool,
-            bool,
-            Option<String>,
-            String,
-            bool,
-        );
-        let columns: Vec<MySqlErColumn> = timeout(
-            ER_QUERY_TIMEOUT,
-            sqlx::query_as(
-                "SELECT c.TABLE_NAME, c.COLUMN_NAME, c.DATA_TYPE, c.COLUMN_TYPE,
+    // 2. 拉取所有列（含主键/唯一键标记、可空、默认值、注释）
+    type MySqlErColumn = (
+        String,
+        String,
+        String,
+        String,
+        bool,
+        bool,
+        Option<String>,
+        String,
+        bool,
+    );
+    let columns: Vec<MySqlErColumn> = timeout(
+        ER_QUERY_TIMEOUT,
+        sqlx::query_as(
+            "SELECT c.TABLE_NAME, c.COLUMN_NAME, c.DATA_TYPE, c.COLUMN_TYPE,
                         (c.COLUMN_KEY = 'PRI') AS is_pri,
                         (c.IS_NULLABLE = 'YES') AS nullable,
                         c.COLUMN_DEFAULT,
@@ -166,95 +166,111 @@ async fn fetch_mysql_er(
                  FROM INFORMATION_SCHEMA.COLUMNS c
                  WHERE c.TABLE_SCHEMA = ?
                  ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION",
-            )
-            .bind(database)
-            .fetch_all(pool),
         )
-        .await
-        .context("ER 图查询超时")??;
+        .bind(database)
+        .fetch_all(pool),
+    )
+    .await
+    .context("ER 图查询超时")??;
 
-        // 3. 拉取所有外键
-        let fks: Vec<(String, String, String, String, String)> = timeout(
-            ER_QUERY_TIMEOUT,
-            sqlx::query_as(
-                "SELECT kcu.CONSTRAINT_NAME, kcu.TABLE_NAME, kcu.COLUMN_NAME,
+    // 3. 拉取所有外键
+    let fks: Vec<(String, String, String, String, String)> = timeout(
+        ER_QUERY_TIMEOUT,
+        sqlx::query_as(
+            "SELECT kcu.CONSTRAINT_NAME, kcu.TABLE_NAME, kcu.COLUMN_NAME,
                         kcu.REFERENCED_TABLE_NAME, kcu.REFERENCED_COLUMN_NAME
                  FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
                  WHERE kcu.TABLE_SCHEMA = ? AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
                  ORDER BY kcu.TABLE_NAME, kcu.COLUMN_NAME",
-            )
-            .bind(database)
-            .fetch_all(pool),
         )
-        .await
-        .context("ER 图查询超时")??;
+        .bind(database)
+        .fetch_all(pool),
+    )
+    .await
+    .context("ER 图查询超时")??;
 
-        let mut table_map: HashMap<String, ErTableNode> = HashMap::new();
-        for (table_name,) in table_names {
-            table_map.insert(table_name.clone(), ErTableNode { name: table_name, columns: vec![] });
+    let mut table_map: HashMap<String, ErTableNode> = HashMap::new();
+    for (table_name,) in table_names {
+        table_map.insert(
+            table_name.clone(),
+            ErTableNode {
+                name: table_name,
+                columns: vec![],
+            },
+        );
+    }
+    for (table, col, dtype, column_type, is_pri, nullable, default_value, comment, is_uni) in
+        columns
+    {
+        if let Some(node) = table_map.get_mut(&table) {
+            node.columns.push(ErColumn {
+                name: col,
+                data_type: dtype,
+                column_type,
+                is_primary: is_pri,
+                is_unique: is_uni,
+                nullable,
+                default_value,
+                comment,
+            });
         }
-        for (table, col, dtype, column_type, is_pri, nullable, default_value, comment, is_uni) in
-            columns
-        {
-            if let Some(node) = table_map.get_mut(&table) {
-                node.columns.push(ErColumn {
-                    name: col,
-                    data_type: dtype,
-                    column_type,
-                    is_primary: is_pri,
-                    is_unique: is_uni,
-                    nullable,
-                    default_value,
-                    comment,
-                });
-            }
-        }
-
-        let mut tables: Vec<ErTableNode> = table_map.into_values().collect();
-        tables.sort_by(|a, b| a.name.cmp(&b.name));
-
-        let foreign_keys: Vec<ErForeignKey> = fks
-            .into_iter()
-            .map(|(name, table, column, ref_table, ref_column)| ErForeignKey {
-                name, table, column, ref_table, ref_column,
-            })
-            .collect();
-
-        Ok((tables, foreign_keys))
     }
 
-    async fn fetch_pg_er(
-        pool: &sqlx::postgres::PgPool,
-        database: &str,
-    ) -> Result<(Vec<ErTableNode>, Vec<ErForeignKey>)> {
-        // PG 下 database 表示 schema（public 等），为空时用 search_path 中的 public
-        let schema = if database.is_empty() { "public" } else { database };
+    let mut tables: Vec<ErTableNode> = table_map.into_values().collect();
+    tables.sort_by(|a, b| a.name.cmp(&b.name));
 
-        let table_names: Vec<(String,)> = timeout(
-            ER_QUERY_TIMEOUT,
-            sqlx::query_as(
-                "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES
+    let foreign_keys: Vec<ErForeignKey> = fks
+        .into_iter()
+        .map(
+            |(name, table, column, ref_table, ref_column)| ErForeignKey {
+                name,
+                table,
+                column,
+                ref_table,
+                ref_column,
+            },
+        )
+        .collect();
+
+    Ok((tables, foreign_keys))
+}
+
+async fn fetch_pg_er(
+    pool: &sqlx::postgres::PgPool,
+    database: &str,
+) -> Result<(Vec<ErTableNode>, Vec<ErForeignKey>)> {
+    // PG 下 database 表示 schema（public 等），为空时用 search_path 中的 public
+    let schema = if database.is_empty() {
+        "public"
+    } else {
+        database
+    };
+
+    let table_names: Vec<(String,)> = timeout(
+        ER_QUERY_TIMEOUT,
+        sqlx::query_as(
+            "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES
                  WHERE TABLE_SCHEMA = $1 AND TABLE_TYPE = 'BASE TABLE'
                  ORDER BY TABLE_NAME ASC",
-            )
-            .bind(schema)
-            .fetch_all(pool),
         )
-        .await
-        .context("ER 图查询超时")??;
+        .bind(schema)
+        .fetch_all(pool),
+    )
+    .await
+    .context("ER 图查询超时")??;
 
-        type PgErColumn = (
-            String,
-            String,
-            String,
-            String,
-            bool,
-            bool,
-            Option<String>,
-            String,
-            bool,
-        );
-        let columns: Vec<PgErColumn> = timeout(
+    type PgErColumn = (
+        String,
+        String,
+        String,
+        String,
+        bool,
+        bool,
+        Option<String>,
+        String,
+        bool,
+    );
+    let columns: Vec<PgErColumn> = timeout(
             ER_QUERY_TIMEOUT,
             sqlx::query_as(
                 "SELECT c.TABLE_NAME, c.COLUMN_NAME, c.DATA_TYPE,
@@ -305,10 +321,10 @@ async fn fetch_mysql_er(
         .await
         .context("ER 图查询超时")??;
 
-        let fks: Vec<(String, String, String, String, String)> = timeout(
-            ER_QUERY_TIMEOUT,
-            sqlx::query_as(
-                "SELECT tc.CONSTRAINT_NAME, kcu.TABLE_NAME, kcu.COLUMN_NAME,
+    let fks: Vec<(String, String, String, String, String)> = timeout(
+        ER_QUERY_TIMEOUT,
+        sqlx::query_as(
+            "SELECT tc.CONSTRAINT_NAME, kcu.TABLE_NAME, kcu.COLUMN_NAME,
                         kcu.REFERENCED_TABLE_NAME, kcu.REFERENCED_COLUMN_NAME
                  FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
                  JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
@@ -317,43 +333,55 @@ async fn fetch_mysql_er(
                  WHERE tc.TABLE_SCHEMA = $1
                    AND tc.CONSTRAINT_TYPE = 'FOREIGN KEY'
                  ORDER BY kcu.TABLE_NAME, kcu.COLUMN_NAME",
-            )
-            .bind(schema)
-            .fetch_all(pool),
         )
-        .await
-        .context("ER 图查询超时")??;
+        .bind(schema)
+        .fetch_all(pool),
+    )
+    .await
+    .context("ER 图查询超时")??;
 
-        let mut table_map: HashMap<String, ErTableNode> = HashMap::new();
-        for (table_name,) in table_names {
-            table_map.insert(table_name.clone(), ErTableNode { name: table_name, columns: vec![] });
+    let mut table_map: HashMap<String, ErTableNode> = HashMap::new();
+    for (table_name,) in table_names {
+        table_map.insert(
+            table_name.clone(),
+            ErTableNode {
+                name: table_name,
+                columns: vec![],
+            },
+        );
+    }
+    for (table, col, dtype, column_type, is_pri, nullable, default_value, comment, is_uni) in
+        columns
+    {
+        if let Some(node) = table_map.get_mut(&table) {
+            node.columns.push(ErColumn {
+                name: col,
+                data_type: dtype,
+                column_type,
+                is_primary: is_pri,
+                is_unique: is_uni,
+                nullable,
+                default_value,
+                comment,
+            });
         }
-        for (table, col, dtype, column_type, is_pri, nullable, default_value, comment, is_uni) in
-            columns
-        {
-            if let Some(node) = table_map.get_mut(&table) {
-                node.columns.push(ErColumn {
-                    name: col,
-                    data_type: dtype,
-                    column_type,
-                    is_primary: is_pri,
-                    is_unique: is_uni,
-                    nullable,
-                    default_value,
-                    comment,
-                });
-            }
-        }
+    }
 
-        let mut tables: Vec<ErTableNode> = table_map.into_values().collect();
-        tables.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut tables: Vec<ErTableNode> = table_map.into_values().collect();
+    tables.sort_by(|a, b| a.name.cmp(&b.name));
 
-        let foreign_keys: Vec<ErForeignKey> = fks
-            .into_iter()
-            .map(|(name, table, column, ref_table, ref_column)| ErForeignKey {
-                name, table, column, ref_table, ref_column,
-            })
-            .collect();
+    let foreign_keys: Vec<ErForeignKey> = fks
+        .into_iter()
+        .map(
+            |(name, table, column, ref_table, ref_column)| ErForeignKey {
+                name,
+                table,
+                column,
+                ref_table,
+                ref_column,
+            },
+        )
+        .collect();
 
     Ok((tables, foreign_keys))
 }

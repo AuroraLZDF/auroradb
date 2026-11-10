@@ -11,9 +11,9 @@
 //! 主机密钥按 `~/.ssh/known_hosts` 校验：已记录但不一致时拒绝连接（防中间人），
 //! 未记录时按 TOFU 记录后再放行（等价 OpenSSH 的 `StrictHostKeyChecking=accept-new`）。
 
+use anyhow::{anyhow, Context, Result};
 use auroradb_core::connection::tunnel::{Tunnel, TunnelFactory};
 use auroradb_core::connection::types::{SshAuthType, SshConfig};
-use anyhow::{anyhow, Context, Result};
 use futures_util::future::BoxFuture;
 use russh::client::{self, AuthResult, Handle, Msg};
 use russh::keys::known_hosts::{check_known_hosts_path, learn_known_hosts_path};
@@ -65,18 +65,19 @@ impl SshTunnel {
 
         let mut handle = tokio::time::timeout(
             CONNECT_TIMEOUT,
-            client::connect(
-                ssh_config,
-                (config.host.trim(), config.port),
-                handler,
-            ),
+            client::connect(ssh_config, (config.host.trim(), config.port), handler),
         )
         .await
         .map_err(|_| anyhow!("SSH 连接超时（{}:{}）", config.host, config.port))?
         .map_err(|e| {
             let reason = host_key_failure.lock().ok().and_then(|slot| slot.clone());
             match reason {
-                Some(reason) => anyhow!("SSH 连接失败（{}:{}）：{}", config.host, config.port, reason),
+                Some(reason) => anyhow!(
+                    "SSH 连接失败（{}:{}）：{}",
+                    config.host,
+                    config.port,
+                    reason
+                ),
                 None => anyhow!("SSH 连接失败（{}:{}）：{}", config.host, config.port, e),
             }
         })?;
@@ -164,7 +165,11 @@ fn validate(config: &SshConfig, target_host: &str, target_port: u16) -> Result<(
             }
         }
         SshAuthType::PrivateKey => {
-            let path = config.private_key_path.as_deref().map(str::trim).unwrap_or("");
+            let path = config
+                .private_key_path
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("");
             if path.is_empty() {
                 return Err(anyhow!("SSH 私钥认证需要指定私钥文件"));
             }
@@ -283,7 +288,10 @@ fn verify_host_key(path: &Path, host: &str, port: u16, key: &PublicKey) -> Resul
             line,
             path.display()
         )),
-        Err(e) => Err(format!("SSH 主机 {}:{} 的主机密钥校验失败：{}", host, port, e)),
+        Err(e) => Err(format!(
+            "SSH 主机 {}:{} 的主机密钥校验失败：{}",
+            host, port, e
+        )),
     }
 }
 
@@ -315,8 +323,8 @@ impl client::Handler for ClientHandler {
         let port = self.port;
         let key = server_public_key.clone();
         // known_hosts 是同步文件读写，放到阻塞线程池，避免卡住 async 运行时
-        let outcome = tokio::task::spawn_blocking(move || verify_host_key(&path, &host, port, &key))
-            .await;
+        let outcome =
+            tokio::task::spawn_blocking(move || verify_host_key(&path, &host, port, &key)).await;
 
         let rejection = match outcome {
             Ok(Ok(())) => return Ok(true),
@@ -383,7 +391,11 @@ async fn forward(mut socket: tokio::net::TcpStream, channel: Channel<Msg>) {
     let mut stream = channel.into_stream();
     match tokio::io::copy_bidirectional(&mut socket, &mut stream).await {
         Ok((upload, download)) => {
-            tracing::debug!("SSH 隧道转发结束：上行 {} 字节，下行 {} 字节", upload, download);
+            tracing::debug!(
+                "SSH 隧道转发结束：上行 {} 字节，下行 {} 字节",
+                upload,
+                download
+            );
         }
         Err(e) => tracing::warn!("SSH 隧道转发中断：{}", e),
     }
@@ -447,10 +459,8 @@ mod tests {
         assert!(validate(&ssh(SshAuthType::Password), "db.internal", 3306).is_ok());
     }
 
-    const TEST_KEY: &str =
-        "AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ";
-    const OTHER_KEY: &str =
-        "AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G2sz07DnfFlrouTcysQlj2P+jpNSOEWD9OJ3X";
+    const TEST_KEY: &str = "AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ";
+    const OTHER_KEY: &str = "AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G2sz07DnfFlrouTcysQlj2P+jpNSOEWD9OJ3X";
 
     /// 独立临时文件，避免测试并行时互相干扰，也不碰用户真实的 known_hosts
     fn temp_known_hosts(tag: &str) -> PathBuf {
@@ -486,7 +496,8 @@ mod tests {
         let path = temp_known_hosts("mismatch");
         let _ = std::fs::remove_file(&path);
 
-        verify_host_key(&path, "jump.example.com", 22, &test_key(TEST_KEY)).expect("首次记录应放行");
+        verify_host_key(&path, "jump.example.com", 22, &test_key(TEST_KEY))
+            .expect("首次记录应放行");
         let err = verify_host_key(&path, "jump.example.com", 22, &test_key(OTHER_KEY))
             .expect_err("主机密钥变化必须拒绝连接");
         assert!(err.contains("不一致"), "{err}");

@@ -5,9 +5,9 @@
 //! 2. 递归扁平化为统一的 ExplainNode 树（operation / table / rows / cost / children），
 //!    前端用 ExplainTree.vue 渲染这棵树，节点颜色按 cost 高亮。
 
+use anyhow::{anyhow, Context, Result};
 use auroradb_core::connection::driver::{AnyPool, DriverKind};
 use auroradb_core::connection::ConnectionManager;
-use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::Executor;
@@ -96,7 +96,9 @@ fn mysql_extra(obj: &serde_json::Map<String, Value>) -> Vec<String> {
     if let Some(msg) = obj.get("message").and_then(|v| v.as_str()) {
         for part in msg.split(';') {
             let s = part.trim();
-            if !s.is_empty() { extra.push(s.to_string()); }
+            if !s.is_empty() {
+                extra.push(s.to_string());
+            }
         }
     }
     if let Some(filtered) = obj.get("filtered").and_then(|v| v.as_f64()) {
@@ -110,7 +112,10 @@ fn mysql_extra(obj: &serde_json::Map<String, Value>) -> Vec<String> {
 fn mysql_to_node(obj: &Value) -> Option<ExplainNode> {
     let node = obj.as_object()?;
     let mut n = ExplainNode::new(mysql_operation(node));
-    n.table = node.get("table_name").and_then(|v| v.as_str()).map(String::from);
+    n.table = node
+        .get("table_name")
+        .and_then(|v| v.as_str())
+        .map(String::from);
     n.index = node.get("key").and_then(|v| v.as_str()).map(String::from);
     n.rows = node.get("rows").and_then(|v| v.as_u64());
     n.filtered = node.get("filtered").and_then(|v| v.as_f64());
@@ -135,7 +140,10 @@ fn mysql_to_node(obj: &Value) -> Option<ExplainNode> {
 }
 
 fn flatten_mysql_top_level(root: &Value) -> Vec<ExplainNode> {
-    let obj = match root.as_object() { Some(o) => o, None => return vec![] };
+    let obj = match root.as_object() {
+        Some(o) => o,
+        None => return vec![],
+    };
     if let Some(qb) = obj.get("query_block") {
         return vec![mysql_to_node(qb).unwrap_or_else(|| ExplainNode::new("query_block"))];
     }
@@ -152,7 +160,10 @@ fn flatten_mysql_top_level(root: &Value) -> Vec<ExplainNode> {
 
 fn pg_to_node(plan: &Value) -> Option<ExplainNode> {
     let p = plan.as_object()?;
-    let node_type = p.get("Node Type").and_then(|v| v.as_str()).unwrap_or("Unknown");
+    let node_type = p
+        .get("Node Type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Unknown");
     let relation = p.get("Relation Name").and_then(|v| v.as_str());
     let alias = p.get("Alias").and_then(|v| v.as_str());
     let operation = match (relation, alias) {
@@ -168,7 +179,13 @@ fn pg_to_node(plan: &Value) -> Option<ExplainNode> {
     if let Some(idx) = p.get("Index Name").and_then(|v| v.as_str()) {
         n.index = Some(idx.to_string());
     }
-    for key in ["Filter", "Join Filter", "Hash Cond", "Recheck Cond", "One-Time Filter"] {
+    for key in [
+        "Filter",
+        "Join Filter",
+        "Hash Cond",
+        "Recheck Cond",
+        "One-Time Filter",
+    ] {
         if let Some(val) = p.get(key).and_then(|v| v.as_str()) {
             n.extra.push(format!("{key}: {val}"));
         }
@@ -186,7 +203,10 @@ fn pg_to_node(plan: &Value) -> Option<ExplainNode> {
 }
 
 fn flatten_pg_top_level(root: &Value) -> Vec<ExplainNode> {
-    let arr = match root.as_array() { Some(a) => a, None => return vec![] };
+    let arr = match root.as_array() {
+        Some(a) => a,
+        None => return vec![],
+    };
     let mut result = vec![];
     for item in arr {
         if let Some(plan) = item.get("Plan") {
@@ -264,16 +284,14 @@ pub async fn explain(
             sqlx::query_scalar::<_, String>(explain_sql.as_str())
                 .fetch_optional(&mut *phys)
                 .await
-                .map_err(|e| {
-                    anyhow!(
-                        "执行 EXPLAIN 失败：{}",
-                        auroradb_core::error::translate(&e)
-                    )
-                })?
+                .map_err(|e| anyhow!("执行 EXPLAIN 失败：{}", auroradb_core::error::translate(&e)))?
                 .ok_or_else(|| anyhow!("EXPLAIN 未返回结果"))?
         }
         AnyPool::Postgres(pg_pool) => {
-            let mut phys = pg_pool.acquire().await.context("获取 PostgreSQL 连接失败")?;
+            let mut phys = pg_pool
+                .acquire()
+                .await
+                .context("获取 PostgreSQL 连接失败")?;
             if !database.is_empty() && conn_database.as_deref() != Some(database) {
                 let set_sql = DriverKind::Postgres.switch_database_sql(database);
                 Executor::execute(&mut *phys, set_sql.as_str())
@@ -286,19 +304,14 @@ pub async fn explain(
             sqlx::query_scalar::<_, String>(explain_sql.as_str())
                 .fetch_optional(&mut *phys)
                 .await
-                .map_err(|e| {
-                    anyhow!(
-                        "执行 EXPLAIN 失败：{}",
-                        auroradb_core::error::translate(&e)
-                    )
-                })?
+                .map_err(|e| anyhow!("执行 EXPLAIN 失败：{}", auroradb_core::error::translate(&e)))?
                 .ok_or_else(|| anyhow!("EXPLAIN 未返回结果"))?
         }
     };
     let warnings: Vec<String> = vec![];
 
-    let parsed: Value = serde_json::from_str(&raw_json)
-        .map_err(|e| anyhow!("解析 EXPLAIN JSON 失败：{e}"))?;
+    let parsed: Value =
+        serde_json::from_str(&raw_json).map_err(|e| anyhow!("解析 EXPLAIN JSON 失败：{e}"))?;
 
     let nodes = match driver {
         DriverKind::MySql => flatten_mysql_top_level(&parsed),
