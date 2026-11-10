@@ -143,6 +143,31 @@ jobs:
         shell: bash
         run: cargo tauri --version || echo "::warning::未预装 cargo-tauri，构建脚本将现场编译"
 
+      # 构建前先确认「私钥 + 密码」能配对：否则要白等十几分钟构建，最后才在签名处失败。
+      # 这一步只花 1 秒，却能挡住「密码 Secret 填错/多余」这类问题。
+      - name: Verify signing key
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if ! command -v cargo-tauri >/dev/null 2>&1; then
+            echo "::warning::cargo-tauri 未安装，跳过签名自检（构建脚本会现场编译）"
+            exit 0
+          fi
+          keyfile="$(mktemp)"
+          printf '%s' "$TAURI_SIGNING_PRIVATE_KEY" > "$keyfile"
+          printf 'probe' > probe.txt
+          if cargo tauri signer sign -p "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" \
+               --private-key-path "$keyfile" probe.txt > /dev/null 2>sign-error.txt; then
+            echo "::notice::签名私钥与密码配对正常"
+          else
+            sed 's/^/    /' sign-error.txt
+            echo "::error::签名私钥无法解密。检查 TAURI_SIGNING_PRIVATE_KEY（私钥内容）与 TAURI_SIGNING_PRIVATE_KEY_PASSWORD 是否配对；私钥为空密码时不要创建该 Secret。"
+            exit 1
+          fi
+          rm -f "$keyfile" probe.txt probe.txt.sig sign-error.txt
+
       - name: Frontend deps
         working-directory: src-ui
         run: npm ci
@@ -225,6 +250,31 @@ jobs:
         continue-on-error: true
         shell: bash
         run: cargo tauri --version || echo "::warning::未预装 cargo-tauri，构建脚本将现场编译"
+
+      # 构建前先确认「私钥 + 密码」能配对：否则要白等十几分钟构建，最后才在签名处失败。
+      # 这一步只花 1 秒，却能挡住「密码 Secret 填错/多余」这类问题。
+      - name: Verify signing key
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if ! command -v cargo-tauri >/dev/null 2>&1; then
+            echo "::warning::cargo-tauri 未安装，跳过签名自检（构建脚本会现场编译）"
+            exit 0
+          fi
+          keyfile="$(mktemp)"
+          printf '%s' "$TAURI_SIGNING_PRIVATE_KEY" > "$keyfile"
+          printf 'probe' > probe.txt
+          if cargo tauri signer sign -p "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" \
+               --private-key-path "$keyfile" probe.txt > /dev/null 2>sign-error.txt; then
+            echo "::notice::签名私钥与密码配对正常"
+          else
+            sed 's/^/    /' sign-error.txt
+            echo "::error::签名私钥无法解密。检查 TAURI_SIGNING_PRIVATE_KEY（私钥内容）与 TAURI_SIGNING_PRIVATE_KEY_PASSWORD 是否配对；私钥为空密码时不要创建该 Secret。"
+            exit 1
+          fi
+          rm -f "$keyfile" probe.txt probe.txt.sig sign-error.txt
 
       - name: Frontend deps
         working-directory: src-ui
