@@ -24,6 +24,11 @@ on:
         required: false
         type: boolean
         default: false
+      skip_macos:
+        description: '跳过 macOS 构建（GitHub 不给 macOS runner 时用）'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -313,7 +318,12 @@ jobs:
   build-macos:
     name: Build macOS bundles
     needs: check
-    runs-on: macos-14
+    # macOS 是预览版平台，允许跳过；失败也不阻塞 Linux/Windows 发布
+    if: github.event_name != 'workflow_dispatch' || inputs.skip_macos == false
+    # macos-14 的 arm64 runner 并非所有账号可用（实测报
+    # "The configuration 'macos-14-arm64-us-default' is not supported"），
+    # 改用 Intel 的 macos-13 交叉编译 aarch64，兼容性最好
+    runs-on: macos-13
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
@@ -411,7 +421,7 @@ jobs:
   # ---------------------------------------------------------------------------
   publish-linux:
     name: Publish Linux
-    needs: [build-linux, build-windows, build-macos]
+    needs: [build-linux, build-windows]
     if: github.event_name != 'workflow_dispatch' || inputs.skip_publish == false
     runs-on: ubuntu-22.04
     timeout-minutes: 30
@@ -472,9 +482,15 @@ jobs:
   # ---------------------------------------------------------------------------
   publish-macos:
     name: Publish macOS
-    needs: publish-windows
-    if: github.event_name != 'workflow_dispatch' || inputs.skip_publish == false
-    runs-on: macos-14
+    needs: [build-macos, publish-windows]
+    # macOS 构建失败时跳过即可，不能连带阻断已验证的 Linux/Windows 发布
+    if: |
+      always()
+      && needs.build-macos.result == 'success'
+      && needs.publish-windows.result == 'success'
+      && (github.event_name != 'workflow_dispatch' || inputs.skip_publish == false)
+    # 发布脚本只依赖 bash/curl/python3/git，用 Linux runner 更快更稳
+    runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -506,7 +522,11 @@ jobs:
   verify:
     name: Verify latest.json
     needs: [publish-linux, publish-windows, publish-macos]
-    if: github.event_name != 'workflow_dispatch' || inputs.skip_publish == false
+    # Linux/Windows 是主平台，必须发成功；macOS 为预览版，缺席不判失败
+    if: |
+      always()
+      && needs.publish-linux.result == 'success'
+      && needs.publish-windows.result == 'success'
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
@@ -514,6 +534,7 @@ jobs:
         env:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
           REPO: ${{ github.repository }}
+          NEED_MACOS: ${{ needs.publish-macos.result == 'success' }}
         run: |
           URL="https://github.com/$REPO/releases/latest/download/latest.json"
           # /releases/latest/download 走 CDN，刚发布时可能短暂 404/504 或返回上一版清单
@@ -539,8 +560,14 @@ jobs:
           print(f'version={got} platforms={platforms}')
           if got != want:
               sys.exit(f'清单版本 {got} 与 tag {want} 不一致')
-          missing = {'linux-x86_64', 'windows-x86_64', 'darwin-aarch64'} - set(platforms)
+          need_darwin = os.environ.get('NEED_MACOS') == 'true'
+          required = {'linux-x86_64', 'windows-x86_64'}
+          if need_darwin:
+              required.add('darwin-aarch64')
+          missing = required - set(platforms)
           if missing:
               sys.exit(f'清单缺少平台条目: {sorted(missing)}')
-          print('OK: Linux / Windows / macOS(arm64) 平台条目齐全')
+          if not need_darwin:
+              print('注意: 本版本没有 macOS 条目（macOS 构建被跳过或失败）')
+          print(f"OK: {'Linux / Windows / macOS(arm64)' if need_darwin else 'Linux / Windows'} 平台条目齐全")
           PY

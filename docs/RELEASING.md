@@ -42,13 +42,17 @@ git push origin main && git push origin v2.2.2
 | `check` | 版本单一来源校验、tag 与 `tauri.conf.json` 版本比对、前端 type-check/lint/test |
 | `build-linux` | deb + AppImage（重压签名）+ rpm，产物打成 tar |
 | `build-windows` | NSIS 安装包 + `.sig` |
-| `build-macos` | macOS arm64（未签名预览版）：`.app` + `.dmg` + `.app.tar.gz`/`.sig` |
+| `build-macos` | macOS arm64（未签名预览版，`macos-13` 交叉编译）：`.app` + `.dmg` + `.app.tar.gz`/`.sig` |
 | `publish-linux` | 调 `tools/publish/linux.sh --yes`，写 `linux-x86_64` 条目 |
 | `publish-windows` | 调 `tools/publish/windows.ps1 -Yes`，合并 `windows-x86_64` 条目 |
 | `publish-macos` | 调 `tools/publish/macos.sh --yes`，合并 `darwin-aarch64` 条目 |
-| `verify` | 抓线上 `latest.json`，断言版本与 tag 一致且三个平台都在 |
+| `verify` | 抓线上 `latest.json`，断言版本与 tag 一致；Linux/Windows 必须在，macOS 有才校验 |
 
-关键约束：`publish-linux` 的 `needs` 同时包含三个 build job，`publish-windows` 依赖 `publish-linux`、`publish-macos` 依赖 `publish-windows`（清单串行合并，避免并发写 `latest.json` 互相覆盖）。**任一平台构建失败就整个不发布**——避免出现「清单只有一个平台、另一个平台用户更新不了」的半残发行版。
+关键约束：
+
+- `publish-linux` 的 `needs` 只有 `build-linux` + `build-windows`，`publish-windows` 依赖 `publish-linux`，`publish-macos` 依赖 `build-macos` + `publish-windows`（清单串行合并，避免并发写 `latest.json` 互相覆盖）。**Linux/Windows 任一失败就不发布**——避免出现「清单只有一个平台、另一个平台用户更新不了」的半残发行版。
+- macOS 是预览版平台，**不参与阻断**：`build-macos` 失败或跳过时 `publish-macos` 直接跳过，Linux/Windows 照常发布，`verify` 也不再要求 `darwin-aarch64`。
+- macOS runner 用的是 `macos-13`（Intel）交叉编译 `aarch64-apple-darwin`。GitHub 对部分账号不提供 `macos-14` 的 arm64 runner，会报 `The configuration 'macos-14-arm64-us-default' is not supported`；遇到持续失败就用 `workflow_dispatch` 勾选 `skip_macos` 先发 Linux/Windows。
 
 需要在仓库 Settings → Secrets and variables → Actions 里配置：
 
@@ -59,7 +63,7 @@ git push origin main && git push origin v2.2.2
 
 `GITHUB_TOKEN` 由 Actions 自动提供，workflow 已声明 `permissions: contents: write`。
 
-只想验证流水线不发布时，用 `workflow_dispatch` 触发并勾选 `skip_publish`。
+只想验证流水线不发布时，用 `workflow_dispatch` 触发并勾选 `skip_publish`；只想发 Linux/Windows 时勾选 `skip_macos`。`workflow_dispatch` 用的是**默认分支上的 workflow 文件**，`tag` 输入只决定 checkout 哪个提交——所以修补流水线后可以直接重发已有 tag，不必重新打 tag。
 
 ## 手工发布命令
 
