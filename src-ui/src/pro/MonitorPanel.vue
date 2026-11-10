@@ -851,6 +851,7 @@ startTimer()
   padding: 0 var(--space-3);
   background: var(--raised);
   border-bottom: 1px solid var(--hairline-strong);
+  border-right: 1px solid var(--hairline);
   color: var(--text-secondary);
   font-weight: var(--font-medium);
   white-space: nowrap;
@@ -860,6 +861,7 @@ startTimer()
   height: var(--row-height);
   padding: 0 var(--space-3);
   border-bottom: 1px solid var(--hairline);
+  border-right: 1px solid var(--hairline);
   vertical-align: middle;
   white-space: nowrap;
 }

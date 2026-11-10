@@ -3144,10 +3144,18 @@ th, td {
   padding: 0 var(--space-2);
   text-align: left;
   border-bottom: 1px solid var(--hairline);
+  /* 列分隔线：只留 hairline 一级，保证多列时不至于把字段粘在一起 */
+  border-right: 1px solid var(--hairline);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   position: relative;
+}
+
+/* 最后一列不再画右边线，避免和容器边缘叠成双线 */
+th:last-child,
+td:last-child {
+  border-right: none;
 }
 
 td {

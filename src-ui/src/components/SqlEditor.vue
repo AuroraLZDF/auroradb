@@ -1822,7 +1822,7 @@ onUnmounted(() => {
   padding: 0 var(--space-2);
   text-align: left;
   border-bottom: 1px solid var(--hairline);
-  border-right: none;
+  border-right: 1px solid var(--hairline);
   font-size: var(--text-sm);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1846,6 +1846,11 @@ onUnmounted(() => {
 }
 
 /* 虚拟滚动占位行：只用于撑起滚动高度 */
+.result-table th:last-child,
+.result-table td:last-child {
+  border-right: none;
+}
+
 .result-table .virtual-spacer td {
   max-width: none;
   padding: 0;
