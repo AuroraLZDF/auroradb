@@ -118,20 +118,38 @@ const statusOptions = computed(() => [
   { label: t('history.failedOnly'), value: 'failed' },
 ])
 
+/** 旧记录没有连接名，单独归成一个筛选分组 */
+const LEGACY_GROUP = '__legacy__'
+
+/**
+ * 筛选项来自历史自身的连接名，而不是保存的连接表：
+ * 历史里的 connectionId 是会话 id，和保存连接的 id 对不上，按 id 过滤永远是空列表。
+ */
 const connectionOptions = computed(() => {
-  const ids = new Set(queryLibrary.history.map(item => item.connectionId))
-  return [
+  const names = new Set<string>()
+  for (const item of queryLibrary.history) {
+    if (item.connectionName) names.add(item.connectionName)
+  }
+  const options = [
     { label: t('history.allConnections'), value: '' },
-    ...savedConnections.savedConnections
-      .filter(conn => ids.has(conn.id))
-      .map(conn => ({ label: conn.name, value: conn.id })),
+    ...[...names]
+      .sort((a, b) => a.localeCompare(b, 'zh-CN'))
+      .map(name => ({ label: name, value: name })),
   ]
+  if (queryLibrary.history.some(item => !item.connectionName)) {
+    options.push({ label: t('history.legacyGroup'), value: LEGACY_GROUP })
+  }
+  return options
 })
 
 const filtered = computed(() => {
   const search = keyword.value.trim().toLowerCase()
   return queryLibrary.history.filter(entry => {
-    if (connectionFilter.value && entry.connectionId !== connectionFilter.value) return false
+    if (connectionFilter.value === LEGACY_GROUP) {
+      if (entry.connectionName) return false
+    } else if (connectionFilter.value && entry.connectionName !== connectionFilter.value) {
+      return false
+    }
     if (statusFilter.value === 'success' && !entry.success) return false
     if (statusFilter.value === 'failed' && entry.success) return false
     if (search && !entry.sql.toLowerCase().includes(search)) return false
