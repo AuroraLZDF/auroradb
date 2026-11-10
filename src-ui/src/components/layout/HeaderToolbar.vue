@@ -264,7 +264,7 @@ const emit = defineEmits<{
 
 const currentConnection = computed(() => connStore.currentConnection)
 
-// 工具入口按当前连接的驱动能力开放：没有连接全部禁用；PG 仅 ER 图可用（其余 P2）
+// 工具入口按当前连接的驱动能力开放：没有连接全部禁用；能力表 proTools=false 的工具禁用
 const hasActiveConnection = computed(() => connStore.activeConnections.length > 0)
 const toolDriver = computed<DriverKind>(() =>
   normalizeDriver(currentConnection.value?.driver ?? connStore.activeConnections[0]?.driver)

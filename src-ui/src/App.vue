@@ -174,7 +174,7 @@
       </div>
       <div class="menu-divider"></div>
       <div class="menu-item" role="menuitem" @click="handleDatabaseMenu('edit')">
-        <Settings class="menu-icon" :size="14" /> {{ t('app.editDatabase') }}
+        <Settings class="menu-icon" :size="14" /> {{ isSchemaDatabaseNode ? t('databaseDesigner.newSchema') : t('app.editDatabase') }}
       </div>
       <div class="menu-item" role="menuitem" @click="handleDatabaseMenu('new-table')">
         <Plus class="menu-icon" :size="14" /> {{ t('app.newTable') }}
@@ -363,6 +363,7 @@
 <script setup lang="ts">
 import { ref, computed, reactive, onMounted, onUnmounted, watch } from 'vue'
 import { quoteIdentifier } from '@/utils/sql'
+import { capabilitiesOf } from '@/utils/driver'
 import { t, toggleLocale, locale } from '@/i18n'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -476,6 +477,13 @@ const databaseContextMenu = ref({
   database: '',
   isOpened: false
 })
+
+/** 数据库节点所在连接的驱动能力：PG 下数据库节点的「编辑」= 新建 Schema */
+const databaseNodeCaps = computed(() => {
+  const driver = store.activeConnections.find(c => c.id === databaseContextMenu.value.connectionId)?.driver
+  return capabilitiesOf(driver)
+})
+const isSchemaDatabaseNode = computed(() => databaseNodeCaps.value.databaseDesignerMode === 'schema')
 
 // 已保存连接右键菜单
 const savedConnectionContextMenu = ref({
@@ -1114,9 +1122,24 @@ async function onTableDesignerSaved() {
 
 // 数据库设计器保存后的回调
 async function onDatabaseDesignerSaved(databaseName: string) {
-  const { connectionId, isNewDatabase } = databaseDesignerData.value
+  const { connectionId, database, isNewDatabase } = databaseDesignerData.value
+  const driver = store.activeConnections.find(c => c.id === connectionId)?.driver ?? 'mysql'
+  const caps = capabilitiesOf(driver)
   // 关闭弹窗
   showDatabaseDesigner.value = false
+  if (caps.databaseDesignerMode === 'schema') {
+    // PG：数据库节点上执行的其实是「在库内新建/重命名/删除 schema」。
+    // 树上的 schema 依附于表名展示，没有独立节点，因此刷新目标库的对象树即可。
+    delete connectionDatabaseTables[connectionId]?.[database]
+    await loadConnectionDatabases(connectionId, true)
+    if (database) {
+      await loadDatabaseTables(connectionId, database, true).catch(() => undefined)
+    }
+    showToast(isNewDatabase
+      ? t('databaseDesigner.schemaCreated', { name: databaseName, database })
+      : t('databaseDesigner.schemaSaved', { name: databaseName, database }))
+    return
+  }
   // 强制刷新数据库列表，确保新建的库立即出现在侧边栏
   await loadConnectionDatabases(connectionId, true)
   // 如果是新建数据库，自动展开
@@ -1462,8 +1485,13 @@ async function handleDatabaseMenu(action: string) {
       closeDatabase(connectionId, database)
       break
     case 'edit':
-      // 编辑数据库（打开数据库设计器）
-      databaseDesignerData.value = { connectionId, database, isNewDatabase: false }
+      // PG 数据库节点：在库内新建 Schema（PG 的 schema 不是树上的独立节点）；
+      // MySQL：打开数据库设计器编辑字符集/排序规则。
+      databaseDesignerData.value = {
+        connectionId,
+        database,
+        isNewDatabase: isSchemaDatabaseNode.value
+      }
       showDatabaseDesigner.value = true
       break
     case 'new-table':
@@ -1482,6 +1510,51 @@ async function handleDatabaseMenu(action: string) {
       }
       break
     case 'delete': {
+      const driver = store.activeConnections.find(c => c.id === connectionId)?.driver ?? 'mysql'
+      const isSchemaDriver = capabilitiesOf(driver).databaseDesignerMode === 'schema'
+      const connectionDatabase = store.activeConnections.find(c => c.id === connectionId)?.database ?? ''
+      if (isSchemaDriver) {
+        // PG 不允许删除当前连接打开的库（后端连接池正连着它）
+        if (database === connectionDatabase) {
+          showError(t('app.cannotDeleteCurrentDatabase', { name: database }))
+          break
+        }
+        const confirmed = await confirmDanger({
+          message: t('app.deletePgDatabaseConfirm', { name: database }),
+          requireAcknowledge: true,
+        })
+        if (!confirmed) break
+        try {
+          // 需连接到其它库（连接配置库）才能删除目标库；WITH (FORCE) 断开残留会话
+          await browserStore.executeSql(
+            connectionId,
+            connectionDatabase,
+            `DROP DATABASE ${quoteIdentifier(database, driver)} WITH (FORCE)`
+          )
+        } catch (e) {
+          showError(t('app.deleteDatabaseFailed', { error: String(e) }))
+          break
+        }
+        // 关闭该数据库下已打开的表 Tab，再清理所有相关缓存与选中状态
+        const key = `${connectionId}.${database}`
+        mainContentRef.value?.closeDatabaseTabs(connectionId, database)
+        expandedDatabases.delete(key)
+        activeDatabases.delete(key)
+        for (const catKey of Array.from(expandedCategories)) {
+          if (catKey.startsWith(key + '.')) expandedCategories.delete(catKey)
+        }
+        delete connectionDatabaseTables[connectionId]?.[database]
+        if (selectedDatabase.value === key) selectedDatabase.value = ''
+        if (selectedInfoType.value === 'database' && selectedInfoData.value.database === database) {
+          closeInfoPanel()
+        }
+        if (browserStore.currentDatabase === database) {
+          browserStore.currentDatabase = ''
+        }
+        await loadConnectionDatabases(connectionId, true)
+        showToast(t('app.deleteDatabaseSuccess', { name: database }))
+        break
+      }
       // 删除数据库
       const confirmed = await confirmDanger({
         message: t('app.deleteDatabaseConfirm', { name: database }),
@@ -1489,7 +1562,6 @@ async function handleDatabaseMenu(action: string) {
       })
       if (!confirmed) break
       try {
-        const driver = store.activeConnections.find(c => c.id === connectionId)?.driver ?? 'mysql'
         await browserStore.executeSql(connectionId, database, `DROP DATABASE ${quoteIdentifier(database, driver)}`)
         const key = `${connectionId}.${database}`
         // 关闭该数据库下已打开的表 Tab，再清理所有相关缓存与选中状态

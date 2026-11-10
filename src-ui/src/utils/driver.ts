@@ -32,7 +32,7 @@ export interface DriverCapabilities {
   requiresDatabase: boolean
   /** 表名限定方式：database=库名.表名（MySQL），schema=schema.表名（PG） */
   tableQualification: 'database' | 'schema'
-  /** Pro 工具支持情况（P1 仅 ER 图支持 PG） */
+  /** Pro 工具支持情况（P2 起 PG 全部支持） */
   proTools: {
     schemaDiff: boolean
     monitor: boolean
@@ -40,7 +40,57 @@ export interface DriverCapabilities {
     globalSearch: boolean
     erDiagram: boolean
   }
+  /** 监控指标语义：MySQL 的 InnoDB/COM_* 与 PG 的共享缓冲/行数统计展示名称不同 */
+  monitorDialect: 'mysql' | 'postgres'
+  /** 备份/还原使用的客户端工具方言：mysqldump / pg_dump + psql */
+  backupDialect: 'mysql' | 'postgres'
+  /** 设计器 DDL 方言：表设计器/库设计器生成语句时使用 */
+  ddlDialect: 'mysql' | 'postgres'
+  /** 一次 execute_sql 调用能否携带多条语句（MySQL 文本协议可以；PG 扩展协议只能单条） */
+  multiStatementDdl: boolean
+  /** 是否支持列位置 FIRST / AFTER（PG 不支持重排已有列） */
+  supportsColumnPosition: boolean
+  /** 列注释是否内联在列定义中（MySQL）；否则用 COMMENT ON */
+  inlineColumnComments: boolean
+  /** 设计器字段类型下拉选项 */
+  dataTypes: readonly string[]
+  /** 设计器索引类型下拉选项 */
+  indexTypes: readonly string[]
+  /** 是否支持 UNSIGNED 修饰（MySQL 整数类型） */
+  supportsUnsigned: boolean
+  /** 是否支持 ON UPDATE CURRENT_TIMESTAMP */
+  supportsOnUpdateTimestamp: boolean
+  /** 是否支持虚拟列（MySQL） */
+  supportsVirtualColumns: boolean
+  /** 自增列是否必须依赖某个索引/主键（MySQL 的 AUTO_INCREMENT 要求；PG 的 IDENTITY 不要求） */
+  autoIncrementRequiresPrimaryKey: boolean
+  /** 库设计器语义：database=数据库（MySQL）/ schema=模式（PG） */
+  databaseDesignerMode: 'database' | 'schema'
+  /** 库设计器是否展示 charset / collation（MySQL 专有概念） */
+  supportsDatabaseCharset: boolean
+  /** 全局搜索是否支持「全部数据库」范围（PG 连接固定搜索当前数据库） */
+  supportsAllDatabaseSearch: boolean
 }
+
+/** 设计器字段类型下拉（顺序即展示顺序；MySQL 保持历史顺序） */
+export const MYSQL_DATA_TYPES: readonly string[] = [
+  'bigint', 'binary', 'bit', 'blob', 'boolean', 'char', 'date', 'datetime',
+  'decimal', 'double', 'enum', 'float', 'int', 'json', 'longblob', 'longtext',
+  'mediumblob', 'mediumint', 'mediumtext', 'set', 'smallint', 'text',
+  'time', 'timestamp', 'tinyblob', 'tinyint', 'tinytext', 'varbinary',
+  'varchar', 'year'
+]
+
+/** PostgreSQL 类型集（不含 MySQL 专有语义） */
+export const POSTGRES_DATA_TYPES: readonly string[] = [
+  'smallint', 'integer', 'bigint', 'smallserial', 'serial', 'bigserial',
+  'numeric', 'real', 'double precision', 'boolean', 'char', 'varchar',
+  'text', 'date', 'time', 'timestamp', 'timestamptz', 'interval',
+  'uuid', 'json', 'jsonb', 'bytea'
+]
+
+export const MYSQL_INDEX_TYPES: readonly string[] = ['BTREE', 'HASH', 'FULLTEXT']
+export const POSTGRES_INDEX_TYPES: readonly string[] = ['btree', 'hash', 'gin', 'gist', 'brin']
 
 export const DRIVER_CAPABILITIES: Record<DriverKind, DriverCapabilities> = {
   mysql: {
@@ -57,12 +107,26 @@ export const DRIVER_CAPABILITIES: Record<DriverKind, DriverCapabilities> = {
     tableQualification: 'database',
     proTools: {
       schemaDiff: true,
-      // 监控 / 备份 / 全局搜索目前仅实现 MySQL；PG 支持在 P2
       monitor: true,
       backup: true,
       globalSearch: true,
       erDiagram: true,
     },
+    monitorDialect: 'mysql',
+    backupDialect: 'mysql',
+    ddlDialect: 'mysql',
+    multiStatementDdl: true,
+    supportsColumnPosition: true,
+    inlineColumnComments: true,
+    dataTypes: MYSQL_DATA_TYPES,
+    indexTypes: MYSQL_INDEX_TYPES,
+    supportsUnsigned: true,
+    supportsOnUpdateTimestamp: true,
+    supportsVirtualColumns: true,
+    autoIncrementRequiresPrimaryKey: true,
+    databaseDesignerMode: 'database',
+    supportsDatabaseCharset: true,
+    supportsAllDatabaseSearch: true,
   },
   postgres: {
     label: 'PostgreSQL',
@@ -79,12 +143,28 @@ export const DRIVER_CAPABILITIES: Record<DriverKind, DriverCapabilities> = {
     requiresDatabase: false,
     tableQualification: 'schema',
     proTools: {
-      schemaDiff: false,
-      monitor: false,
-      backup: false,
-      globalSearch: false,
+      schemaDiff: true,
+      monitor: true,
+      backup: true,
+      globalSearch: true,
       erDiagram: true,
     },
+    monitorDialect: 'postgres',
+    backupDialect: 'postgres',
+    ddlDialect: 'postgres',
+    // PG 的 execute 走 sqlx 扩展协议，一次只能一条语句，设计器保存时需前端拆分
+    multiStatementDdl: false,
+    supportsColumnPosition: false,
+    inlineColumnComments: false,
+    dataTypes: POSTGRES_DATA_TYPES,
+    indexTypes: POSTGRES_INDEX_TYPES,
+    supportsUnsigned: false,
+    supportsOnUpdateTimestamp: false,
+    supportsVirtualColumns: false,
+    autoIncrementRequiresPrimaryKey: false,
+    databaseDesignerMode: 'schema',
+    supportsDatabaseCharset: false,
+    supportsAllDatabaseSearch: false,
   },
 }
 

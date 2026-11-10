@@ -48,7 +48,7 @@
         <Button size="sm" :icon="RefreshCw" :loading="processLoading" @click="refreshProcesses()">
           {{ t('common.refresh') }}
         </Button>
-        <span v-if="metrics" class="version-hint">MySQL {{ metrics.version }}</span>
+        <span v-if="metrics" class="version-hint">{{ processCaps.label }} {{ metrics.version }}</span>
       </div>
 
       <div v-if="processError" class="alert error">
@@ -60,26 +60,33 @@
         <div class="metric-card">
           <span class="metric-label">{{ t('monitor.metricQps') }}</span>
           <span class="metric-value">{{ metrics.qps.toFixed(2) }}</span>
-          <span class="metric-sub">{{ t('monitor.metricQpsSub') }}</span>
+          <span class="metric-sub">{{ isPostgresMonitor ? t('monitor.metricQpsSubPg') : t('monitor.metricQpsSub') }}</span>
         </div>
         <div class="metric-card">
           <span class="metric-label">{{ t('monitor.metricConnections') }}</span>
           <span class="metric-value">
             {{ metrics.threads_connected }}<span class="metric-dim"> / {{ metrics.max_connections }}</span>
           </span>
-          <span class="metric-sub">{{ t('monitor.metricConnectionsSub') }}</span>
+          <span class="metric-sub">{{ isPostgresMonitor ? t('monitor.metricConnectionsSubPg') : t('monitor.metricConnectionsSub') }}</span>
         </div>
         <div class="metric-card">
-          <span class="metric-label">{{ t('monitor.metricThreadsRunning') }}</span>
+          <span class="metric-label">{{ isPostgresMonitor ? t('monitor.metricActiveSessions') : t('monitor.metricThreadsRunning') }}</span>
           <span class="metric-value">{{ metrics.threads_running }}</span>
-          <span class="metric-sub">{{ t('monitor.metricThreadsRunningSub') }}</span>
+          <span class="metric-sub">{{ isPostgresMonitor ? t('monitor.metricActiveSessionsSub') : t('monitor.metricThreadsRunningSub') }}</span>
         </div>
         <div class="metric-card">
           <span class="metric-label">{{ t('monitor.metricUptime') }}</span>
           <span class="metric-value">{{ formatUptime(metrics.uptime_seconds) }}</span>
           <span class="metric-sub">{{ t('monitor.metricUptimeSub') }}</span>
         </div>
-        <div class="metric-card">
+        <div v-if="isPostgresMonitor" class="metric-card">
+          <span class="metric-label">{{ t('monitor.metricSlowQueryLog') }}</span>
+          <span class="metric-value">
+            {{ metrics.slow_query_log ? t('monitor.slowLogOn') : t('monitor.slowLogOff') }}
+          </span>
+          <span class="metric-sub">{{ t('monitor.metricSlowQueryLogSub', { seconds: metrics.long_query_time }) }}</span>
+        </div>
+        <div v-else class="metric-card">
           <span class="metric-label">{{ t('monitor.metricSlowQueries') }}</span>
           <span class="metric-value">{{ metrics.slow_queries }}</span>
           <span class="metric-sub">
@@ -90,26 +97,26 @@
           </span>
         </div>
         <div class="metric-card">
-          <span class="metric-label">{{ t('monitor.metricBufferPool') }}</span>
+          <span class="metric-label">{{ isPostgresMonitor ? t('monitor.metricSharedBuffer') : t('monitor.metricBufferPool') }}</span>
           <span class="metric-value">
             {{ metrics.buffer_pool_hit_rate === null ? '—' : metrics.buffer_pool_hit_rate.toFixed(2) + '%' }}
           </span>
-          <span class="metric-sub">InnoDB Buffer Pool</span>
+          <span class="metric-sub">{{ isPostgresMonitor ? t('monitor.metricSharedBufferSub') : 'InnoDB Buffer Pool' }}</span>
         </div>
-        <div class="metric-card">
+        <div v-if="!isPostgresMonitor" class="metric-card">
           <span class="metric-label">{{ t('monitor.metricAbortedConnects') }}</span>
           <span class="metric-value">{{ metrics.aborted_connects }}</span>
           <span class="metric-sub">Aborted connects</span>
         </div>
         <div class="metric-card">
-          <span class="metric-label">{{ t('monitor.metricReadWrite') }}</span>
+          <span class="metric-label">{{ isPostgresMonitor ? t('monitor.metricRowsReadWrite') : t('monitor.metricReadWrite') }}</span>
           <span class="metric-value read-write">
-            <span class="rw read">S {{ metrics.com_select }}</span>
+            <span class="rw read">{{ isPostgresMonitor ? 'R' : 'S' }} {{ metrics.com_select }}</span>
             <span class="rw write">
               I {{ metrics.com_insert }} / U {{ metrics.com_update }} / D {{ metrics.com_delete }}
             </span>
           </span>
-          <span class="metric-sub">COM_SELECT / INSERT / UPDATE / DELETE</span>
+          <span class="metric-sub">{{ isPostgresMonitor ? t('monitor.metricRowsReadWriteSub') : 'COM_SELECT / INSERT / UPDATE / DELETE' }}</span>
         </div>
       </div>
 
@@ -297,6 +304,7 @@ import {
 } from '@/stores/dataBrowser'
 import type { ConnectionStatus } from '@/stores/connection'
 import { confirmDanger } from '@/composables/useConfirm'
+import { capabilitiesOf } from '@/utils/driver'
 import { t } from '@/i18n'
 
 const props = withDefaults(defineProps<{
@@ -322,6 +330,11 @@ const connectionOptions = computed(() =>
 
 // ---------- 进程 ----------
 const processConnectionId = ref(props.initialConnectionId || props.connections[0]?.id || '')
+/** 当前监控连接的驱动能力：MySQL / PG 的指标语义与展示名不同 */
+const processCaps = computed(() =>
+  capabilitiesOf(props.connections.find(connection => connection.id === processConnectionId.value)?.driver)
+)
+const isPostgresMonitor = computed(() => processCaps.value.monitorDialect === 'postgres')
 const processes = ref<ProcessInfo[]>([])
 const metrics = ref<ServerMetrics | null>(null)
 const processLoading = ref(false)
@@ -368,7 +381,12 @@ async function refreshProcesses(silent = false) {
 async function terminate(process: ProcessInfo) {
   if (killingIds.value.has(process.id)) return
   const confirmed = await confirmDanger({
-    message: t('monitor.confirmKill', { id: process.id, user: process.user, host: process.host }),
+    // PG 用 PID（pg_terminate_backend），MySQL 用线程/连接 ID
+    message: t(isPostgresMonitor.value ? 'monitor.confirmKillPg' : 'monitor.confirmKill', {
+      id: process.id,
+      user: process.user,
+      host: process.host,
+    }),
     confirmText: t('monitor.actionKill'),
   })
   if (!confirmed) return

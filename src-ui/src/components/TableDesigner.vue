@@ -35,10 +35,20 @@
         <button class="btn-primary-key" @click="togglePrimaryKey" :disabled="selectedFieldIndex === null">
           <Key class="icon" :size="16" /> {{ t('tableDesigner.primaryKey') }}
         </button>
-        <button class="btn-move-up" @click="moveFieldUp" :disabled="selectedFieldIndex === null || selectedFieldIndex === 0">
+        <button
+          v-if="driverCaps.supportsColumnPosition"
+          class="btn-move-up"
+          @click="moveFieldUp"
+          :disabled="selectedFieldIndex === null || selectedFieldIndex === 0"
+        >
           <ArrowUp class="icon" :size="16" /> {{ t('tableDesigner.moveUp') }}
         </button>
-        <button class="btn-move-down" @click="moveFieldDown" :disabled="selectedFieldIndex === null || selectedFieldIndex === fields.length - 1">
+        <button
+          v-if="driverCaps.supportsColumnPosition"
+          class="btn-move-down"
+          @click="moveFieldDown"
+          :disabled="selectedFieldIndex === null || selectedFieldIndex === fields.length - 1"
+        >
           <ArrowDown class="icon" :size="16" /> {{ t('tableDesigner.moveDown') }}
         </button>
       </div>
@@ -74,7 +84,7 @@
                 <th class="col-length">{{ t('tableDesigner.length') }}</th>
                 <th class="col-decimals">{{ t('tableDesigner.decimals') }}</th>
                 <th class="col-nullable">{{ t('tableDesigner.notNull') }}</th>
-                <th class="col-virtual">{{ t('tableDesigner.virtual') }}</th>
+                <th v-if="driverCaps.supportsVirtualColumns" class="col-virtual">{{ t('tableDesigner.virtual') }}</th>
                 <th class="col-key">{{ t('tableDesigner.key') }}</th>
                 <th class="col-comment">{{ t('tableDesigner.comment') }}</th>
               </tr>
@@ -136,7 +146,7 @@
                     @change="markFieldModified(index)"
                   />
                 </td>
-                <td class="col-virtual">
+                <td v-if="driverCaps.supportsVirtualColumns" class="col-virtual">
                   <input
                     type="checkbox"
                     v-model="field.virtual"
@@ -333,7 +343,7 @@
         </div>
 
         <!-- Unsigned (仅整数类型) -->
-        <div class="property-row" v-if="isIntegerType(selectedField.type)">
+        <div class="property-row" v-if="driverCaps.supportsUnsigned && isIntegerType(selectedField.type)">
           <label>{{ t('tableDesigner.unsigned') }}</label>
           <input
             type="checkbox"
@@ -344,7 +354,13 @@
 
         <!-- 自增 (仅整数类型) -->
         <div class="property-row" v-if="isIntegerType(selectedField.type)">
-          <label>{{ t('tableDesigner.autoIncrement') }}</label>
+          <label>{{
+            t(
+              driverCaps.autoIncrementRequiresPrimaryKey
+                ? 'tableDesigner.autoIncrement'
+                : 'tableDesigner.autoIncrementIdentity'
+            )
+          }}</label>
           <input
             type="checkbox"
             v-model="selectedField.isAutoIncrement"
@@ -353,7 +369,7 @@
         </div>
 
         <!-- On Update Current_Timestamp (仅时间戳类型) -->
-        <div class="property-row" v-if="isTimestampType(selectedField.type)">
+        <div class="property-row" v-if="driverCaps.supportsOnUpdateTimestamp && isTimestampType(selectedField.type)">
           <label>
             <input
               type="checkbox"
@@ -382,62 +398,33 @@ import { useUnsavedGuard } from '@/composables/useUnsavedGuard'
 import {
   Save, Plus, CornerDownLeft, Trash2, Key, ArrowUp, ArrowDown, X, Copy, Table2
 } from 'lucide-vue-next'
-import { quoteIdentifier } from '@/utils/sql'
+import { capabilitiesOf, normalizeDriver, type DriverKind } from '@/utils/driver'
+import {
+  buildAlterTableSql,
+  buildCreateTableSql,
+  columnHasDecimals,
+  columnHasLength,
+  columnTypeExpression,
+  isIntegerColumnType,
+  isTimestampColumnType,
+  normalizeColumnType,
+  splitSqlStatements,
+  type DdlField,
+  type DdlForeignKey,
+  type DdlIndex,
+  type TableDdlInput,
+} from '@/utils/ddl'
+import { useConnectionStore } from '@/stores/connection'
 import { t } from '@/i18n'
 import Select from '@/components/ui/Select.vue'
 
-interface Field {
+/** 设计器行需要稳定的 UI key，其余字段与 DDL 生成器的 DdlField 保持一致 */
+interface Field extends DdlField {
   id: string
-  name: string
-  type: string
-  length?: number
-  decimals?: number
-  notNull: boolean
-  defaultValue?: string
-  comment?: string
-  isPrimary: boolean
-  isUnique: boolean
-  isIndex: boolean
-  isAutoIncrement: boolean
-  virtual: boolean
-  unsigned?: boolean
-  onUpdateCurrentTimestamp?: boolean
-  isModified?: boolean
-  isNew?: boolean
-  isDeleted?: boolean
-  /** 数据库中原始的列名，用于生成 CHANGE COLUMN 与识别重命名 */
-  originalName?: string
-  /** 加载时的列顺序，用于判断是否需要生成 FIRST / AFTER 位置子句 */
-  originalOrder?: number
-  /** 加载时是否为主键，用于判断主键变更 */
-  originalPrimary?: boolean
 }
 
-interface Index {
-  name: string
-  columns: string[]
-  type: string
-  isUnique: boolean
-  isModified?: boolean
-  isNew?: boolean
-  isDeleted?: boolean
-  /** 数据库中原始的索引名，重命名时需先 DROP 旧索引 */
-  originalName?: string
-}
-
-interface ForeignKey {
-  name: string
-  column: string
-  refTable: string
-  refColumn: string
-  onDelete: string
-  onUpdate: string
-  isModified?: boolean
-  isNew?: boolean
-  isDeleted?: boolean
-  /** 数据库中原始的外键名，重命名时需先 DROP 旧外键 */
-  originalName?: string
-}
+type Index = DdlIndex
+type ForeignKey = DdlForeignKey
 
 const props = defineProps<{
   connectionId: string
@@ -452,7 +439,14 @@ const emit = defineEmits<{
 }>()
 
 const browserStore = useDataBrowserStore()
+const connectionStore = useConnectionStore()
 const { success: showToast } = useToast()
+
+/** 当前设计器所属连接的驱动；旧数据没有 driver 字段时回落到 MySQL */
+const driverKind = computed<DriverKind>(() =>
+  normalizeDriver(connectionStore.activeConnections.find(conn => conn.id === props.connectionId)?.driver)
+)
+const driverCaps = computed(() => capabilitiesOf(driverKind.value))
 
 // 标签页
 const tabs = computed(() => [
@@ -463,17 +457,9 @@ const tabs = computed(() => [
 ])
 const activeTab = ref('fields')
 
-// 数据类型
-const dataTypes = [
-  'bigint', 'binary', 'bit', 'blob', 'boolean', 'char', 'date', 'datetime',
-  'decimal', 'double', 'enum', 'float', 'int', 'json', 'longblob', 'longtext',
-  'mediumblob', 'mediumint', 'mediumtext', 'set', 'smallint', 'text',
-  'time', 'timestamp', 'tinyblob', 'tinyint', 'tinytext', 'varbinary',
-  'varchar', 'year'
-]
-
-// 索引类型
-const indexTypes = ['BTREE', 'HASH', 'FULLTEXT']
+// 数据类型 / 索引类型：由统一能力表提供，MySQL 与 PG 各一套
+const dataTypes = computed<string[]>(() => [...driverCaps.value.dataTypes])
+const indexTypes = computed<string[]>(() => [...driverCaps.value.indexTypes])
 
 // 外键动作
 const fkActions = ['RESTRICT', 'CASCADE', 'SET NULL', 'NO ACTION']
@@ -484,6 +470,8 @@ const indexes = ref<Index[]>([])
 const foreignKeys = ref<ForeignKey[]>([])
 const originalStructure = ref<unknown>(null)
 const newTableName = ref('')
+/** 已加载表的主键约束名：PG 删除主键时需要精确的约束名 */
+const primaryKeyName = ref<string | undefined>(undefined)
 
 // 选中状态
 const selectedFieldIndex = ref<number | null>(null)
@@ -515,131 +503,28 @@ const hasChanges = computed(() => {
 // 关闭窗口/刷新前的兜底提示，避免直接丢失未保存的表结构修改
 useUnsavedGuard('table-designer', computed(() => Boolean(hasChanges.value)))
 
-// 生成 SQL
-const generatedSql = computed(() => {
+// 生成 SQL：DDL 规则集中在 utils/ddl.ts，这里只负责把表单状态整理成输入
+function buildDdlInput(): TableDdlInput | null {
   const tableName = props.isNewTable ? newTableName.value : props.tableName
-  if (!tableName) return t('tableDesigner.sqlNoTableName')
-
-  if (props.isNewTable) {
-    // 创建新表
-    const fieldDefs = fields.value
-      .filter(f => !f.isDeleted)
-      .map(f => fieldToSql(f))
-      .join(',\n  ')
-    
-    // 索引（排除主键，因为主键已在字段定义中添加）
-    const indexDefs = indexes.value
-      .filter(i => !i.isDeleted)
-      .map(idx => {
-        const unique = idx.isUnique ? 'UNIQUE ' : ''
-        return `  ${unique}INDEX ${quoteIdentifier(idx.name)} (${idx.columns.map(c => quoteIdentifier(c)).join(', ')})`
-      })
-    
-    // 外键
-    const fkDefs = foreignKeys.value
-      .filter(fk => !fk.isDeleted)
-      .map(fk => `  CONSTRAINT ${quoteIdentifier(fk.name)} FOREIGN KEY (${quoteIdentifier(fk.column)}) REFERENCES ${quoteIdentifier(fk.refTable)}(${quoteIdentifier(fk.refColumn)}) ON DELETE ${fk.onDelete} ON UPDATE ${fk.onUpdate}`)
-    
-    const allConstraints = [...indexDefs, ...fkDefs]
-    const constraints = allConstraints.length > 0 ? ',\n' + allConstraints.join(',\n') : ''
-    
-    return `CREATE TABLE ${quoteIdentifier(tableName)} (\n  ${fieldDefs}${constraints}\n);`
+  if (!tableName) return null
+  return {
+    tableName,
+    fields: fields.value,
+    indexes: indexes.value,
+    foreignKeys: foreignKeys.value,
+    primaryKeyName: primaryKeyName.value,
   }
+}
 
-  // 修改现有表
-  const sqls: string[] = []
-  const table = quoteIdentifier(tableName!)
-
-  // 字段修改
-  const pkDrops: string[] = []
-  const pkAdds: string[] = []
-  fields.value.forEach((field, index) => {
-    if (field.isNew && !field.isDeleted) {
-      sqls.push(`ALTER TABLE ${table} ADD COLUMN ${fieldToSql(field)}${positionClause(index)};`)
-    } else if (field.isDeleted && !field.isNew) {
-      // 删除时用数据库中的原始列名，避免改过名后又删除导致 DROP 不存在的列
-      sqls.push(`ALTER TABLE ${table} DROP COLUMN ${quoteIdentifier(field.originalName ?? field.name)};`)
-    } else if (field.isModified && !field.isNew) {
-      // 列定义里的 PRIMARY KEY 不能用于 ALTER：已存在主键时重复声明会报错，
-      // 因此主键增删单独生成 ADD/DROP PRIMARY KEY
-      const definition = fieldToSql(field, false)
-      const position = movedPositionClause(field, index)
-      const renamed = !!field.originalName && field.originalName !== field.name
-      if (renamed) {
-        sqls.push(
-          `ALTER TABLE ${table} CHANGE COLUMN ${quoteIdentifier(field.originalName!)} ${definition}${position};`
-        )
-      } else {
-        sqls.push(`ALTER TABLE ${table} MODIFY COLUMN ${definition}${position};`)
-      }
-      if (field.isPrimary !== field.originalPrimary) {
-        if (field.isPrimary) {
-          pkAdds.push(`ALTER TABLE ${table} ADD PRIMARY KEY (${quoteIdentifier(field.name)});`)
-        } else {
-          pkDrops.push(`ALTER TABLE ${table} DROP PRIMARY KEY;`)
-        }
-      }
-    }
-  })
-  sqls.push(...pkDrops, ...pkAdds)
-
-  // 索引修改
-  indexes.value.forEach(index => {
-    if (index.isNew && !index.isDeleted) {
-      const unique = index.isUnique ? 'UNIQUE ' : ''
-      const using = index.type && index.type !== 'BTREE' ? ` USING ${index.type}` : ''
-      sqls.push(`CREATE ${unique}INDEX ${quoteIdentifier(index.name)} ON ${table} (${index.columns.map(c => quoteIdentifier(c)).join(', ')})${using};`)
-    } else if (index.isDeleted && !index.isNew) {
-      sqls.push(`DROP INDEX ${quoteIdentifier(index.originalName ?? index.name)} ON ${table};`)
-    } else if (index.isModified && !index.isNew) {
-      // MySQL 没有通用的“修改索引”语法：先删除旧索引再按新定义创建
-      sqls.push(`DROP INDEX ${quoteIdentifier(index.originalName ?? index.name)} ON ${table};`)
-      const unique = index.isUnique ? 'UNIQUE ' : ''
-      const using = index.type && index.type !== 'BTREE' ? ` USING ${index.type}` : ''
-      sqls.push(`CREATE ${unique}INDEX ${quoteIdentifier(index.name)} ON ${table} (${index.columns.map(c => quoteIdentifier(c)).join(', ')})${using};`)
-    }
-  })
-
-  // 外键修改
-  foreignKeys.value.forEach(fk => {
-    if (fk.isNew && !fk.isDeleted) {
-      sqls.push(`ALTER TABLE ${table} ADD CONSTRAINT ${quoteIdentifier(fk.name)} FOREIGN KEY (${quoteIdentifier(fk.column)}) REFERENCES ${quoteIdentifier(fk.refTable)}(${quoteIdentifier(fk.refColumn)}) ON DELETE ${fk.onDelete} ON UPDATE ${fk.onUpdate};`)
-    } else if (fk.isDeleted && !fk.isNew) {
-      sqls.push(`ALTER TABLE ${table} DROP FOREIGN KEY ${quoteIdentifier(fk.originalName ?? fk.name)};`)
-    } else if (fk.isModified && !fk.isNew) {
-      // 外键改名/改引用关系同样需要先删除旧约束
-      sqls.push(`ALTER TABLE ${table} DROP FOREIGN KEY ${quoteIdentifier(fk.originalName ?? fk.name)};`)
-      sqls.push(`ALTER TABLE ${table} ADD CONSTRAINT ${quoteIdentifier(fk.name)} FOREIGN KEY (${quoteIdentifier(fk.column)}) REFERENCES ${quoteIdentifier(fk.refTable)}(${quoteIdentifier(fk.refColumn)}) ON DELETE ${fk.onDelete} ON UPDATE ${fk.onUpdate};`)
-    }
-  })
-
-  return sqls.join('\n\n') || t('tableDesigner.sqlNoChanges')
+const generatedSql = computed(() => {
+  const input = buildDdlInput()
+  if (!input) return t('tableDesigner.sqlNoTableName')
+  const sql = props.isNewTable
+    ? buildCreateTableSql(input, driverKind.value)
+    : buildAlterTableSql(input, driverKind.value)
+  if (props.isNewTable || sql) return sql
+  return t('tableDesigner.sqlNoChanges')
 })
-
-/** 生成列位置子句：插到前一个未删除字段之后，否则放到最前 */
-function positionClause(index: number): string {
-  for (let i = index - 1; i >= 0; i--) {
-    const prev = fields.value[i]
-    if (prev && !prev.isDeleted) return ` AFTER ${quoteIdentifier(prev.name)}`
-  }
-  return ' FIRST'
-}
-
-/**
- * 字段相对原有顺序是否发生移动。
- * 只在「原有字段之间」比较顺序，避免新增/删除字段导致其余字段被误判为移动。
- */
-function movedPositionClause(field: Field, index: number): string {
-  if (field.originalOrder === undefined) return ''
-  const originals = fields.value.filter(
-    f => !f.isDeleted && !f.isNew && f.originalOrder !== undefined
-  )
-  const currentPos = originals.indexOf(field)
-  if (currentPos < 0) return ''
-  const originalPos = originals.filter(f => f.originalOrder! < field.originalOrder!).length
-  if (currentPos === originalPos) return ''
-  return positionClause(index)
-}
 
 // 加载表结构
 async function loadTableStructure() {
@@ -657,42 +542,55 @@ async function loadTableStructure() {
     const structure = await browserStore.getTableStructure(props.connectionId, props.database, props.tableName)
     originalStructure.value = structure
 
-    // 转换字段
-    fields.value = structure.columns.map((col: { name: string; data_type: string; length?: number; decimals?: number; is_nullable: boolean; default_value?: string; comment?: string; is_primary: boolean; is_auto_increment: boolean; unsigned?: boolean; on_update_current_timestamp?: boolean }, order: number) => ({
-      id: Math.random().toString(36).substr(2, 9),
-      name: col.name,
-      type: col.data_type,
-      length: col.length,
-      decimals: col.decimals,
-      notNull: !col.is_nullable,
-      defaultValue: col.default_value,
-      comment: col.comment,
-      isPrimary: col.is_primary,
-      isUnique: false,
-      isIndex: false,
-      isAutoIncrement: col.is_auto_increment,
-      unsigned: col.unsigned,
-      onUpdateCurrentTimestamp: col.on_update_current_timestamp,
-      virtual: false,
-      isModified: false,
-      isNew: false,
-      isDeleted: false,
-      originalName: col.name,
-      originalOrder: order,
-      originalPrimary: col.is_primary
-    }))
+    // 转换字段：类型名按驱动归一化（PG 的 format_type 形如 character varying(32)）
+    fields.value = structure.columns.map((col: { name: string; data_type: string; length?: number; decimals?: number; is_nullable: boolean; default_value?: string; comment?: string; is_primary: boolean; is_auto_increment: boolean; unsigned?: boolean; on_update_current_timestamp?: boolean }, order: number) => {
+      const normalized = normalizeColumnType(col.data_type, driverKind.value)
+      const length = col.length ?? normalized.length
+      const decimals = col.decimals ?? normalized.decimals
+      return {
+        id: Math.random().toString(36).substr(2, 9),
+        name: col.name,
+        type: normalized.type,
+        length,
+        decimals,
+        notNull: !col.is_nullable,
+        defaultValue: col.default_value,
+        comment: col.comment,
+        isPrimary: col.is_primary,
+        isUnique: false,
+        isIndex: false,
+        isAutoIncrement: col.is_auto_increment,
+        unsigned: col.unsigned,
+        onUpdateCurrentTimestamp: col.on_update_current_timestamp,
+        virtual: false,
+        isModified: false,
+        isNew: false,
+        isDeleted: false,
+        originalName: col.name,
+        originalOrder: order,
+        originalPrimary: col.is_primary,
+        originalNotNull: !col.is_nullable,
+        originalDefaultValue: col.default_value,
+        originalComment: col.comment,
+        originalAutoIncrement: col.is_auto_increment,
+        originalTypeSignature: columnTypeExpression({ type: normalized.type, length, decimals }, driverKind.value)
+      }
+    })
 
     // 转换索引
     indexes.value = structure.indexes.map((idx: { name: string; columns: string[]; type?: string; is_unique: boolean }) => ({
       name: idx.name,
       columns: idx.columns,
-      type: idx.type || 'BTREE',
+      type: idx.type || driverCaps.value.indexTypes[0] || 'BTREE',
       isUnique: idx.is_unique,
       isModified: false,
       isNew: false,
       isDeleted: false,
       originalName: idx.name
     }))
+
+    // 主键约束名：PG 元数据不直接返回约束名，从索引信息里推断
+    primaryKeyName.value = resolvePrimaryKeyName(structure)
 
     // 转换外键
     foreignKeys.value = structure.foreign_keys.map((fk: { name: string; column: string; ref_table: string; ref_column: string; on_delete: string; on_update: string }) => ({
@@ -727,67 +625,36 @@ async function loadTableStructure() {
   }
 }
 
-// 字段转 SQL
-// includePrimaryKey=false 用于 ALTER 场景：列定义中重复声明 PRIMARY KEY 会报错
-function fieldToSql(field: Field, includePrimaryKey = true): string {
-  let sql = `${quoteIdentifier(field.name)} ${field.type}`
-  
-  // 长度/精度/显示宽度，如 varchar(255)、decimal(10,2)、int(11)
-  if (field.length) {
-    sql += `(${field.length}${field.decimals !== undefined ? ',' + field.decimals : ''})`
-  }
-  
-  // Unsigned (仅整数类型，位于长度之后)
-  if (field.unsigned && isIntegerType(field.type)) {
-    sql += ' UNSIGNED'
-  }
-  
-  // AUTO_INCREMENT 列必须为 NOT NULL
-  if (field.notNull || field.isAutoIncrement) sql += ' NOT NULL'
-  
-  // 处理默认值
-  if (field.defaultValue !== undefined && field.defaultValue !== null && field.defaultValue !== '') {
-    const upperDefault = field.defaultValue.toUpperCase().trim()
-    // 特殊值不需要引号
-    if (upperDefault === 'NULL' || upperDefault === 'CURRENT_TIMESTAMP' || 
-        /^\d+$/.test(field.defaultValue) || /^[\d.]+$/.test(field.defaultValue)) {
-      sql += ` DEFAULT ${field.defaultValue}`
-    } else {
-      // 字符串值需要引号
-      sql += ` DEFAULT '${field.defaultValue.replace(/'/g, "''")}'`
-    }
-  }
-  
-  // On Update CURRENT_TIMESTAMP (仅时间戳类型)
-  if (field.onUpdateCurrentTimestamp && isTimestampType(field.type)) {
-    sql += ' ON UPDATE CURRENT_TIMESTAMP'
-  }
-  
-  if (field.isAutoIncrement) sql += ' AUTO_INCREMENT'
-  if (includePrimaryKey && field.isPrimary) sql += ' PRIMARY KEY'
-  if (field.comment) sql += ` COMMENT '${field.comment.replace(/'/g, "''")}'`
-  return sql
+/** 从表结构推断主键约束名（MySQL 为 PRIMARY；PG 形如 <table>_pkey） */
+function resolvePrimaryKeyName(structure: { columns: { name: string; is_primary: boolean }[]; indexes: { name: string; columns: string[] }[] }): string | undefined {
+  const pkColumns = structure.columns.filter(col => col.is_primary).map(col => col.name).sort()
+  if (pkColumns.length === 0) return undefined
+  const index = structure.indexes.find(idx => {
+    if (idx.name === 'PRIMARY' || /(^|_)pkey$/i.test(idx.name)) return true
+    const idxColumns = [...idx.columns].sort()
+    return idxColumns.length === pkColumns.length && idxColumns.every((col, i) => col === pkColumns[i])
+  })
+  return index?.name
 }
 
 // 类型是否有长度/显示宽度
 function hasLength(type: string): boolean {
-  return ['char', 'varchar', 'binary', 'varbinary', 'decimal', 'numeric', 'float', 'double',
-          'tinyint', 'smallint', 'mediumint', 'int', 'bigint'].includes(type.toLowerCase())
+  return columnHasLength(type, driverKind.value)
 }
 
 // 类型是否有小数位
 function hasDecimals(type: string): boolean {
-  return ['decimal', 'numeric', 'float', 'double'].includes(type.toLowerCase())
+  return columnHasDecimals(type, driverKind.value)
 }
 
 // 是否为整数类型
 function isIntegerType(type: string): boolean {
-  return ['tinyint', 'smallint', 'mediumint', 'int', 'bigint'].includes(type.toLowerCase())
+  return isIntegerColumnType(type, driverKind.value)
 }
 
 // 是否为时间戳类型
 function isTimestampType(type: string): boolean {
-  return ['timestamp', 'datetime'].includes(type.toLowerCase())
+  return isTimestampColumnType(type, driverKind.value)
 }
 
 // 类型变更
@@ -919,8 +786,9 @@ function togglePrimaryKey() {
   if (selectedFieldIndex.value === null) return
   const field = fields.value[selectedFieldIndex.value]!
   field.isPrimary = !field.isPrimary
-  // MySQL 要求 AUTO_INCREMENT 列必须是某个索引（通常为主键），取消主键时同步取消自增
-  if (!field.isPrimary) {
+  // MySQL 要求 AUTO_INCREMENT 列必须是某个索引（通常为主键），取消主键时同步取消自增；
+  // PG 的 IDENTITY 不依赖主键，保留自增设置
+  if (!field.isPrimary && driverCaps.value.autoIncrementRequiresPrimaryKey) {
     field.isAutoIncrement = false
   }
   markFieldModified(selectedFieldIndex.value)
@@ -966,7 +834,7 @@ function addIndex() {
   const newIndex: Index = {
     name: `idx_${Date.now()}`,
     columns: [],
-    type: 'BTREE',
+    type: driverCaps.value.indexTypes[0] || 'BTREE',
     isUnique: false,
     isModified: false,
     isNew: true,
@@ -1055,7 +923,15 @@ async function saveChanges() {
       return
     }
     
-    await browserStore.executeSql(props.connectionId, props.database, sql)
+    if (driverCaps.value.multiStatementDdl) {
+      await browserStore.executeSql(props.connectionId, props.database, sql)
+    } else {
+      // PG 的扩展协议一次只允许执行一条语句：按分号安全拆分后逐条执行
+      const statements = splitSqlStatements(sql)
+      for (const statement of statements) {
+        await browserStore.executeSql(props.connectionId, props.database, statement)
+      }
+    }
     showToast(t('tableDesigner.saveSuccess'))
 
     emit('saved')

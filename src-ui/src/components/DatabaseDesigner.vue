@@ -2,7 +2,7 @@
   <div class="database-designer">
     <!-- 头部 -->
     <div class="designer-header">
-      <h3>{{ isNewDatabase ? t('databaseDesigner.newDatabase') : t('databaseDesigner.editDatabase') }}</h3>
+      <h3>{{ headerTitle }}</h3>
       <button class="btn-close" @click="close" aria-label="按钮"><X :size="18" /></button>
     </div>
 
@@ -16,16 +16,20 @@
 
       <template v-else>
       <div class="form-group">
-        <label>{{ t('databaseDesigner.nameLabel') }}</label>
+        <label>{{ isSchemaMode ? t('databaseDesigner.schemaNameLabel') : t('databaseDesigner.nameLabel') }}</label>
         <input
           v-model="form.name"
           type="text"
-          :placeholder="t('databaseDesigner.namePlaceholder')"
-          :disabled="!isNewDatabase"
+          :placeholder="isSchemaMode ? t('databaseDesigner.schemaNamePlaceholder') : t('databaseDesigner.namePlaceholder')"
+          :disabled="!isNewDatabase && !isSchemaMode"
         />
       </div>
 
-      <div class="form-group">
+      <p v-if="isSchemaMode && schemaTargetDatabase" class="form-hint">
+        {{ t('databaseDesigner.schemaTargetHint', { database: schemaTargetDatabase }) }}
+      </p>
+
+      <div class="form-group" v-if="driverCaps.supportsDatabaseCharset">
         <label>{{ t('databaseDesigner.charset') }}</label>
         <CustomSelect
           v-model="form.charset"
@@ -35,7 +39,7 @@
         />
       </div>
 
-      <div class="form-group">
+      <div class="form-group" v-if="driverCaps.supportsDatabaseCharset">
         <label>{{ t('databaseDesigner.collation') }}</label>
         <CustomSelect
           v-model="form.collation"
@@ -45,13 +49,21 @@
         />
       </div>
 
-      <div class="form-group" v-if="!isNewDatabase">
+      <div class="form-group" v-if="!isNewDatabase && !isSchemaMode">
         <label>{{ t('databaseDesigner.comment') }}</label>
         <textarea
           v-model="form.comment"
           rows="3"
           :placeholder="t('databaseDesigner.commentPlaceholder')"
         ></textarea>
+      </div>
+
+      <div class="form-group" v-if="isSchemaMode && !isNewDatabase">
+        <label>{{ t('databaseDesigner.dangerZone') }}</label>
+        <p class="form-hint">{{ t('databaseDesigner.dropSchemaHint') }}</p>
+        <button class="btn-danger" :disabled="saving || loading" @click="dropSchema">
+          {{ t('databaseDesigner.dropSchema') }}
+        </button>
       </div>
 
       <!-- 错误提示 -->
@@ -76,7 +88,17 @@ import { ref, reactive, computed, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import CustomSelect from '@/components/ui/Select.vue'
 import { X } from 'lucide-vue-next'
-import { quoteIdentifier } from '@/utils/sql'
+import {
+  buildAlterDatabaseSql,
+  buildCreateDatabaseSql,
+  buildCreateSchemaSql,
+  buildDropSchemaSql,
+  buildRenameSchemaSql,
+} from '@/utils/ddl'
+import { capabilitiesOf, normalizeDriver, type DriverKind } from '@/utils/driver'
+import { useConnectionStore } from '@/stores/connection'
+import { confirmDanger } from '@/composables/useConfirm'
+import { useToast } from '@/composables/useToast'
 import { t } from '@/i18n'
 
 const props = defineProps<{
@@ -89,6 +111,25 @@ const emit = defineEmits<{
   close: []
   saved: [databaseName: string]
 }>()
+
+const connectionStore = useConnectionStore()
+const { success: showToast } = useToast()
+
+/** 当前连接驱动；数据库设计器在 PG 下编辑的是 schema */
+const connectionInfo = computed(() =>
+  connectionStore.activeConnections.find(conn => conn.id === props.connectionId)
+)
+const driverKind = computed<DriverKind>(() => normalizeDriver(connectionInfo.value?.driver))
+const driverCaps = computed(() => capabilitiesOf(driverKind.value))
+const isSchemaMode = computed(() => driverCaps.value.databaseDesignerMode === 'schema')
+/** PG：schema 所属的目标数据库（数据库节点进入时取节点库名，否则取连接配置库） */
+const schemaTargetDatabase = computed(() => props.database || connectionInfo.value?.database || '')
+const headerTitle = computed(() => {
+  if (isSchemaMode.value) {
+    return props.isNewDatabase ? t('databaseDesigner.newSchema') : t('databaseDesigner.editSchema')
+  }
+  return props.isNewDatabase ? t('databaseDesigner.newDatabase') : t('databaseDesigner.editDatabase')
+})
 
 // 表单数据
 const form = reactive({
@@ -247,6 +288,12 @@ watch(() => form.charset, (newCharset) => {
 async function loadDatabaseInfo() {
   if (!props.database || props.isNewDatabase) return
 
+  // PG 下编辑的是 schema，没有字符集/排序规则可加载
+  if (isSchemaMode.value) {
+    form.name = props.database
+    return
+  }
+
   loading.value = true
   errorMessage.value = ''
   try {
@@ -295,16 +342,19 @@ function close() {
 }
 
 async function save() {
-  if (!form.name.trim()) return
+  const name = form.name.trim()
+  if (!name) return
 
-  // 保存前校验字符集与排序规则的匹配性
-  const available = CHARSET_COLLATIONS[form.charset] || []
-  if (!form.collation || !available.includes(form.collation)) {
-    errorMessage.value = t('databaseDesigner.collationMismatch', {
-      collation: form.collation,
-      charset: form.charset,
-    })
-    return
+  // 保存前校验字符集与排序规则的匹配性（仅 MySQL 数据库模式）
+  if (!isSchemaMode.value) {
+    const available = CHARSET_COLLATIONS[form.charset] || []
+    if (!form.collation || !available.includes(form.collation)) {
+      errorMessage.value = t('databaseDesigner.collationMismatch', {
+        collation: form.collation,
+        charset: form.charset,
+      })
+      return
+    }
   }
 
   saving.value = true
@@ -312,10 +362,12 @@ async function save() {
   try {
     if (props.isNewDatabase) {
       await createDatabase()
+    } else if (isSchemaMode.value && name !== props.database) {
+      await renameSchema(name)
     } else {
       await alterDatabase()
     }
-    emit('saved', form.name.trim())
+    emit('saved', name)
   } catch (e) {
     errorMessage.value = t('databaseDesigner.saveFailed', { error: String(e) })
   } finally {
@@ -323,20 +375,67 @@ async function save() {
   }
 }
 
-async function createDatabase() {
+async function executeSql(database: string, sql: string) {
   await invoke('execute_sql', {
     connectionId: props.connectionId,
-    database: 'mysql',
-    sql: `CREATE DATABASE ${quoteIdentifier(form.name.trim())} CHARACTER SET ${form.charset} COLLATE ${form.collation}`
+    database,
+    sql,
   })
 }
 
+async function createDatabase() {
+  const name = form.name.trim()
+  if (isSchemaMode.value) {
+    // PG：新后端会把语句路由到 database 指定的库。从数据库节点进入时 props.database 是目标库名，
+    // 从连接节点进入时为空，回退到连接自身配置库（保持与旧行为一致）。
+    const targetDatabase = props.database || connectionInfo.value?.database || ''
+    await executeSql(targetDatabase, buildCreateSchemaSql(name))
+    return
+  }
+  await executeSql(
+    'mysql',
+    buildCreateDatabaseSql(name, form.charset, form.collation)
+  )
+}
+
 async function alterDatabase() {
-  await invoke('execute_sql', {
-    connectionId: props.connectionId,
-    database: form.name.trim(),
-    sql: `ALTER DATABASE ${quoteIdentifier(form.name.trim())} CHARACTER SET ${form.charset} COLLATE ${form.collation}`
+  const name = form.name.trim()
+  if (isSchemaMode.value) {
+    // schema 名称未变化时无需生成 DDL
+    return
+  }
+  await executeSql(
+    name,
+    buildAlterDatabaseSql(name, form.charset, form.collation)
+  )
+}
+
+/** 重命名 schema：ALTER SCHEMA "old" RENAME TO "new" */
+async function renameSchema(newName: string) {
+  if (!props.database || props.database === newName) return
+  await executeSql('', buildRenameSchemaSql(props.database, newName))
+}
+
+/** 删除 schema：危险操作，需要二次确认 */
+async function dropSchema() {
+  if (!props.database || saving.value) return
+  const confirmed = await confirmDanger({
+    message: t('databaseDesigner.dropSchemaConfirm', { name: props.database }),
+    requireAcknowledge: true,
   })
+  if (!confirmed) return
+
+  saving.value = true
+  errorMessage.value = ''
+  try {
+    await executeSql('', buildDropSchemaSql(props.database))
+    showToast(t('databaseDesigner.dropSchemaSuccess', { name: props.database }))
+    emit('saved', props.database)
+  } catch (e) {
+    errorMessage.value = t('databaseDesigner.saveFailed', { error: String(e) })
+  } finally {
+    saving.value = false
+  }
 }
 </script>
 
@@ -491,6 +590,32 @@ async function alterDatabase() {
 
 .btn-primary:disabled {
   background: var(--text-tertiary);
+  cursor: not-allowed;
+}
+
+.form-hint {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  line-height: 1.5;
+}
+
+.btn-danger {
+  padding: 10px 20px;
+  border: 1px solid var(--error-500);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--error-500);
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.btn-danger:disabled {
+  opacity: 0.5;
   cursor: not-allowed;
 }
 </style>

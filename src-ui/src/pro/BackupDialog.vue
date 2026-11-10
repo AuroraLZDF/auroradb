@@ -59,6 +59,7 @@
           <Download :size="14" />
           {{ backuping ? t('backup.backuping') : t('backup.startBackup') }}
         </Button>
+        <p v-if="backupHint" class="scope-hint">{{ backupHint }}</p>
         <p v-if="backupError" class="error-msg">
           <AlertCircle :size="14" /> {{ backupError }}
         </p>
@@ -102,7 +103,7 @@
         </div>
         <div class="restore-hint">
           <AlertTriangle :size="14" />
-          {{ t('backup.restoreHint') }}
+          {{ restoreHintText }}
         </div>
         <Button
           variant="danger"
@@ -149,6 +150,8 @@ import type { UnlistenFn } from '@tauri-apps/api/event'
 import { t } from '@/i18n'
 import { useToast } from '@/composables/useToast'
 import { confirmDanger } from '@/composables/useConfirm'
+import { useConnectionStore } from '@/stores/connection'
+import { capabilitiesOf } from '@/utils/driver'
 import Select from '@/components/ui/Select.vue'
 import Button from '@/components/ui/Button.vue'
 import {
@@ -171,19 +174,40 @@ const { success: showToast } = useToast()
 
 interface ConnectionOption { value: string; label: string }
 
-/** 可用活跃连接（驱动 MySQL 的才显示，PostgreSQL 备份暂未实现） */
+/** 可用活跃连接（MySQL 走 mysqldump，PostgreSQL 走 pg_dump/psql；两者都支持） */
 const connectionOptions = computed<ConnectionOption[]>(() => {
-  // 从全局 store 读活跃连接：通过 App.vue 传入或直接 invoke 拿？
-  // 实际上更简单的做法：BackupDialog 接受 connections props，这里先从全局 store 读取
-  return activeConnections.value
-    .filter(c => (c.driver ?? 'mysql') === 'mysql')
-    .map(c => ({ value: c.id, label: `${c.name} (${c.host}:${c.port})` }))
+  // 从全局 store 读活跃连接
+  return activeConnections.value.map(c => ({
+    value: c.id,
+    label: `${c.name} (${c.host}:${c.port})`
+  }))
 })
 
-// 需要 import connection store
-import { useConnectionStore } from '@/stores/connection'
 const connStore = useConnectionStore()
 const activeConnections = computed(() => connStore.activeConnections)
+
+/** 当前选中连接的驱动能力：备份工具/还原提示按驱动区分（mysqldump vs pg_dump/psql） */
+function capsForConnection(connectionId: string) {
+  const connection = activeConnections.value.find(c => c.id === connectionId)
+  return capabilitiesOf(connection?.driver)
+}
+const backupCaps = computed(() => capsForConnection(backupConnId.value))
+const restoreCaps = computed(() => capsForConnection(restoreConnId.value))
+
+/** 备份提示：PG 使用 pg_dump 导出纯 SQL；MySQL 走 mysqldump */
+const backupHint = computed(() => {
+  if (!backupConnId.value) return ''
+  return backupCaps.value.backupDialect === 'postgres'
+    ? t('backup.pgBackupHint')
+    : t('backup.mysqlBackupHint')
+})
+
+/** 还原风险提示：PG 使用 psql 逐条执行，失败时会停在出错语句（可能部分生效） */
+const restoreHintText = computed(() =>
+  restoreCaps.value.backupDialect === 'postgres'
+    ? t('backup.pgRestoreHint')
+    : t('backup.restoreHint')
+)
 
 // ---------- Backup ----------
 const backupConnId = ref('')
@@ -341,7 +365,7 @@ async function runRestore() {
   }
 
   const confirmed = await confirmDanger({
-    message: t('backup.restoreHint'),
+    message: restoreHintText.value,
     confirmText: t('backup.startRestore'),
     requireAcknowledge: true,
   })
@@ -577,6 +601,13 @@ function databasesByConn(connId: string): string[] {
   font-size: var(--text-sm);
   margin: 0;
   align-items: center;
+}
+
+.scope-hint {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  line-height: 1.5;
 }
 
 /* 还原进度 */

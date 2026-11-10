@@ -30,10 +30,14 @@
           <Select
             v-model="database"
             :options="databaseOptions"
-            :disabled="!connectionId || dbLoading"
+            :disabled="!connectionId || dbLoading || !supportsAllDatabaseSearch"
             :placeholder="dbLoading ? t('common.loading') : t('search.allDatabases')"
             searchable
           />
+          <p v-if="connectionId && !supportsAllDatabaseSearch" class="hint scope-hint">
+            <AlertTriangle :size="14" />
+            {{ t('search.pgScopeHint') }}
+          </p>
         </div>
         <div class="form-row full-width">
           <label>{{ t('search.keyword') }}</label>
@@ -198,6 +202,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { t } from '@/i18n'
 import { useConnectionStore } from '@/stores/connection'
+import { capabilitiesOf } from '@/utils/driver'
 import Select from '@/components/ui/Select.vue'
 import Button from '@/components/ui/Button.vue'
 import {
@@ -264,13 +269,24 @@ const connectionOptions = computed(() =>
   }))
 )
 
-const databaseOptions = computed(() => [
-  { value: '', label: t('search.allDatabases') },
-  ...(databases.value.map(name => ({ value: name, label: name }))),
-])
-
 const databases = ref<string[]>([])
 const dbLoading = ref(false)
+
+const connectionDriver = computed(
+  () => connStore.activeConnections.find(connection => connection.id === connectionId.value)?.driver
+)
+/** PG 连接的搜索范围固定为当前数据库，禁止跨库搜索 */
+const supportsAllDatabaseSearch = computed(
+  () => capabilitiesOf(connectionDriver.value).supportsAllDatabaseSearch
+)
+
+const databaseOptions = computed(() => [
+  {
+    value: '',
+    label: supportsAllDatabaseSearch.value ? t('search.allDatabases') : t('search.currentDatabaseOnly'),
+  },
+  ...(databases.value.map(name => ({ value: name, label: name }))),
+])
 
 const canSearch = computed(() =>
   !!connectionId.value &&
@@ -327,7 +343,8 @@ async function runSearch() {
     result.value = await invoke<SearchResult>('global_search', {
       request: {
         connection_id: connectionId.value,
-        database: database.value || null,
+        // PG 只允许当前数据库：搜索范围固定为连接库
+        database: supportsAllDatabaseSearch.value ? database.value || null : null,
         keyword: keyword.value.trim(),
         mode: mode.value,
         search_tables: searchTables.value,
@@ -536,6 +553,12 @@ onMounted(async () => {
 .hint {
   background: var(--surface-hover);
   color: var(--text-secondary);
+}
+
+.scope-hint {
+  margin-top: var(--space-2);
+  font-size: var(--text-xs);
+  align-items: flex-start;
 }
 
 .warning-msg {

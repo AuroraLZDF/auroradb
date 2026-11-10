@@ -10,6 +10,9 @@ export default {
     'backup.backuping': '备份中…',
 
     'backup.restoreHint': '还原将覆盖目标库现有数据，无法撤销。请确认已先做过备份。',
+    'backup.pgRestoreHint': '还原将使用 psql 逐条执行纯 SQL 文件，覆盖现有对象且无法撤销；中途失败时前面的语句可能已生效。请确认已先做过备份。',
+    'backup.mysqlBackupHint': '使用 mysqldump 导出该库的纯 SQL 文件，请确保系统已安装 mysqldump。',
+    'backup.pgBackupHint': '使用 pg_dump 导出该库的纯 SQL 文件（--format=plain），还原时使用 psql；请确保系统已安装 PostgreSQL 客户端工具。',
     'backup.chooseFile': '选择备份文件…',
     'backup.noFile': '未选择文件',
     'backup.startRestore': '执行还原',
@@ -34,6 +37,9 @@ export default {
     'backup.backuping': 'Backing up…',
 
     'backup.restoreHint': 'Restore will overwrite existing data in the target database and cannot be undone. Make sure you have a backup first.',
+    'backup.pgRestoreHint': 'Restore runs the plain SQL file through psql statement by statement. Existing objects are overwritten and the operation cannot be undone; if it fails midway, earlier statements may already be applied. Make sure you have a backup first.',
+    'backup.mysqlBackupHint': 'Exports a plain SQL dump of this database with mysqldump. Make sure mysqldump is installed.',
+    'backup.pgBackupHint': 'Exports a plain SQL dump of this database with pg_dump (--format=plain); restore uses psql. Make sure the PostgreSQL client tools are installed.',
     'backup.chooseFile': 'Choose backup file…',
     'backup.noFile': 'No file selected',
     'backup.startRestore': 'Execute Restore',

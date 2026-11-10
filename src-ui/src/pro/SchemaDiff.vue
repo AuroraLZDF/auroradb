@@ -26,7 +26,7 @@
           />
           <Select
             v-model="sourceDatabase"
-            :options="sourceDatabases"
+            :options="sourceScopes"
             :disabled="!sourceConnectionId || dbLoading.source"
             :placeholder="dbLoading.source ? t('common.loading') : t('schemaDiff.selectDatabase')"
             searchable
@@ -50,7 +50,7 @@
           />
           <Select
             v-model="targetDatabase"
-            :options="targetDatabases"
+            :options="targetScopes"
             :disabled="!targetConnectionId || dbLoading.target"
             :placeholder="dbLoading.target ? t('common.loading') : t('schemaDiff.selectDatabase')"
             searchable
@@ -66,6 +66,16 @@
       >
         <Play :size="14" /> {{ t('schemaDiff.compare') }}
       </Button>
+    </div>
+
+    <div v-if="usesScopes" class="scope-hint">
+      <AlertCircle :size="14" />
+      <span>{{ t('schemaDiff.pgScopeHint') }}</span>
+    </div>
+
+    <div v-if="crossDatabaseApplyBlocked" class="scope-warning">
+      <AlertCircle :size="14" />
+      <span>{{ t('schemaDiff.crossDatabaseApplyUnsupported') }}</span>
     </div>
 
     <div v-if="errorMessage" class="diff-error">
@@ -161,7 +171,8 @@
                 variant="danger"
                 :icon="Zap"
                 :loading="applying"
-                :disabled="activeTable.statements.length === 0 || applying"
+                :disabled="activeTable.statements.length === 0 || applying || !canApply"
+                :title="!canApply ? t('schemaDiff.crossDatabaseApplyUnsupported') : ''"
                 @click="applyTableDiff"
               >
                 {{ applying ? t('schemaDiff.applying') : t('schemaDiff.apply') }}
@@ -206,7 +217,7 @@
 
             <section class="diff-section">
               <h4>{{ t('schemaDiff.statements') }}</h4>
-              <pre class="statement-block">{{ activeTable.statements.join('\n') || t('schemaDiff.noStatements') }}</pre>
+              <pre class="statement-block" v-html="highlightStatements(activeTable.statements) || t('schemaDiff.noStatements')"></pre>
             </section>
           </div>
         </div>
@@ -238,6 +249,7 @@ import {
 } from 'lucide-vue-next'
 import Select from '@/components/ui/Select.vue'
 import Button from '@/components/ui/Button.vue'
+import { invoke } from '@tauri-apps/api/core'
 import {
   useDataBrowserStore,
   type DiffChange,
@@ -249,6 +261,8 @@ import type { ConnectionStatus } from '@/stores/connection'
 import { t } from '@/i18n'
 import { confirmDanger } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
+import { capabilitiesOf } from '@/utils/driver'
+import { formatSql } from '@/utils/sql'
 
 const props = withDefaults(defineProps<{
   connections: ConnectionStatus[]
@@ -274,6 +288,8 @@ const sourceDatabase = ref(props.initialDatabase)
 const targetDatabase = ref('')
 
 const dbCache = reactive<Record<string, string[]>>({})
+/** PG 下当前连接库内的 schema 列表（用于把两端都当作「作用域」选择） */
+const schemaCache = reactive<Record<string, string[]>>({})
 const dbLoading = reactive({ source: false, target: false })
 
 const comparing = ref(false)
@@ -297,13 +313,70 @@ const connectionOptions = computed(() =>
   }))
 )
 
-const sourceDatabases = computed(() => dbCache[sourceConnectionId.value] ?? [])
-const targetDatabases = computed(() => dbCache[targetConnectionId.value] ?? [])
+
+function connectionOf(connectionId: string): ConnectionStatus | undefined {
+  return props.connections.find(connection => connection.id === connectionId)
+}
+
+function isSchemaScope(connectionId: string): boolean {
+  return capabilitiesOf(connectionOf(connectionId)?.driver).tableQualification === 'schema'
+}
+
+/** 作用域选项：PG 把「数据库」与「当前库内的 schema」都作为可选作用域（标签区分） */
+function scopeOptionsFor(connectionId: string): { value: string; label: string }[] {
+  const databases = dbCache[connectionId] ?? []
+  if (!isSchemaScope(connectionId)) {
+    return databases.map(name => ({ value: name, label: name }))
+  }
+  const currentDatabase = connectionOf(connectionId)?.database ?? ''
+  const databaseOption = (name: string) => ({
+    value: name,
+    label: t('schemaDiff.databaseScope', { name }),
+  })
+  const current = databases.filter(name => name === currentDatabase).map(databaseOption)
+  const others = databases.filter(name => name !== currentDatabase).map(databaseOption)
+  const schemas = (schemaCache[connectionId] ?? []).map(name => ({
+    value: name,
+    label: t('schemaDiff.schemaScope', { name }),
+  }))
+  // 当前连接库排最前，其次当前库内 schema，最后其它数据库
+  return [...current, ...schemas, ...others]
+}
+
+const sourceScopes = computed(() => scopeOptionsFor(sourceConnectionId.value))
+const targetScopes = computed(() => scopeOptionsFor(targetConnectionId.value))
+const sourceUsesScopes = computed(() => isSchemaScope(sourceConnectionId.value))
+const targetUsesScopes = computed(() => isSchemaScope(targetConnectionId.value))
+const usesScopes = computed(() => sourceUsesScopes.value || targetUsesScopes.value)
+
+/** 作用域类型：PG 下若所选名称是当前连接库内的 schema 则为 schema，否则按整库处理 */
+function scopeKindOf(connectionId: string, scope: string): 'database' | 'schema' {
+  if (!isSchemaScope(connectionId)) return 'database'
+  return (schemaCache[connectionId] ?? []).includes(scope) ? 'schema' : 'database'
+}
+
+const sourceScopeKind = computed(() => scopeKindOf(sourceConnectionId.value, sourceDatabase.value))
+const targetScopeKind = computed(() => scopeKindOf(targetConnectionId.value, targetDatabase.value))
+
+/** 跨库 apply 暂不支持：后端只会把 DDL 落到连接配置库 */
+const targetConnectionDatabase = computed(
+  () => connectionOf(targetConnectionId.value)?.database ?? ''
+)
+const crossDatabaseApplyBlocked = computed(
+  () =>
+    targetUsesScopes.value &&
+    targetScopeKind.value === 'database' &&
+    Boolean(targetDatabase.value) &&
+    targetDatabase.value !== targetConnectionDatabase.value
+)
 
 const canCompare = computed(() =>
   Boolean(sourceConnectionId.value && sourceDatabase.value &&
     targetConnectionId.value && targetDatabase.value) && !comparing.value
 )
+
+/** 目标作用域跨库时禁止 apply（后端只把 DDL 落到连接配置库） */
+const canApply = computed(() => !crossDatabaseApplyBlocked.value)
 
 const filterTabs = computed(() => {
   if (!diff.value) return []
@@ -360,6 +433,28 @@ async function loadDatabases(connectionId: string): Promise<string[]> {
   }
 }
 
+/** PG 下加载当前连接库内的 schema 列表，用于作用域选择 */
+async function loadScopes(connectionId: string): Promise<string[]> {
+  if (!connectionId || !isSchemaScope(connectionId)) return []
+  const currentDatabase = connectionOf(connectionId)?.database
+  if (!currentDatabase) return []
+  try {
+    const objects = await invoke<{ name: string; object_type: string; schema?: string }[]>(
+      'get_object_tree',
+      { connectionId, database: currentDatabase }
+    )
+    const schemas = Array.from(
+      new Set(objects.map(object => object.schema).filter((schema): schema is string => Boolean(schema)))
+    ).sort()
+    schemaCache[connectionId] = schemas
+    return schemas
+  } catch (err) {
+    schemaCache[connectionId] = []
+    errorMessage.value = t('schemaDiff.loadScopesFailed', { message: String(err) })
+    return []
+  }
+}
+
 async function syncDatabases(
   connectionId: string,
   database: { value: string },
@@ -371,9 +466,12 @@ async function syncDatabases(
   }
   setLoading(true)
   try {
-    const databases = await loadDatabases(connectionId)
-    if (databases.length > 0) {
-      const next = preferredDatabase(databases, database.value)
+    await loadDatabases(connectionId)
+    await loadScopes(connectionId)
+    // PG 的作用域既包含整库也包含 schema，统一按 value 列表做默认选择
+    const scopes = scopeOptionsFor(connectionId).map(option => option.value)
+    if (scopes.length > 0) {
+      const next = preferredDatabase(scopes, database.value)
       if (next !== database.value) {
         database.value = next
       }
@@ -418,6 +516,11 @@ async function runCompare() {
     errorMessage.value = t('schemaDiff.sameDatabase')
     return
   }
+  // PG 两侧作用域类型必须一致：整库 vs schema 无法对比（后端也会校验，这里提前给出可读提示）
+  if (usesScopes.value && sourceScopeKind.value !== targetScopeKind.value) {
+    errorMessage.value = t('schemaDiff.scopeMismatch')
+    return
+  }
   comparing.value = true
   errorMessage.value = ''
   try {
@@ -459,9 +562,44 @@ function hasDestructiveChange(statements: string[]): boolean {
   return statements.some(isDestructive)
 }
 
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+
+/** 预览 DDL 高亮：PG 先用 formatSql 统一格式并高亮双引号标识符，MySQL 保持原文 */
+function highlightStatements(statements: string[]): string {
+  if (statements.length === 0) return ''
+  let sql = statements.join('\n')
+  if (targetUsesScopes.value) sql = formatSql(sql)
+  const tokens: string[] = []
+  // 先把字符串/引号标识符抽成占位符，避免关键字/数字高亮破坏其内容
+  const masked = sql.replace(/('(?:[^']|'')*'|"(?:[^"]|"")*"|`(?:[^`]|``)*`)/g, (match) => {
+    tokens.push(match)
+    return `\uE000${tokens.length - 1}\uE000`
+  })
+  let html = escapeHtml(masked)
+  html = html.replace(
+    /\b(CREATE|ALTER|DROP|TABLE|INDEX|VIEW|SCHEMA|ADD|COLUMN|CONSTRAINT|PRIMARY|KEY|UNIQUE|FOREIGN|REFERENCES|ON|DELETE|UPDATE|SET|NOT|NULL|DEFAULT|USING|COMMENT|IS|RENAME|TO|TYPE|GENERATED|ALWAYS|IDENTITY|CASCADE|RESTRICT)\b/g,
+    '<span class="sql-keyword">$1</span>'
+  )
+  html = html.replace(/\uE000(\d+)\uE000/g, (_, index: string) => {
+    const token = tokens[Number(index)] ?? ''
+    const cssClass = token.startsWith("'") ? 'sql-string' : 'sql-field'
+    return `<span class="${cssClass}">${escapeHtml(token)}</span>`
+  })
+  return html
+}
+
 async function applyTableDiff() {
   const table = activeTable.value
   if (!table || table.statements.length === 0 || applying.value) return
+  if (crossDatabaseApplyBlocked.value) {
+    errorMessage.value = t('schemaDiff.crossDatabaseApplyUnsupported')
+    return
+  }
 
   // 仅破坏性操作（DROP/MODIFY/CHANGE/RENAME）才弹确认；纯新增直接执行
   if (hasDestructiveChange(table.statements)) {
@@ -651,6 +789,32 @@ async function applyTableDiff() {
   border-radius: var(--radius-md);
   background: rgba(239, 68, 68, 0.08);
   color: var(--error-500);
+  font-size: var(--text-sm);
+}
+
+.scope-hint {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-3) var(--space-5) 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--surface-hover);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+.scope-warning {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-3) var(--space-5) 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--warning-500, #f59e0b);
+  border-radius: var(--radius-md);
+  background: rgba(245, 158, 11, 0.08);
+  color: var(--warning-500, #b45309);
   font-size: var(--text-sm);
 }
 
@@ -956,9 +1120,22 @@ async function applyTableDiff() {
   overflow-x: auto;
 }
 
+/* DDL 预览高亮 */
+.statement-block :deep(.sql-keyword) {
+  color: var(--brand-500);
+  font-weight: 600;
+}
+
+.statement-block :deep(.sql-string) {
+  color: var(--success-500);
+}
+
+.statement-block :deep(.sql-field) {
+  color: var(--info-500, #3b82f6);
+}
+
 /* 底部 */
-.diff-footer {
-  display: flex;
+.diff-footer {  display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-4);
