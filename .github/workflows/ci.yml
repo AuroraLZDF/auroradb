@@ -48,6 +48,37 @@ jobs:
   backend:
     name: Backend (clippy / cargo test)
     runs-on: ubuntu-latest
+    # 单测里的 mysql_* / pg_* 用例是 #[ignore] 的真实库回归，只有提供
+    # AURORADB_TEST_* 环境变量才会执行。此处起两个 service 容器，让
+    # 「真实 MySQL / PostgreSQL 链路」在每次 CI 都被覆盖——否则多驱动改造
+    # 只会被 mock 层验证，回归要等到用户手里才暴露。
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: auroradb
+          POSTGRES_PASSWORD: auroradb
+          POSTGRES_DB: auroradb_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U auroradb -d auroradb_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: auroradb
+          MYSQL_DATABASE: auroradb_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -pauroradb --silent"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+          --health-start-period 30s
     steps:
       - uses: actions/checkout@v4
 
@@ -88,6 +119,22 @@ jobs:
 
       - name: Test
         run: cargo test --locked --workspace
+
+      # 真实数据库回归：上面 serve 的 postgres / mysql 容器。未配置环境变量时
+      # 这些用例在本地静默跳过，CI 里则必须全部通过。
+      - name: Test (real databases)
+        env:
+          AURORADB_TEST_MYSQL_HOST: 127.0.0.1
+          AURORADB_TEST_MYSQL_PORT: 3306
+          AURORADB_TEST_MYSQL_USER: root
+          AURORADB_TEST_MYSQL_PASSWORD: auroradb
+          AURORADB_TEST_MYSQL_DATABASE: auroradb_test
+          AURORADB_TEST_PG_HOST: 127.0.0.1
+          AURORADB_TEST_PG_PORT: 5432
+          AURORADB_TEST_PG_USER: auroradb
+          AURORADB_TEST_PG_PASSWORD: auroradb
+          AURORADB_TEST_PG_DATABASE: auroradb_test
+        run: cargo test --locked --workspace -- --ignored
 
   # E2E：跑在真实 Chromium 里，通过 e2e/support/tauri-mock.ts 注入伪造的 Tauri IPC，
   # 因此不需要 Tauri 运行时与数据库。Playwright 的 webServer 会自动起 vite dev。

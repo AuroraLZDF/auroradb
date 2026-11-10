@@ -1,14 +1,20 @@
-//! 统一错误出口：把 MySQL 驱动错误翻译成中文可读提示。
+//! 统一错误出口：把数据库驱动错误翻译成中文可读提示。
 //!
 //! 规则：
-//! - 驱动错误按 MySQL 错误码精确匹配（见 `KNOWN_ERRORS`），输出「中文提示（MySQL <code>：<原始信息>）」；
+//! - MySQL 驱动错误按 errno 精确匹配（见 `KNOWN_MYSQL_ERRORS`），输出「中文提示（MySQL <code>：<原始信息>）」；
+//! - PostgreSQL 驱动错误按 SQLSTATE 精确匹配（见 `KNOWN_PG_ERRORS`），输出「中文提示（PostgreSQL SQLSTATE <code>：<原始信息>）」；
 //! - 未收录的错误码回退为「数据库错误（<code>）：<原始信息>」，不吞错、不丢码；
 //! - 非驱动错误（参数校验、业务逻辑等）保持原有信息，不翻译。
+//!
+//! 驱动识别：sqlx 的 `DatabaseError` 不携带驱动标识，但两类错误码形态互斥——
+//! PostgreSQL 的 SQLSTATE 恒为 5 位字母数字（如 `42P01`），MySQL 的 errno 为
+//! 3–4 位纯数字（如 `1146`）。因此按码长即可判定归属，无需把驱动参数
+//! 穿过命令层全部错误出口。
 
 use sqlx::error::Error as SqlxError;
 
-/// 已收录的 MySQL 错误码 → 中文提示
-const KNOWN_ERRORS: &[(&str, &str)] = &[
+/// 已收录的 MySQL 错误码（errno）→ 中文提示
+const KNOWN_MYSQL_ERRORS: &[(&str, &str)] = &[
     // 连接与认证
     ("1045", "认证失败：用户名或密码错误，请检查连接配置"),
     ("1049", "数据库不存在：请检查默认数据库名称"),
@@ -42,6 +48,54 @@ const KNOWN_ERRORS: &[(&str, &str)] = &[
     ("1205", "锁等待超时：请稍后重试"),
     ("1213", "死锁：事务已被回滚，请重试"),
 ];
+
+/// 已收录的 PostgreSQL 错误码（SQLSTATE）→ 中文提示
+const KNOWN_PG_ERRORS: &[(&str, &str)] = &[
+    // 连接与认证
+    ("08001", "无法连接到数据库服务器：请检查主机地址、端口及网络"),
+    ("08006", "连接已断开：查询执行期间与服务器失去连接，请重试"),
+    ("28P01", "认证失败：用户名或密码错误，请检查连接配置"),
+    ("3D000", "数据库不存在：请检查默认数据库名称"),
+    ("53300", "连接数已达上限：服务器剩余连接槽不足，请稍后重试"),
+    // 权限
+    ("42501", "权限不足：当前账号没有执行该操作的权限"),
+    // 对象不存在或冲突
+    ("42P01", "表不存在：请确认表名与当前 search_path 是否正确"),
+    ("42P07", "表已存在：无法创建同名表"),
+    ("42703", "列不存在：请检查 SQL 中的列名"),
+    ("42883", "函数不存在：请检查函数名及参数类型"),
+    ("3F000", "schema 不存在：请确认 schema 名称是否正确"),
+    // 数据约束
+    ("23502", "字段不能为空：存在 NOT NULL 字段未赋值"),
+    ("23503", "外键约束冲突：关联数据不存在或仍被引用"),
+    ("23505", "重复键冲突：已存在相同的唯一键值"),
+    ("23P01", "排他约束冲突：数据与已有记录冲突"),
+    ("22001", "数据被截断：值超出字段定义长度"),
+    ("22P02", "值不合法：数据类型或格式不正确"),
+    ("22003", "数值超出字段范围"),
+    // 语法
+    ("42601", "SQL 语法错误：请检查语句"),
+    ("0A000", "不支持的功能：当前数据库版本不支持该操作"),
+    // 事务、锁与取消
+    ("40001", "序列化失败：事务已被回滚，请重试"),
+    ("40P01", "死锁：事务已被回滚，请重试"),
+    ("55P03", "锁不可用：对象正被其他事务占用，请重试"),
+    ("57014", "查询已取消或超时"),
+];
+
+/// 根据错误码形态判定驱动：PostgreSQL SQLSTATE 恒为 5 位，MySQL errno 为 3–4 位数字
+fn error_code_driver(code: &str) -> Driver {
+    if code.len() == 5 {
+        Driver::Postgres
+    } else {
+        Driver::MySql
+    }
+}
+
+enum Driver {
+    MySql,
+    Postgres,
+}
 
 /// 将 sqlx 错误翻译为中文可读提示
 pub fn translate(err: &SqlxError) -> String {
@@ -89,8 +143,13 @@ fn translate_database_error(db: &dyn sqlx::error::DatabaseError) -> String {
     let code = db.code().map(|c| c.to_string()).unwrap_or_default();
     let message = db.message();
 
-    match KNOWN_ERRORS.iter().find(|(c, _)| *c == code) {
-        Some((_, hint)) => format!("{}（MySQL {}：{}）", hint, code, message),
+    let (table, label): (&[(&str, &str)], &str) = match error_code_driver(&code) {
+        Driver::MySql => (KNOWN_MYSQL_ERRORS, "MySQL"),
+        Driver::Postgres => (KNOWN_PG_ERRORS, "PostgreSQL SQLSTATE"),
+    };
+
+    match table.iter().find(|(c, _)| *c == code) {
+        Some((_, hint)) => format!("{}（{} {}：{}）", hint, label, code, message),
         None if !code.is_empty() => format!("数据库错误（{}）：{}", code, message),
         None => format!("数据库错误：{}", message),
     }
@@ -204,6 +263,45 @@ mod tests {
             assert!(msg.contains(code), "错误码 {code} 未保留：{msg}");
             assert!(msg.contains(raw), "错误码 {code} 的原始报文丢失：{msg}");
         }
+    }
+
+    #[test]
+    fn test_translate_postgres_codes() {
+        // PostgreSQL 的 SQLSTATE 必须走 PG 码表，且报文与码原样保留
+        let dup = translate(&db_error(
+            "23505",
+            "duplicate key value violates unique constraint \"users_pkey\"",
+        ));
+        assert!(dup.contains("重复键冲突"), "got: {dup}");
+        assert!(dup.contains("PostgreSQL SQLSTATE 23505"), "got: {dup}");
+        assert!(dup.contains("users_pkey"), "got: {dup}");
+
+        let no_table = translate(&db_error(
+            "42P01",
+            "relation \"public.users\" does not exist",
+        ));
+        assert!(no_table.contains("表不存在"), "got: {no_table}");
+        assert!(no_table.contains("search_path"), "got: {no_table}");
+
+        let auth = translate(&db_error(
+            "28P01",
+            "password authentication failed for user \"postgres\"",
+        ));
+        assert!(auth.contains("认证失败"), "got: {auth}");
+
+        // 未收录的 SQLSTATE 仍保留码与原始信息
+        let unknown = translate(&db_error("XX000", "internal error"));
+        assert!(unknown.contains("XX000"), "got: {unknown}");
+        assert!(unknown.contains("internal error"), "got: {unknown}");
+    }
+
+    #[test]
+    fn test_error_code_driver_discrimination() {
+        // PostgreSQL SQLSTATE 恒为 5 位；MySQL errno 为 3–4 位
+        assert!(matches!(error_code_driver("23505"), Driver::Postgres));
+        assert!(matches!(error_code_driver("42P01"), Driver::Postgres));
+        assert!(matches!(error_code_driver("1045"), Driver::MySql));
+        assert!(matches!(error_code_driver("1062"), Driver::MySql));
     }
 
     #[test]
