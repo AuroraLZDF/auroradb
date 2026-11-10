@@ -150,9 +150,14 @@ def main():
     kept = sorted(k for k in platforms if k != args.platform)
     print(f'  清单平台: {args.platform}' + (f'（保留 {", ".join(kept)}）' if kept else '（无其他平台）'))
 
-    # Windows 与 Linux 分平台发布：只发其中一个时，另一个平台的老版本用户会
-    # 拿不到本版本的更新包（应用内检查会报「当前平台没有更新包」），这里提前提示。
-    missing = [key for key in ('windows-x86_64', 'linux-x86_64') if key not in platforms]
+    # 各平台分开发布：只发其中一个时，另一个平台的老版本用户会拿不到本版本的
+    # 更新包（应用内检查会报「当前平台没有更新包」），这里提前提示。
+    # macOS 目前只发布 Apple Silicon（darwin-aarch64）未签名预览版。
+    missing = [
+        key
+        for key in ('windows-x86_64', 'linux-x86_64', 'darwin-aarch64')
+        if key not in platforms
+    ]
     for key in missing:
         print(
             f'  警告: latest.json 缺少 {key}，该平台用户在本版本无法应用内更新'

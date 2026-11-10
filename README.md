@@ -2,7 +2,7 @@
 
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 [![Latest release](https://img.shields.io/github/v/release/AuroraLZDF/auroradb)](https://github.com/AuroraLZDF/auroradb/releases/latest)
-[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey.svg)](#下载安装)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS%20arm64-lightgrey.svg)](#下载安装)
 
 面向 MySQL 与 PostgreSQL 的桌面数据库客户端，基于 Tauri 2 + Vue 3 + Rust 构建，提供连接管理、SQL 编辑、表设计、数据编辑与导入导出，并支持应用内自动更新。
 
@@ -10,7 +10,7 @@
 
 ## 下载安装
 
-安装包发布在[发行版页面](https://github.com/AuroraLZDF/auroradb/releases/latest)，当前版本 v2.2.2。
+安装包发布在[发行版页面](https://github.com/AuroraLZDF/auroradb/releases/latest)，当前版本 v2.2.3。
 
 | 平台 | 文件名 | 安装方式 |
 | --- | --- | --- |
@@ -18,8 +18,17 @@
 | 通用 Linux（full，推荐） | `AuroraDB_<版本>_amd64.AppImage` | `chmod +x` 后直接运行，自包含，支持应用内更新 |
 | Fedora / RHEL | `AuroraDB-<版本>-1.x86_64.rpm` | `sudo rpm -i AuroraDB-<版本>-1.x86_64.rpm` |
 | Windows | `AuroraDB_<版本>_x64-setup.exe` | 双击安装（未签名，SmartScreen 会提示） |
+| macOS（Apple Silicon） | `AuroraDB_<版本>_aarch64.dmg` | 双击挂载后拖入「应用程序」（未签名预览版，首次打开需右键 → 打开） |
 
-每个发行版同时附带 `SHA256SUMS` 与各产物的 `.sig` 签名，下载后可核对完整性。两个平台分别发布，某平台的产物尚未构建时不会出现在最新发行版里。
+每个发行版同时附带 `SHA256SUMS` 与各产物的 `.sig` 签名，下载后可核对完整性。三个平台分别发布，某平台的产物尚未构建时不会出现在最新发行版里。
+
+> **macOS 首次打开**：应用未签名，Gatekeeper 会拦截。请右键 → 打开，或执行：
+>
+> ```bash
+> xattr -dr com.apple.quarantine /Applications/AuroraDB.app
+> ```
+>
+> macOS 版支持应用内自动更新（更新包单独签名，与 Apple 代码签名无关）；目前只有 Apple Silicon（arm64）版本。
 
 > **Deepin / UOS 用户**：20.x 的系统源只有 `libwebkit2gtk-4.0`，deb 无法满足依赖；请下载 **full AppImage**，它自带 WebKitGTK 运行库，无需安装依赖。
 
@@ -96,7 +105,7 @@ cargo check --offline
 
 ## 构建与发布
 
-Tauri 不支持交叉编译，Linux 包需在 Linux 构建，Windows 包需在 Windows 构建：
+Tauri 不支持交叉编译，Linux 包需在 Linux 构建，Windows 包需在 Windows 构建，macOS 包需在 macOS 构建（CI 用 `macos-14` runner）：
 
 ```bash
 ./tools/build/linux.sh --deb        # Linux：--appimage / --rpm / --all
@@ -105,6 +114,11 @@ Tauri 不支持交叉编译，Linux 包需在 Linux 构建，Windows 包需在 W
 
 ```powershell
 .\tools\build\windows.ps1           # Windows：NSIS 安装包
+```
+
+```bash
+./tools/build/macos.sh              # macOS：arm64 的 .app + .dmg（仅 macOS 可构建）
+./tools/build/macos.sh --intel      # Intel 版
 ```
 
 产物位于 `src-tauri/target/release/bundle/`。构建前需准备更新包签名私钥（不入库），默认读取 `~/.config/auroradb/updater.key`，也可用环境变量 `TAURI_SIGNING_PRIVATE_KEY` 提供；首次生成时在 `src-ui/` 下执行 `npm run tauri signer generate -- -w ~/.config/auroradb/updater.key`。`cargo tauri build` 下载 bundler 失败时，可用 `./tools/build/appimage-offline.sh` 复用已有产物。
@@ -152,17 +166,19 @@ Tauri 不支持交叉编译，Linux 包需在 Linux 构建，Windows 包需在 W
 - **界面白屏 / 报 `Failed to create GBM buffer`**：程序默认关闭 WebKitGTK 的 DMA-BUF 渲染以兼容无 3D 加速的环境。若确认本机支持，可设置 `AURORADB_ENABLE_DMABUF=1` 恢复。
 - **`Too many open files`**：提高文件描述符上限，例如 `ulimit -n 4096`。
 - **Deepin / UOS 20.x 安装 deb 报缺少 `libwebkit2gtk-4.1-0`**：该系统源自带 4.0，ABI 不兼容且无法升级；请改用 full AppImage。
-- **应用内更新无反应**：更新只对 AppImage（Linux）与 NSIS（Windows）生效，deb / rpm 需手动下载新版本；lite AppImage 不提供自动更新。
+- **应用内更新无反应**：更新只对 AppImage（Linux）、NSIS（Windows）与 macOS 版生效，deb / rpm 需手动下载新版本；lite AppImage 不提供自动更新。
+- **macOS 提示「已损坏」或无法验证开发者**：应用未签名，右键 → 打开即可；或在终端执行 `xattr -dr com.apple.quarantine /Applications/AuroraDB.app`。
 
 运行日志位于 `~/.local/share/mysql-client/logs/`（按天滚动，保留 7 天）。
 
 ## 已知限制
 
-- 编辑器基于原生 `<textarea>`，没有语法高亮；提供 schema 感知自动补全与 SQL 格式化。
+- 编辑器基于 CodeMirror 6，提供语法高亮、schema 感知自动补全与 SQL 格式化。
 - 查询结果最多保留前 10,000 行（`MAX_RESULT_ROWS`），超出部分截断并提示；单次查询超时 300 秒，导出超时 1800 秒，单条 SQL 不超过 10MB；一次执行多条语句时只处理第一个结果集。
 - Linux 应用内更新仅支持 AppImage；deb / rpm 需手动下载安装新版本。
 - Windows 安装包暂未签名，SmartScreen 会提示；应用内更新只支持 NSIS，不支持 MSI。
-- 暂不支持 macOS；数据源目前仅 MySQL 与 PostgreSQL（SQLite / Redis / SQL Server 在路线图中）。
+- macOS 未做 Apple 公证，无法无感安装；如需分发给他人，建议自行签名后重新打包。
+- macOS 版为未签名预览版（仅 Apple Silicon），需手动放行 Gatekeeper；数据源目前仅 MySQL 与 PostgreSQL（SQLite / Redis / SQL Server 在路线图中）。
 - lite AppImage 依赖系统 `libwebkit2gtk-4.1-0`，且不提供应用内自动更新。
 
 ## 支持开发

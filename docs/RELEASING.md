@@ -4,7 +4,7 @@
 
 ## 分发方式
 
-安装包通过 GitHub Releases 分发，AppImage（full / lite）、deb、rpm、NSIS、各自的 `.sig`、`SHA256SUMS` 与 `latest.json` 全部作为发行版附件上传，单附件上限 2GB。
+安装包通过 GitHub Releases 分发，AppImage（full / lite）、deb、rpm、NSIS、macOS 的 dmg 与 `.app.tar.gz`、各自的 `.sig`、`SHA256SUMS` 与 `latest.json` 全部作为发行版附件上传，单附件上限 2GB。
 
 应用内更新的固定入口是：
 
@@ -12,7 +12,7 @@
 https://github.com/AuroraLZDF/auroradb/releases/latest/download/latest.json
 ```
 
-该地址配置在 `src-tauri/tauri.conf.json` 的 `plugins.updater.endpoints`，每次发布自动更新内容，无需随版本改动。`latest.json` 按平台 key（`linux-x86_64`、`windows-x86_64`）合并，两个平台先后发布互不覆盖。
+该地址配置在 `src-tauri/tauri.conf.json` 的 `plugins.updater.endpoints`，每次发布自动更新内容，无需随版本改动。`latest.json` 按平台 key（`linux-x86_64`、`windows-x86_64`、`darwin-aarch64`）合并，各平台先后发布互不覆盖。
 
 ## 令牌配置
 
@@ -42,11 +42,13 @@ git push origin main && git push origin v2.2.2
 | `check` | 版本单一来源校验、tag 与 `tauri.conf.json` 版本比对、前端 type-check/lint/test |
 | `build-linux` | deb + AppImage（重压签名）+ rpm，产物打成 tar |
 | `build-windows` | NSIS 安装包 + `.sig` |
+| `build-macos` | macOS arm64（未签名预览版）：`.app` + `.dmg` + `.app.tar.gz`/`.sig` |
 | `publish-linux` | 调 `tools/publish/linux.sh --yes`，写 `linux-x86_64` 条目 |
 | `publish-windows` | 调 `tools/publish/windows.ps1 -Yes`，合并 `windows-x86_64` 条目 |
-| `verify` | 抓线上 `latest.json`，断言版本与 tag 一致且两个平台都在 |
+| `publish-macos` | 调 `tools/publish/macos.sh --yes`，合并 `darwin-aarch64` 条目 |
+| `verify` | 抓线上 `latest.json`，断言版本与 tag 一致且三个平台都在 |
 
-关键约束：`publish-*` 的 `needs` 同时包含两个 build job，**任一平台构建失败就整个不发布**——避免出现「清单只有一个平台、另一个平台用户更新不了」的半残发行版。
+关键约束：`publish-linux` 的 `needs` 同时包含三个 build job，`publish-windows` 依赖 `publish-linux`、`publish-macos` 依赖 `publish-windows`（清单串行合并，避免并发写 `latest.json` 互相覆盖）。**任一平台构建失败就整个不发布**——避免出现「清单只有一个平台、另一个平台用户更新不了」的半残发行版。
 
 需要在仓库 Settings → Secrets and variables → Actions 里配置：
 
@@ -74,6 +76,13 @@ export GITHUB_TOKEN=<令牌>
 ./tools/publish/linux.sh --yes                    # 跳过交互确认（CI/自动化用）
 ```
 
+```bash
+./tools/build/macos.sh                      # 仅 macOS 上可跑：aarch64 的 .app + .dmg
+./tools/build/macos.sh --intel              # Intel 版（x86_64）
+./tools/publish/macos.sh                    # 上传 dmg + .app.tar.gz，合并 darwin-aarch64
+./tools/publish/macos.sh --tag v2.2.3 --dry-run
+```
+
 ```powershell
 $env:GITHUB_TOKEN = "<令牌>"
 
@@ -82,6 +91,21 @@ $env:GITHUB_TOKEN = "<令牌>"
 .\tools\publish\windows.ps1 -Repo owner/repo -BundleDir <目录>
 .\tools\publish\windows.ps1 -Yes                    # 跳过交互确认（CI/自动化用）
 ```
+
+## macOS 分发（未签名预览版）
+
+macOS 版目前只发布 **Apple Silicon（arm64）**、**未签名**：
+
+- `bundle.macOS.signingIdentity = "-"`（ad-hoc 签名），保证 Apple Silicon 上能启动，但没有 Apple Developer ID，无法通过公证
+- 用户首次打开会被 Gatekeeper 拦截，需右键 → 打开，或执行：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/AuroraDB.app
+```
+
+- 应用内自动更新**不受影响**：更新包用 minisign 私钥签名（`.app.tar.gz.sig`），与 Apple 代码签名无关
+- 后续要正式分发（无感安装、不被拦截）需要 Apple Developer Program（$99/年）+ 公证，CI 侧需要 `APPLE_CERTIFICATE` / `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` 四个 Secret
+- Intel（x86_64）版本可用 `./tools/build/macos.sh --intel` 构建，发布脚本会自动把 key 换成 `darwin-x86_64`
 
 ## 发布行为
 

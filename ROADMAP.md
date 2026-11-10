@@ -90,18 +90,26 @@ P1-3 备份还原 → P1-8 数据同步
 | V2-1.5 | 冒烟 | 连接（含 SSH 隧道 + TLS）、查询、编辑保存、备份还原、导入导出全通过 | 在 Windows 机器做一次完整手工冒烟，结果记录在案 |
 | V2-1.6 | 内测版分发 | 用户能正确安装并验证包完整性 | 安装包与发布页标注「未签名内测版」；发布 `SHA256SUMS`；README/发布说明给出 SmartScreen「更多信息 → 仍要运行」指引；补一份企业终端被拦截的说明 |
 
-## V2-2 macOS 支持（v2.0 不做，移入 v2.1+）
+## V2-2 macOS 支持（v2.2.3 阶段 1 已落地：arm64 · 未签名预览版）
 
-已确认不满足开工条件：无 Apple Developer 账号（$99/年）、无 macOS 构建机，无法完成 Developer ID 签名、notarytool 公证与 Gatekeeper 实机验证。
+构建机不再是阻塞项：GitHub Actions 提供 `macos-14`（Apple Silicon）runner，公开仓库免费。
 
-保留以下结论供 v2.1 直接取用：
+已完成（阶段 1）：
 
-- 打包 `dmg` + `app`，优先 universal（aarch64 + x86_64），成本过高则分架构并在清单区分。
-- 流程：Developer ID 签名 → notarytool 公证 → `stapler` 装订；签名身份与团队 ID 走 CI secret。
-- 清单平台 key：`darwin-aarch64` / `darwin-x86_64`。
-- keyring 在 macOS 走 Keychain，需验证首次授权弹窗；`mysqldump`/`mysql` 默认搜索 Homebrew 与官方安装路径。
+- ✅ 图标补齐 `icon.icns`（`cargo tauri icon` 生成，源图建议 ≥1024×1024）
+- ✅ `bundle.macOS = { minimumSystemVersion: "10.15", signingIdentity: "-" }`（ad-hoc 签名，Apple Silicon 可启动）
+- ✅ `tools/build/macos.sh`（默认 arm64，`--intel` 切 x86_64，产出 `.app` + `.dmg` + `.app.tar.gz`/`.sig`）
+- ✅ `tools/publish/macos.sh`（上传 dmg + 更新包，合并 `darwin-aarch64` 条目）
+- ✅ `release.yml` 新增 `build-macos` / `publish-macos`，`verify` 断言三平台齐全
+- ✅ `merge-latest.py` 的缺失平台告警覆盖 `darwin-aarch64`
 
-**重启条件**：账号到位 + 有可用的 macOS 机器（或 CI macOS runner 预算）。
+限制与后续（阶段 2，待 Apple Developer 账号）：
+
+- 未签名 → 用户首次打开需右键 → 打开（README 有说明）
+- 无公证 → 无法无感安装
+- 届时补齐：Developer ID 签名 → notarytool 公证 → `stapler` 装订；CI secret `APPLE_CERTIFICATE` / `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID`
+- 如后续需要 Intel 版：`./tools/build/macos.sh --intel` + 发布脚本自动用 `darwin-x86_64` key
+- 遗留验证：Keychain 首次授权弹窗、`mysqldump`/`mysql` 在 Homebrew 路径下的查找行为
 
 ## V2-3 发布与更新链路双平台化（P0）
 
@@ -155,7 +163,7 @@ P1-3 备份还原 → P1-8 数据同步
 - 多数据源（SQLite / Redis / SQL Server）
 - AI SQL 助手（NL2SQL、解释与优化建议）
 - 企业协作（共享连接/查询库、数据脱敏、高危 SQL 审批）
-- macOS 支持（见 V2-2，待账号与构建机到位）
+- macOS 公证件（见 V2-2 阶段 2，待 Apple Developer 账号）
 - Windows 代码签名（见 D1，v2.0 以内测版分发）
 
 理由：平台扩张 + 三项体验补齐已占满 v2.0 预算；这些能力均可独立成版本，不与平台改造争抢同一条发布链路。

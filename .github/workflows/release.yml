@@ -4,10 +4,10 @@ name: Release
 #
 # 设计要点（对应 ROADMAP V2-3 发布链路）：
 # 1. build 与 publish 分 job：构建失败不会留下半残发行版
-# 2. publish 串行：Linux 先发（写 linux-x86_64），Windows 后发（合并 windows-x86_64），
+# 2. publish 串行：Linux → Windows → macOS（各自只写自己的平台 key，互不覆盖），
 #    两者都复用 tools/publish/*.sh，不做第二套实现
 # 3. 任一平台构建失败则整个发布不执行 —— 避免出现「清单只有一个平台」的事故
-# 4. 发布后自动核对 latest.json 是否两个平台都在
+# 4. 发布后自动核对 latest.json 是否 Linux / Windows / macOS 三个平台都在
 
 on:
   push:
@@ -306,12 +306,112 @@ jobs:
           retention-days: 7
 
   # ---------------------------------------------------------------------------
+  # macOS 构建（Apple Silicon · 未签名预览版）
+  # 不签名也能产出发行版：bundle.macOS.signingIdentity = "-"（ad-hoc），
+  # 用户首次打开需右键→打开（README 有说明）。应用内更新用 minisign 验签，与此无关。
+  # ---------------------------------------------------------------------------
+  build-macos:
+    name: Build macOS bundles
+    needs: check
+    runs-on: macos-14
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: src-ui/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+
+      - uses: taiki-e/install-action@v2
+        continue-on-error: true
+        with:
+          tool: cargo-tauri
+
+      - name: Tauri CLI version
+        continue-on-error: true
+        shell: bash
+        run: cargo tauri --version || echo "::warning::未预装 cargo-tauri，构建脚本将现场编译"
+
+      - name: Verify signing key
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if ! command -v cargo-tauri >/dev/null 2>&1; then
+            echo "::warning::cargo-tauri 未安装，跳过签名自检（构建脚本会现场编译）"
+            exit 0
+          fi
+          keyfile="$(mktemp)"
+          printf '%s' "$TAURI_SIGNING_PRIVATE_KEY" > "$keyfile"
+          printf 'probe' > probe.txt
+          if cargo tauri signer sign -p "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" \
+               --private-key-path "$keyfile" probe.txt > /dev/null 2>sign-error.txt; then
+            echo "::notice::签名私钥与密码配对正常"
+          else
+            sed 's/^/    /' sign-error.txt
+            echo "::error::签名私钥无法解密。检查 TAURI_SIGNING_PRIVATE_KEY 与 TAURI_SIGNING_PRIVATE_KEY_PASSWORD 是否配对；私钥为空密码时不要创建该 Secret。"
+            exit 1
+          fi
+          rm -f "$keyfile" probe.txt probe.txt.sig sign-error.txt
+
+      - name: Frontend deps
+        working-directory: src-ui
+        run: npm ci
+
+      - name: Build app + dmg
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          BUILD_TIMEOUT: 2400
+        run: ./tools/build/macos.sh --bundles app,dmg
+
+      - name: Inventory
+        shell: bash
+        run: |
+          find src-tauri/target/aarch64-apple-darwin/release/bundle -maxdepth 2 -type f \
+            \( -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.sig' \) -exec ls -lh {} \;
+
+      # 只打包安装包与签名，避免 .app 目录树把 artifact 体积放大
+      - name: Pack bundles
+        shell: bash
+        run: |
+          staging="$(mktemp -d)"
+          mkdir -p "$staging/bundle/dmg" "$staging/bundle/macos"
+          src="src-tauri/target/aarch64-apple-darwin/release/bundle"
+          cp "$src"/dmg/*.dmg "$staging/bundle/dmg/" 2>/dev/null || true
+          cp "$src"/macos/*.app.tar.gz "$staging/bundle/macos/" 2>/dev/null || true
+          cp "$src"/macos/*.app.tar.gz.sig "$staging/bundle/macos/" 2>/dev/null || true
+          tar -czf macos-bundles.tar.gz -C "$staging" bundle
+          tar -tzf macos-bundles.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-bundles
+          path: macos-bundles.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
   # 发布：Linux 先，Windows 后（清单按平台 key 合并，串行避免竞态）
   # needs 同时包含两个 build：任一平台构建失败则不发布
   # ---------------------------------------------------------------------------
   publish-linux:
     name: Publish Linux
-    needs: [build-linux, build-windows]
+    needs: [build-linux, build-windows, build-macos]
     if: github.event_name != 'workflow_dispatch' || inputs.skip_publish == false
     runs-on: ubuntu-22.04
     timeout-minutes: 30
@@ -368,11 +468,44 @@ jobs:
         run: pwsh -File tools/publish/windows.ps1 -Tag $env:TAG -Yes
 
   # ---------------------------------------------------------------------------
+  # 发布 macOS（Apple Silicon 未签名预览版）：排在 Windows 之后，清单串行合并
+  # ---------------------------------------------------------------------------
+  publish-macos:
+    name: Publish macOS
+    needs: publish-windows
+    if: github.event_name != 'workflow_dispatch' || inputs.skip_publish == false
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-bundles
+          path: macos-bundles
+
+      - name: Restore bundle tree
+        shell: bash
+        run: |
+          mkdir -p src-tauri/target/aarch64-apple-darwin/release
+          tar -xzf macos-bundles/macos-bundles.tar.gz -C src-tauri/target/aarch64-apple-darwin/release
+          find src-tauri/target/aarch64-apple-darwin/release/bundle -maxdepth 2 -type f | head -20
+
+      - name: Publish dmg + latest.json
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: ./tools/publish/macos.sh --tag "$TAG" --yes
+
+  # ---------------------------------------------------------------------------
   # 发布后核对：清单版本与 tag 一致，且两个平台条目都在
   # ---------------------------------------------------------------------------
   verify:
     name: Verify latest.json
-    needs: [publish-linux, publish-windows]
+    needs: [publish-linux, publish-windows, publish-macos]
     if: github.event_name != 'workflow_dispatch' || inputs.skip_publish == false
     runs-on: ubuntu-22.04
     timeout-minutes: 15
@@ -406,8 +539,8 @@ jobs:
           print(f'version={got} platforms={platforms}')
           if got != want:
               sys.exit(f'清单版本 {got} 与 tag {want} 不一致')
-          missing = {'linux-x86_64', 'windows-x86_64'} - set(platforms)
+          missing = {'linux-x86_64', 'windows-x86_64', 'darwin-aarch64'} - set(platforms)
           if missing:
               sys.exit(f'清单缺少平台条目: {sorted(missing)}')
-          print('OK: 两个平台条目齐全')
+          print('OK: Linux / Windows / macOS(arm64) 平台条目齐全')
           PY
