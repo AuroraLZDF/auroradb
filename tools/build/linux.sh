@@ -211,18 +211,40 @@ fi
 
 # 使用 timeout 防止卡死。冷缓存（如 CI 首次构建）需要更长时间，可用 BUILD_TIMEOUT 覆盖
 BUILD_TIMEOUT="${BUILD_TIMEOUT:-600}"
-if command -v timeout &> /dev/null; then
-    timeout "$BUILD_TIMEOUT" cargo tauri build --bundles "$BUNDLE_TYPE" || {
-        echo -e "${RED}  ✗ 打包超时或失败${NC}"
+
+# 把构建日志留存一份：失败时能直接指出真实原因，而不是只报「打包失败」
+BUILD_LOG="$(mktemp -t auroradb-build.XXXXXX.log)"
+SIGN_LOG="$(mktemp -t auroradb-sign.XXXXXX.log)"
+
+run_build() {
+    if command -v timeout &> /dev/null; then
+        timeout "$BUILD_TIMEOUT" cargo tauri build --bundles "$BUNDLE_TYPE"
+    else
+        cargo tauri build --bundles "$BUNDLE_TYPE"
+    fi
+}
+
+if ! run_build 2>&1 | tee "$BUILD_LOG"; then
+    echo -e "${RED}  ✗ 打包失败（构建日志: $BUILD_LOG）${NC}"
+    echo ""
+    if grep -q "Wrong password for that key" "$BUILD_LOG"; then
+        echo -e "${YELLOW}  原因: 更新签名密码与私钥不匹配（该私钥已加密）。${NC}"
+        echo "  处置: 让 TAURI_SIGNING_PRIVATE_KEY_PASSWORD 与私钥配对；私钥若未加密则不要设置该变量。"
+    elif grep -q "failed to decode" "$BUILD_LOG"; then
+        echo -e "${YELLOW}  原因: TAURI_SIGNING_PRIVATE_KEY 无法解码（可能传的是路径或换行被破坏）。${NC}"
+    elif grep -qi "timed out\|timeout" "$BUILD_LOG"; then
+        echo -e "${YELLOW}  原因: 构建在 ${BUILD_TIMEOUT}s 内未完成（冷缓存可调大 BUILD_TIMEOUT）。${NC}"
+    else
+        echo "  最后 20 行日志:"
+        tail -20 "$BUILD_LOG"
         echo ""
         echo "如果卡在网络下载，建议:"
         echo "  1. 只打包 deb:  ./tools/build/linux.sh --deb"
         echo "  2. 配置代理后重试"
-        exit 1
-    }
-else
-    cargo tauri build --bundles "$BUNDLE_TYPE"
+    fi
+    exit 1
 fi
+rm -f "$BUILD_LOG"
 
 # AppImage 默认压缩率偏大，重压缩后再签名（同时去掉多余符号，减小下载体积）
 if [[ "$BUNDLE_TYPE" == *"appimage"* ]]; then
@@ -247,7 +269,12 @@ if [[ "$BUNDLE_TYPE" == *"deb"* ]]; then
     shopt -u nullglob
     for deb in "${DEBS[@]}"; do
         [[ -f "$deb.sig" ]] && continue
-        cargo tauri signer sign -p "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" "$deb" >/dev/null
+        if ! cargo tauri signer sign -p "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" "$deb" >/dev/null 2>"$SIGN_LOG"; then
+            echo -e "${RED}  ✗ 签名失败: $(basename "$deb")${NC}"
+            sed 's/^/    /' "$SIGN_LOG"
+            echo -e "${YELLOW}  提示: 检查 TAURI_SIGNING_PRIVATE_KEY_PASSWORD 是否与私钥匹配${NC}"
+            exit 1
+        fi
         echo -e "${GREEN}  ✓ 已签名 $(basename "$deb").sig${NC}"
     done
 fi

@@ -136,8 +136,12 @@ jobs:
         with:
           tool: cargo-tauri
 
+      # 只做信息输出：未预装也没关系（build 脚本会现场编译），
+      # 因此显式 continue-on-error + bash，避免 PowerShell 的 $LASTEXITCODE 让该步骤失败
       - name: Tauri CLI version
-        run: cargo tauri --version || echo "::warning::未预装 cargo-tauri，构建脚本将现场编译" 
+        continue-on-error: true
+        shell: bash
+        run: cargo tauri --version || echo "::warning::未预装 cargo-tauri，构建脚本将现场编译"
 
       - name: Frontend deps
         working-directory: src-ui
@@ -215,8 +219,12 @@ jobs:
         with:
           tool: cargo-tauri
 
+      # 只做信息输出：未预装也没关系（build 脚本会现场编译），
+      # 因此显式 continue-on-error + bash，避免 PowerShell 的 $LASTEXITCODE 让该步骤失败
       - name: Tauri CLI version
-        run: cargo tauri --version || echo "::warning::未预装 cargo-tauri，构建脚本将现场编译" 
+        continue-on-error: true
+        shell: bash
+        run: cargo tauri --version || echo "::warning::未预装 cargo-tauri，构建脚本将现场编译"
 
       - name: Frontend deps
         working-directory: src-ui
