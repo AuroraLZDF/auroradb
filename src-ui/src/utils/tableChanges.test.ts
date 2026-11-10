@@ -141,6 +141,35 @@ describe('collectTableChanges', () => {
     expect(changes[1]!.sql).toBe('DELETE FROM `users` WHERE `id` = 4')
   })
 
+  it('PG 下 schema.table 表名按段引用（UPDATE / INSERT / DELETE）', () => {
+    const changes = collectTableChanges({
+      table: 'crm.orders',
+      columns,
+      edits: [{ rowIndex: 0, colIndex: 1, oldRowData: [1, 'Ada', ''], newValue: 'B' }],
+      inserts: [[3, 'Cy', null]],
+      deletes: [[4, 'Di', 'di@example.com']],
+      driver: 'postgres'
+    })
+
+    expect(changes.map(c => c.sql)).toEqual([
+      'UPDATE "crm"."orders" SET "name" = \'B\' WHERE "id" = 1',
+      'INSERT INTO "crm"."orders" ("id", "name", "email") VALUES (3, \'Cy\', NULL)',
+      'DELETE FROM "crm"."orders" WHERE "id" = 4'
+    ])
+  })
+
+  it('MySQL 下多段表名仍按单个标识符引用', () => {
+    const changes = collectTableChanges({
+      table: 'crm.orders',
+      columns,
+      edits: [],
+      inserts: [],
+      deletes: [[1, 'Ada', '']]
+    })
+
+    expect(changes[0]!.sql).toBe('DELETE FROM `crm.orders` WHERE `id` = 1')
+  })
+
   it('与原始值等值的编辑不生成 SET（数字与字符串视为相同）', () => {
     const changes = collectTableChanges({
       table: 'users',

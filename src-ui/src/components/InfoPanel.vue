@@ -22,7 +22,7 @@
             </div>
             <div class="info-item">
               <span class="info-label">{{ t('common.type') }}:</span>
-              <span class="info-value">{{ connectionInfo?.driver === 'postgres' ? 'PostgreSQL' : 'MySQL' }}</span>
+              <span class="info-value">{{ capabilitiesOf(connectionInfo?.driver).label }}</span>
             </div>
             <div class="info-item">
               <span class="info-label">{{ t('infoPanel.host') }}:</span>
@@ -127,7 +127,7 @@
             </div>
             <div class="info-item">
               <span class="info-label">{{ t('infoPanel.totalSize') }}:</span>
-              <span class="info-value">{{ formatBytes((tableStructure.data_size || 0) + (tableStructure.index_size || 0)) }}</span>
+              <span class="info-value">{{ formatBytes(tableTotalSize) }}</span>
             </div>
             <div class="info-item">
               <span class="info-label">{{ t('infoPanel.createTime') }}:</span>
@@ -165,12 +165,6 @@
           </div>
         </div>
       </template>
-
-      <!-- PostgreSQL 元数据（表结构 / 模式详情）暂未提供 -->
-      <div v-if="isPostgres && type !== 'connection'" class="info-section">
-        <h4>{{ type === 'table' ? t('infoPanel.tableInfo') : t('infoPanel.databaseInfo') }}</h4>
-        <p class="info-hint">{{ t('infoPanel.postgresNotSupported') }}</p>
-      </div>
 
       <!-- 加载状态 -->
       <div v-if="loading" class="loading-overlay">
@@ -210,6 +204,8 @@ import { useConnectionStore } from '@/stores/connection'
 import { useDataBrowserStore, type TableStructure, type DatabaseInfo } from '@/stores/dataBrowser'
 import { t } from '@/i18n'
 import { connectionStateI18nKey } from '@/utils/connectionState'
+import { capabilitiesOf, normalizeDriver, type DriverKind } from '@/utils/driver'
+import { formatSql } from '@/utils/sql'
 import { Table, Copy, Plug, Database, Info, X, CheckCircle, XCircle } from 'lucide-vue-next'
 
 const props = defineProps<{
@@ -284,13 +280,19 @@ const title = computed(() => {
   }
 })
 
+// 当前面板对应的连接（连接/库/表三种类型都按 connectionId 关联）
+const panelConnection = computed(() =>
+  connectionStore.activeConnections.find(c => c.id === props.data.connectionId)
+)
+
 // 连接信息
-const connectionInfo = computed(() => {
-  if (props.type === 'connection' && props.data.connectionId) {
-    return connectionStore.activeConnections.find(c => c.id === props.data.connectionId)
-  }
-  return null
-})
+const connectionInfo = computed(() =>
+  props.type === 'connection' ? panelConnection.value : null
+)
+
+// 驱动能力：DDL 格式化、类型标签等按能力表处理，不硬编码驱动名
+const driverKind = computed<DriverKind>(() => normalizeDriver(panelConnection.value?.driver))
+const driverCaps = computed(() => capabilitiesOf(driverKind.value))
 
 const connectionStateText = computed(() =>
   t(connectionStateI18nKey(connectionInfo.value?.state)),
@@ -314,10 +316,16 @@ const tableCount = computed(() => {
   return 0
 })
 
-// 当前连接是否为 PostgreSQL（PG 的表结构 / 模式详情尚未提供）
-const isPostgres = computed(() =>
-  connectionStore.connections.some(c => c.id === props.data.connectionId && c.driver === 'postgres')
-)
+// 表总大小：MySQL/PG 都可能缺 data_size 或 index_size，两者都为空时显示「-」而不是 0 B
+const tableTotalSize = computed(() => {
+  const dataSize = tableStructure.value?.data_size
+  const indexSize = tableStructure.value?.index_size
+  if (dataSize === undefined || dataSize === null) {
+    if (indexSize === undefined || indexSize === null) return undefined
+    return indexSize
+  }
+  return dataSize + (indexSize ?? 0)
+})
 
 // 加载数据
 async function loadData() {
@@ -327,8 +335,6 @@ async function loadData() {
   error.value = ''
 
   try {
-    // PostgreSQL 统一走页面上的说明，不调用 MySQL 专用的元数据命令
-    if (isPostgres.value && props.type !== 'connection') return
     if (props.type === 'table' && props.data.database && props.data.tableName) {
       const result = await tauriInvoke<TableStructure>('get_table_structure', {
         connectionId: props.data.connectionId,
@@ -415,22 +421,29 @@ function formatDate(date?: string): string {
   return d.toLocaleString('zh-CN')
 }
 
-// SQL 语法高亮 - 保持原有格式，仅添加颜色
+// SQL 语法高亮 - 保留标识符原文，仅添加颜色
+// MySQL 用反引号、PostgreSQL 用双引号；PG 的 DDL 先交给 utils/sql.ts 统一格式化。
 function formatSQL(sql?: string): string {
   if (!sql) return `<span class="sql-comment">-- ${t('infoPanel.ddlEmpty')}</span>`
-  
+
+  if (driverCaps.value.formatDdl) {
+    sql = formatSql(sql)
+  }
+
   // 转义 HTML
   let formatted = sql
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-  
-  // 高亮字符串（单引号）- 先处理避免内部被替换
-  formatted = formatted.replace(/'([^']*)'/g, '<span class="sql-string">\'$1\'</span>')
-  
-  // 高亮字段名（反引号）
-  formatted = formatted.replace(/`([^`]*)`/g, '<span class="sql-field">`$1`</span>')
-  
+
+  // 先抽出字符串/引号标识符，避免关键字、函数、数字高亮破坏字面量或带点的标识符。
+  // 占位符前置字母，防止数字高亮命中序号。
+  const tokens: string[] = []
+  formatted = formatted.replace(/(`[^`]*`|"(?:[^"]|"")*"|'(?:[^']|'')*')/g, (match) => {
+    tokens.push(match)
+    return `\uE000t${tokens.length - 1}\uE000`
+  })
+
   // 高亮关键字
   const keywords = [
     'CREATE', 'TABLE', 'PRIMARY', 'KEY', 'UNIQUE', 'INDEX', 'FOREIGN',
@@ -439,24 +452,35 @@ function formatSQL(sql?: string): string {
     'CASCADE', 'RESTRICT', 'SET', 'CONSTRAINT', 'REFERENCES',
     'BIGINT', 'INT', 'VARCHAR', 'TEXT', 'DATETIME', 'TIMESTAMP', 'TINYINT',
     'CHAR', 'DECIMAL', 'FLOAT', 'DOUBLE', 'BOOLEAN', 'JSON', 'ENUM',
-    'UNSIGNED', 'SIGNED', 'CHECK', 'longtext'
+    'UNSIGNED', 'SIGNED', 'CHECK', 'longtext',
+    // PostgreSQL 常见类型/子句
+    'SERIAL', 'BIGSERIAL', 'SMALLSERIAL', 'NUMERIC', 'REAL', 'BYTEA', 'UUID',
+    'TIMESTAMPTZ', 'INTERVAL', 'GENERATED', 'ALWAYS', 'IDENTITY', 'SEQUENCE',
+    'WITH', 'WITHOUT', 'OIDS', 'TABLESPACE', 'INHERITS', 'PARTITION', 'BY'
   ]
-  
+
   keywords.forEach(keyword => {
     const regex = new RegExp(`\\b${keyword}\\b`, 'gi')
     formatted = formatted.replace(regex, `<span class="sql-keyword">$&</span>`)
   })
-  
+
   // 高亮函数
-  const functions = ['CURRENT_TIMESTAMP', 'NOW', 'UUID', 'json_valid']
+  const functions = ['CURRENT_TIMESTAMP', 'NOW', 'UUID', 'json_valid', 'nextval', 'gen_random_uuid']
   functions.forEach(func => {
     const regex = new RegExp(`\\b${func}\\b`, 'gi')
     formatted = formatted.replace(regex, `<span class="sql-function">$&</span>`)
   })
-  
+
   // 高亮数字
   formatted = formatted.replace(/\b(\d+)\b/g, '<span class="sql-number">$1</span>')
-  
+
+  // 还原字符串与引号标识符
+  formatted = formatted.replace(/\uE000t(\d+)\uE000/g, (_match, index: string) => {
+    const token = tokens[Number(index)] ?? ''
+    const cls = token.startsWith("'") ? 'sql-string' : 'sql-field'
+    return `<span class="${cls}">${token}</span>`
+  })
+
   return formatted
 }
 

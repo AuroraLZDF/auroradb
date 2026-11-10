@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { findDangerousStatements, formatSql, quoteIdentifier } from './sql'
+import { findDangerousStatements, formatSql, quoteIdentifier, quoteQualifiedIdentifier } from './sql'
 
 describe('quoteIdentifier', () => {
   it('用反引号包裹标识符', () => {
@@ -13,6 +13,26 @@ describe('quoteIdentifier', () => {
   it('PG 使用双引号并双写内部双引号', () => {
     expect(quoteIdentifier('users', 'postgres')).toBe('"users"')
     expect(quoteIdentifier('a"b', 'postgres')).toBe('"a""b"')
+  })
+})
+
+describe('quoteQualifiedIdentifier', () => {
+  it('MySQL 保持整串引用，不拆分 schema', () => {
+    expect(quoteQualifiedIdentifier('orders')).toBe('`orders`')
+    expect(quoteQualifiedIdentifier('crm.orders')).toBe('`crm.orders`')
+  })
+
+  it('PG 单段表名等同 quoteIdentifier', () => {
+    expect(quoteQualifiedIdentifier('orders', 'postgres')).toBe('"orders"')
+  })
+
+  it('PG 按 schema.table 分段引用', () => {
+    expect(quoteQualifiedIdentifier('crm.orders', 'postgres')).toBe('"crm"."orders"')
+    expect(quoteQualifiedIdentifier('a"b.c', 'postgres')).toBe('"a""b"."c"')
+  })
+
+  it('最多拆成两段', () => {
+    expect(quoteQualifiedIdentifier('a.b.c', 'postgres')).toBe('"a"."b.c"')
   })
 })
 

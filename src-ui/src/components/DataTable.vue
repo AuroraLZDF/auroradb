@@ -507,7 +507,7 @@
       :value="cellViewer.value"
       :column-name="cellViewer.columnName"
       :column-type="cellViewer.columnType"
-      :driver="isPostgresConnection ? 'postgres' : 'mysql'"
+      :driver="driverKind"
       @close="cellViewer.show = false"
     />
 
@@ -626,7 +626,7 @@
       :connection-id="currentTab.connectionId"
       :database="currentTab.database"
       :table="currentTab.tableName"
-      :driver="isPostgresConnection ? 'postgres' : 'mysql'"
+      :driver="driverKind"
       @close="showGenerator = false"
       @open-sql="onGeneratorOpenSql"
     />
@@ -647,7 +647,8 @@ import { confirmAction } from '@/composables/useConfirm'
 import { useUnsavedGuard } from '@/composables/useUnsavedGuard'
 import { useVirtualRows } from '@/composables/useVirtualRows'
 import { collectTableChanges, formatSqlValue, isBinaryType, isSameValue } from '@/utils/tableChanges'
-import { quoteIdentifier } from '@/utils/sql'
+import { quoteIdentifier, quoteQualifiedIdentifier } from '@/utils/sql'
+import { capabilitiesOf, normalizeDriver, type DriverKind } from '@/utils/driver'
 import { t } from '@/i18n'
 import CellViewer from '@/components/CellViewer.vue'
 import {
@@ -909,7 +910,7 @@ function removeFilterRow(id: number) {
 const filterWherePreview = computed(() => {
   const rows = filterRows.value.filter(isUsableFilter)
   if (rows.length === 0) return ''
-  const quote = (name: string) => (isPostgresConnection.value ? `"${name}"` : `\`${name}\``)
+  const quote = (name: string) => quoteIdentifier(name, driverKind.value)
   const literal = (row: FilterRow): string => {
     const coerced = coerceFilterValue(row)
     if (coerced === null) return ''
@@ -1273,25 +1274,20 @@ const hasSelection = computed(() => selectedRows.value.size > 0)
 // 没有主键就无法安全定位行，此时禁止编辑（避免全列匹配误伤）
 const hasPrimaryKey = computed(() => (currentTableData.value?.columns ?? []).some(col => col.is_primary))
 
-// PostgreSQL 当前只提供表数据浏览，写入能力尚未实现
-const isPostgresConnection = computed(() => connectionStore.currentConnection?.driver === 'postgres')
+// 驱动能力集中判断：写路径是否可用由能力表决定（PG P1 已支持保存表数据；
+// 后续 sqlite 等驱动在能力表里把 editableTableData 置 false 即可禁用编辑）
+const driverKind = computed<DriverKind>(() => normalizeDriver(connectionStore.currentConnection?.driver))
+const driverCaps = computed(() => capabilitiesOf(driverKind.value))
 
 // 只读连接同样禁止写入（后端也会兜底拦截）
 const isReadOnlyConnection = computed(
-  () => isPostgresConnection.value || connectionStore.currentConnection?.safety_mode === 'read-only'
+  () => !driverCaps.value.editableTableData ||
+    connectionStore.currentConnection?.safety_mode === 'read-only'
 )
 
-const readOnlyHint = computed(() =>
-  isPostgresConnection.value
-    ? t('dataTable.postgresReadOnlyHint')
-    : t('dataTable.readOnlyConnectionHint')
-)
+const readOnlyHint = computed(() => t('dataTable.readOnlyConnectionHint'))
 
-const readOnlyBadgeLabel = computed(() =>
-  isPostgresConnection.value
-    ? t('dataTable.postgresReadOnly')
-    : t('dataTable.readOnlyConnection')
-)
+const readOnlyBadgeLabel = computed(() => t('dataTable.readOnlyConnection'))
 
 // 编辑拦截原因：只读连接优先提示，其次是无主键表
 const editBlockReason = computed(() => {
@@ -1781,11 +1777,15 @@ function getDefaultValue(dataType: string, isNullable: boolean): unknown {
     return 0
   }
 
-  // 日期时间类型
-  if (type.includes('datetime')) return '0000-00-00 00:00:00'
-  if (type.includes('date')) return '0000-00-00'
+  // 日期时间类型：MySQL 用零值日期，PG 没有零值日期（0000-00-00 非法），
+  // 改用最小合法值，避免新增行时直接写入非法字符串。
+  // 注意 timestamp 也包含 'time'，必须先于 time 判断。
+  const zeroDates = driverCaps.value.zeroDateDefaults
+  if (type.includes('datetime') || type.includes('timestamp')) {
+    return zeroDates ? '0000-00-00 00:00:00' : '1970-01-01 00:00:00'
+  }
+  if (type.includes('date')) return zeroDates ? '0000-00-00' : '1970-01-01'
   if (type.includes('time')) return '00:00:00'
-  if (type.includes('timestamp')) return '0000-00-00 00:00:00'
   if (type.includes('year')) return 0
 
   // 布尔类型
@@ -2216,9 +2216,9 @@ function hideContextMenu() {
 
 /** 外键导航用的表名：MySQL 带库名前缀，PG 按 schema.table 分段加引号 */
 function qualifiedTableName(table: string): string {
-  const driver = isPostgresConnection.value ? 'postgres' : 'mysql'
-  if (isPostgresConnection.value) {
-    return table.split('.').map(part => quoteIdentifier(part, driver)).join('.')
+  const driver = driverKind.value
+  if (driverCaps.value.tableQualification === 'schema') {
+    return quoteQualifiedIdentifier(table, driver)
   }
   const database = currentTab.value?.database
   return database
@@ -2262,7 +2262,7 @@ function openForeignKeyQuery(targetTable: string, targetColumn: string, title: s
     showToast(t('dataTable.fkNullValue'))
     return
   }
-  const driver = isPostgresConnection.value ? 'postgres' : 'mysql'
+  const driver = driverKind.value
   const literal = formatSqlValue(value, { driver })
   const sql = `SELECT *\nFROM ${qualifiedTableName(targetTable)}\nWHERE ${quoteIdentifier(targetColumn, driver)} = ${literal}\nLIMIT 200;`
   emit('open-sql', sql, title, currentTab.value?.connectionId ?? '')
@@ -2447,7 +2447,7 @@ function collectChanges(): TableChange[] {
     edits: modifiedCells.value.values(),
     inserts: newRows.value.map(row => row.data),
     deletes: deletedRows.value.map(row => row.rowData),
-    driver: isPostgresConnection.value ? 'postgres' : 'mysql'
+    driver: driverKind.value
   })
 }
 

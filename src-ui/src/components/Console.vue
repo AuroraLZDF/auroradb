@@ -14,6 +14,14 @@
           <span class="command">{{ entry.command }}</span>
         </div>
 
+        <!-- DDL 结果（PG 等无原生 SHOW CREATE TABLE 的驱动） -->
+        <div v-else-if="entry.type === 'ddl'" class="entry-table">
+          <pre class="formatted-sql">{{ entry.sql }}</pre>
+          <div class="result-stats">
+            {{ t('console.ddlLoaded', { time: formatTime(entry.executionTime) }) }}
+          </div>
+        </div>
+
         <!-- 结果表格（ASCII 风格，支持自动换行） -->
         <div v-else-if="entry.type === 'table'" class="entry-table">
           <!-- 特殊处理 SHOW CREATE TABLE - 格式化显示 -->
@@ -94,7 +102,8 @@ import { useConnectionStore } from '@/stores/connection'
 import { useDataBrowserStore } from '@/stores/dataBrowser'
 import { useQueryLibraryStore } from '@/stores/queryLibrary'
 import { useSqlCompletion, invalidateSchemaCache } from '@/composables/useSqlCompletion'
-import { findDangerousStatements } from '@/utils/sql'
+import { findDangerousStatements, formatSql } from '@/utils/sql'
+import { capabilitiesOf, normalizeDriver, type DriverKind } from '@/utils/driver'
 import { globalToast } from '@/composables/useToast'
 import { confirmDanger } from '@/composables/useConfirm'
 import { t } from '@/i18n'
@@ -145,7 +154,16 @@ interface InputEntry {
   command: string
 }
 
-type ConsoleEntry = InputEntry | TableEntry | MessageEntry | ErrorEntry
+/** 无原生 SHOW CREATE TABLE 的驱动（PG）通过元数据接口取回的 DDL */
+interface DdlEntry {
+  type: 'ddl'
+  database: string
+  command: string
+  sql: string
+  executionTime: number
+}
+
+type ConsoleEntry = InputEntry | TableEntry | MessageEntry | ErrorEntry | DdlEntry
 
 // 判断是否是 SHOW CREATE TABLE 结果
 function isShowCreateTable(entry: TableEntry): boolean {
@@ -222,6 +240,10 @@ const effectiveConnection = computed(
     connectionStore.currentConnection,
 )
 
+// 当前控制台连接的驱动能力（提示符、USE/SHOW CREATE TABLE 走法都从这里取）
+const driverKind = computed<DriverKind>(() => normalizeDriver(effectiveConnection.value?.driver))
+const driverCaps = computed(() => capabilitiesOf(driverKind.value))
+
 // 用户通过 USE 手动切换的库（优先于侧栏正在浏览的库）
 const manualDb = ref('')
 
@@ -256,11 +278,11 @@ watch(
 
 const currentPrompt = computed(() => {
   const db = isInMultiLine.value ? '    ' : currentDb.value
-  return `mysql [${db}]> `
+  return `${driverCaps.value.prompt} [${db}]> `
 })
 
 function getPrompt(database: string) {
-  return `mysql [${database || 'none'}]> `
+  return `${driverCaps.value.prompt} [${database || 'none'}]> `
 }
 
 function formatTime(ms: number): string {
@@ -482,10 +504,10 @@ async function executeCommand() {
     }
   }
 
-  // 处理 USE 命令（切换当前数据库）
+  // 处理 USE 命令（切换当前数据库 / PG 的 schema）
   const useMatch = fullCommand.match(/^use\s+([^;]+);$/i)
   if (useMatch && useMatch[1]) {
-    const newDb = useMatch[1].trim().replace(/^`|`$/g, '') // 去除首尾的反引号
+    const newDb = useMatch[1].trim().replace(/^[`"]|[`"]$/g, '') // 去除首尾的引用符
 
     if (!effectiveConnection.value) {
       entries.value.push({
@@ -498,19 +520,32 @@ async function executeCommand() {
       return
     }
 
-    // 先发送到后端执行 USE 语句
     try {
-      await connectionStore.executeSql(effectiveConnection.value.id, newDb, fullCommand)
-      // 后端执行成功后，更新前端当前数据库
-      manualDb.value = newDb
-      recordHistory(fullCommand, newDb, true)
-      entries.value.push({
-        type: 'message',
-        database: newDb,
-        command: fullCommand,
-        message: t('console.databaseChanged', { database: newDb }),
-        executionTime: 0
-      })
+      if (driverCaps.value.nativeUseStatement) {
+        // MySQL 原生支持 USE：先交给后端执行，成功后再更新前端当前库
+        await connectionStore.executeSql(effectiveConnection.value.id, newDb, fullCommand)
+        manualDb.value = newDb
+        recordHistory(fullCommand, newDb, true)
+        entries.value.push({
+          type: 'message',
+          database: newDb,
+          command: fullCommand,
+          message: t('console.databaseChanged', { database: newDb }),
+          executionTime: 0
+        })
+      } else {
+        // PostgreSQL 没有 USE 语句：后端 execute 的 database 参数等价于 SET search_path，
+        // 这里只更新前端当前 schema，真正的切换发生在下一条查询执行时。
+        manualDb.value = newDb
+        recordHistory(fullCommand, newDb, true)
+        entries.value.push({
+          type: 'message',
+          database: newDb,
+          command: fullCommand,
+          message: t('console.schemaChanged', { schema: newDb }),
+          executionTime: 0
+        })
+      }
     } catch (err: unknown) {
       recordHistory(fullCommand, db, false, undefined, String(err))
       entries.value.push({
@@ -536,14 +571,88 @@ async function executeCommand() {
     return
   }
 
-  // 没有可用的库时不要擅自回落到系统库（MySQL 必须显式指定库）
-  if (!db && effectiveConnection.value.driver !== 'postgres') {
+  // 没有可用的库时不要擅自回落到系统库（MySQL 必须显式指定库；PG 可走默认 search_path）
+  if (!db && driverCaps.value.requiresDatabase) {
     entries.value.push({
       type: 'error',
       database: db,
       command: fullCommand,
       message: t('console.noDatabase')
     })
+    await scrollToBottom()
+    return
+  }
+
+  // 没有原生 SHOW CREATE TABLE 的驱动（PG）：回退到 get_table_structure 取重建 DDL
+  const showCreateMatch = fullCommand.match(/^show\s+create\s+table\s+(.+?)\s*;?$/i)
+  if (showCreateMatch && showCreateMatch[1] && !driverCaps.value.nativeShowCreateTable) {
+    // 逐段去掉引用符：兼容 `schema`.`table` / "schema"."table" / schema.table
+    const tableParts = showCreateMatch[1]
+      .trim()
+      .split('.')
+      .map(part => part.trim().replace(/^[`"]|[`"]$/g, ''))
+    const hasSchema = tableParts.length > 1 && tableParts[0] !== ''
+    // 元数据接口的 database 参数是「连接库」而非 schema：PG 的对象树表名本身带
+    // schema. 前缀（见 get_postgres_table_structure 的 split_pg_table_name），
+    // 所以库取当前浏览的库，schema 只出现在表名里；表没写 schema 时用 USE 设置的 search_path。
+    const lookupDatabase = browserStore.currentDatabase || effectiveConnection.value.database || ''
+    const schemaHint = manualDb.value
+    const lookupTable = hasSchema
+      ? tableParts.join('.')
+      : schemaHint
+        ? `${schemaHint}.${tableParts[0]}`
+        : tableParts[0]
+
+    if (!lookupDatabase || !lookupTable) {
+      entries.value.push({
+        type: 'error',
+        database: db,
+        command: fullCommand,
+        message: t('console.noDatabase')
+      })
+      await scrollToBottom()
+      return
+    }
+
+    const startTime = performance.now()
+    running.value = true
+    try {
+      const structure = await browserStore.getTableStructure(
+        effectiveConnection.value.id,
+        lookupDatabase,
+        lookupTable
+      )
+      const executionTime = performance.now() - startTime
+      recordHistory(fullCommand, lookupDatabase, true, executionTime)
+      if (!structure.createStatement) {
+        entries.value.push({
+          type: 'message',
+          database: db,
+          command: fullCommand,
+          message: t('infoPanel.ddlEmpty'),
+          executionTime
+        })
+      } else {
+        entries.value.push({
+          type: 'ddl',
+          database: lookupDatabase,
+          command: fullCommand,
+          sql: formatSql(structure.createStatement),
+          executionTime
+        })
+      }
+    } catch (err: unknown) {
+      const message = String(err)
+      recordHistory(fullCommand, db, false, undefined, message)
+      entries.value.push({
+        type: 'error',
+        database: db,
+        command: fullCommand,
+        message
+      })
+    } finally {
+      running.value = false
+    }
     await scrollToBottom()
     return
   }

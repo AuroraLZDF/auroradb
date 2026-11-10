@@ -72,7 +72,7 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { t } from '@/i18n'
-import { quoteIdentifier } from '@/utils/sql'
+import { quoteIdentifier, quoteQualifiedIdentifier } from '@/utils/sql'
 
 interface ColumnInfo {
   name: string
@@ -312,7 +312,7 @@ function regenerate() {
   }
   const table = tableNameInput.value.trim() || props.table
   const qualified = driver === 'postgres'
-    ? table.split('.').map(part => quoteIdentifier(part, driver)).join('.')
+    ? quoteQualifiedIdentifier(table, driver)
     : `${quoteIdentifier(props.database, driver)}.${quoteIdentifier(table, driver)}`
   const quotedColumns = names.map(name => quoteIdentifier(name, driver)).join(', ')
   const rows: string[] = []

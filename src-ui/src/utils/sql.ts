@@ -15,6 +15,23 @@ export function quoteIdentifier(identifier: string, driver: DriverKind = 'mysql'
   return '`' + identifier.replace(/`/g, '``') + '`'
 }
 
+/**
+ * 按方言引用「可能带 schema 前缀」的表名。
+ *
+ * - PostgreSQL：对象树里的表名是 `schema.table`，必须分段引用，
+ *   否则会生成 `"crm.orders"`（被 PG 当成一个带点的表名，报 relation does not exist）。
+ *   最多拆成两段：`a.b.c` 视为 schema=`a`、table=`b.c`。
+ * - MySQL：保持整串引用（`` `crm.orders` ``），不改变既有行为。
+ */
+export function quoteQualifiedIdentifier(name: string, driver: DriverKind = 'mysql'): string {
+  if (driver !== 'postgres') return quoteIdentifier(name, driver)
+  const dot = name.indexOf('.')
+  if (dot <= 0 || dot === name.length - 1) return quoteIdentifier(name, driver)
+  const schema = name.slice(0, dot)
+  const table = name.slice(dot + 1)
+  return `${quoteIdentifier(schema, driver)}.${quoteIdentifier(table, driver)}`
+}
+
 /** 安全模式下需要二次确认的高风险语句关键字 */
 const DANGEROUS_KEYWORDS = ['DROP', 'TRUNCATE', 'ALTER', 'RENAME', 'GRANT', 'REVOKE']
 

@@ -263,6 +263,7 @@ import { useConnectionStore } from '@/stores/connection'
 import { useSavedConnectionsStore } from '@/stores/savedConnections'
 import { t } from '@/i18n'
 import type { DriverKind, SavedConnection, SafetyMode, SshAuthType, SslMode } from '@/stores/savedConnections'
+import { DRIVER_CAPABILITIES } from '@/utils/driver'
 
 const props = defineProps<{
   editConnection?: SavedConnection
@@ -290,8 +291,8 @@ const editHasSshSecret = ref(false)
 /** 当前 Tab：基础连接 / 高级设置（SSL、SSH） */
 const activeTab = ref<'basic' | 'advanced'>('basic')
 
-/** 各驱动的默认端口：切换驱动时若端口仍是旧默认值则自动跟随 */
-const DEFAULT_PORTS: Record<DriverKind, number> = { mysql: 3306, postgres: 5432 }
+/** 各驱动的默认端口统一取自能力表：切换驱动时若端口仍是旧默认值则自动跟随 */
+const defaultPortOf = (driver: DriverKind): number => DRIVER_CAPABILITIES[driver].defaultPort
 
 /** 连接颜色标识预设色板 */
 const COLOR_PRESETS = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#a855f7', '#06b6d4', '#ec4899']
@@ -300,7 +301,7 @@ const form = reactive({
   driver: 'mysql' as DriverKind,
   name: '',
   host: 'localhost',
-  port: DEFAULT_PORTS.mysql,
+  port: DRIVER_CAPABILITIES.mysql.defaultPort,
   database: '',
   username: '',
   password: '',
@@ -321,7 +322,7 @@ const form = reactive({
   sshPassphrase: '',
 })
 
-const defaultPort = computed(() => DEFAULT_PORTS[form.driver])
+const defaultPort = computed(() => defaultPortOf(form.driver))
 
 /** 下拉选项（随语言切换更新文案） */
 const driverOptions = computed(() => [
@@ -363,8 +364,8 @@ function selectTab(tab: 'basic' | 'advanced') {
 watch(
   () => form.driver,
   (driver, prev) => {
-    if (Number(form.port) === DEFAULT_PORTS[prev]) {
-      form.port = DEFAULT_PORTS[driver]
+    if (Number(form.port) === defaultPortOf(prev)) {
+      form.port = defaultPortOf(driver)
     }
   }
 )

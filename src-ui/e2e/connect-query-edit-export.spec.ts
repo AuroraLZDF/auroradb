@@ -27,7 +27,9 @@ test.describe('连接 → 查询 → 编辑保存 → 导出', () => {
 
     const header = page.locator('.result-panel .result-header')
     await expect(header).toContainText('执行成功')
-    await expect(header).toContainText('返回 2 行')
+    // 行数统计在结果脚注（c309b40 起从 header 移入 .result-footer）
+    const footer = page.locator('.result-panel .result-footer')
+    await expect(footer).toContainText('共 2 行')
 
     const rows = page.locator('.result-table tbody tr')
     await expect(rows).toHaveCount(2)

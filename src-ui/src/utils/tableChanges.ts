@@ -1,4 +1,4 @@
-import { quoteIdentifier } from './sql'
+import { quoteIdentifier, quoteQualifiedIdentifier } from './sql'
 import type { DriverKind } from '@/stores/savedConnections'
 import type { TableChange } from '@/stores/dataBrowser'
 
@@ -150,7 +150,7 @@ export function collectTableChanges(params: {
     if (!assignments) continue
     changes.push({
       kind: 'update',
-      sql: `UPDATE ${quoteIdentifier(table, driver)} SET ${assignments} WHERE ${whereClause}`,
+      sql: `UPDATE ${quoteQualifiedIdentifier(table, driver)} SET ${assignments} WHERE ${whereClause}`,
       table,
       where_clause: whereClause
     })
@@ -165,7 +165,7 @@ export function collectTableChanges(params: {
       .join(', ')
     changes.push({
       kind: 'insert',
-      sql: `INSERT INTO ${quoteIdentifier(table, driver)} (${columnList}) VALUES (${values})`,
+      sql: `INSERT INTO ${quoteQualifiedIdentifier(table, driver)} (${columnList}) VALUES (${values})`,
       table
     })
   }
@@ -175,7 +175,7 @@ export function collectTableChanges(params: {
     if (!whereClause) continue
     changes.push({
       kind: 'delete',
-      sql: `DELETE FROM ${quoteIdentifier(table, driver)} WHERE ${whereClause}`,
+      sql: `DELETE FROM ${quoteQualifiedIdentifier(table, driver)} WHERE ${whereClause}`,
       table,
       where_clause: whereClause
     })

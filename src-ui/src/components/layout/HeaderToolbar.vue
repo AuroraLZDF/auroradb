@@ -53,8 +53,8 @@
             <button
               class="tools-item"
               role="menuitem"
-              :title="t('header.schemaDiffHint')"
-              :disabled="connStore.activeConnections.length === 0"
+              :title="toolTitle('openSchemaDiff')"
+              :disabled="toolDisabled('openSchemaDiff')"
               @click="openTool('openSchemaDiff')"
             >
               <GitCompare :size="15" />
@@ -63,8 +63,8 @@
             <button
               class="tools-item"
               role="menuitem"
-              :title="t('header.erDiagramHint')"
-              :disabled="connStore.activeConnections.length === 0"
+              :title="toolTitle('openErDiagram')"
+              :disabled="toolDisabled('openErDiagram')"
               @click="openTool('openErDiagram')"
             >
               <Network :size="15" />
@@ -73,8 +73,8 @@
             <button
               class="tools-item"
               role="menuitem"
-              :title="t('header.monitorHint')"
-              :disabled="connStore.activeConnections.length === 0"
+              :title="toolTitle('openMonitor')"
+              :disabled="toolDisabled('openMonitor')"
               @click="openTool('openMonitor')"
             >
               <Activity :size="15" />
@@ -83,8 +83,8 @@
             <button
               class="tools-item"
               role="menuitem"
-              :title="t('header.backupHint')"
-              :disabled="connStore.activeConnections.length === 0"
+              :title="toolTitle('openBackup')"
+              :disabled="toolDisabled('openBackup')"
               @click="openTool('openBackup')"
             >
               <HardDrive :size="15" />
@@ -93,8 +93,8 @@
             <button
               class="tools-item"
               role="menuitem"
-              :title="t('header.globalSearchHint')"
-              :disabled="connStore.activeConnections.length === 0"
+              :title="toolTitle('openGlobalSearch')"
+              :disabled="toolDisabled('openGlobalSearch')"
               @click="openTool('openGlobalSearch')"
             >
               <Search :size="15" />
@@ -230,6 +230,7 @@ import { useConnectionStore } from '@/stores/connection'
 import { useUpdaterStore } from '@/stores/updater'
 import { t, locale, toggleLocale } from '@/i18n'
 import { confirmAction } from '@/composables/useConfirm'
+import { capabilitiesOf, normalizeDriver, type DriverKind } from '@/utils/driver'
 import { Menu, Plug, FileCode, Moon, Sun, PanelRight, Terminal, RefreshCw, GitCompare, Activity, Languages, Network, HardDrive, Search, Wrench, Settings, ChevronDown, Info, History } from 'lucide-vue-next'
 
 const themeStore = useThemeStore()
@@ -262,6 +263,50 @@ const emit = defineEmits<{
 }>()
 
 const currentConnection = computed(() => connStore.currentConnection)
+
+// 工具入口按当前连接的驱动能力开放：没有连接全部禁用；PG 仅 ER 图可用（其余 P2）
+const hasActiveConnection = computed(() => connStore.activeConnections.length > 0)
+const toolDriver = computed<DriverKind>(() =>
+  normalizeDriver(currentConnection.value?.driver ?? connStore.activeConnections[0]?.driver)
+)
+const toolCaps = computed(() => capabilitiesOf(toolDriver.value))
+
+type ProTool = 'openSchemaDiff' | 'openErDiagram' | 'openMonitor' | 'openBackup' | 'openGlobalSearch'
+
+const PRO_TOOL_LABEL: Record<ProTool, string> = {
+  openSchemaDiff: 'header.schemaDiff',
+  openErDiagram: 'header.erDiagram',
+  openMonitor: 'header.monitor',
+  openBackup: 'header.backup',
+  openGlobalSearch: 'header.globalSearch'
+}
+
+const PRO_TOOL_HINT: Record<ProTool, string> = {
+  openSchemaDiff: 'header.schemaDiffHint',
+  openErDiagram: 'header.erDiagramHint',
+  openMonitor: 'header.monitorHint',
+  openBackup: 'header.backupHint',
+  openGlobalSearch: 'header.globalSearchHint'
+}
+
+function toolDisabled(tool: ProTool): boolean {
+  if (!hasActiveConnection.value) return true
+  switch (tool) {
+    case 'openSchemaDiff': return !toolCaps.value.proTools.schemaDiff
+    case 'openErDiagram': return !toolCaps.value.proTools.erDiagram
+    case 'openMonitor': return !toolCaps.value.proTools.monitor
+    case 'openBackup': return !toolCaps.value.proTools.backup
+    case 'openGlobalSearch': return !toolCaps.value.proTools.globalSearch
+  }
+}
+
+function toolTitle(tool: ProTool): string {
+  // 有连接但驱动不支持：优先提示「当前驱动暂不支持」，而不是让人以为没连接
+  if (hasActiveConnection.value && toolDisabled(tool)) {
+    return t('header.pgToolUnavailable', { tool: t(PRO_TOOL_LABEL[tool]) })
+  }
+  return t(PRO_TOOL_HINT[tool])
+}
 
 // 「工具」「设置」下拉菜单
 const toolsMenuRef = ref<HTMLElement | null>(null)
