@@ -2763,6 +2763,44 @@ mod tests {
         Some((manager, id, database))
     }
 
+    /// 真实 PostgreSQL 回归用例的连接夹具。
+    ///
+    /// 通过 `AURORADB_TEST_PG_HOST` / `PORT` / `USER` / `PASSWORD` / `DATABASE` 提供，
+    /// 未配置时用例静默跳过。
+    async fn pg_test_connection() -> Option<(ConnectionManager, String, String)> {
+        let host = std::env::var("AURORADB_TEST_PG_HOST").ok()?;
+        let port = std::env::var("AURORADB_TEST_PG_PORT")
+            .ok()?
+            .parse::<u16>()
+            .ok()?;
+        let username = std::env::var("AURORADB_TEST_PG_USER").ok()?;
+        let password = std::env::var("AURORADB_TEST_PG_PASSWORD").unwrap_or_default();
+        let database = std::env::var("AURORADB_TEST_PG_DATABASE").ok()?;
+
+        let manager = ConnectionManager::new();
+        let id = manager
+            .connect(ConnectionRequest {
+                config: ConnectionConfig {
+                    id: "qa-pg".to_string(),
+                    name: "qa-pg".to_string(),
+                    driver: DriverKind::Postgres,
+                    host,
+                    port,
+                    database: Some(database.clone()),
+                    username,
+                    password,
+                    pool_config: PoolConfig::default(),
+                    ssl_config: SslConfig::default(),
+                    safety_mode: SafetyMode::Off,
+                },
+                ssh_config: None,
+            })
+            .await
+            .ok()?;
+
+        Some((manager, id, database))
+    }
+
     fn paging_request(id: &str, database: &str, table: &str) -> DataQueryRequest {
         DataQueryRequest {
             connection_id: id.to_string(),
@@ -2853,6 +2891,72 @@ mod tests {
 
         let _ = manager
             .execute(&id, &db, &format!("DROP TABLE IF EXISTS `{table}`"))
+            .await;
+    }
+
+    /// PG keyset 翻页：续页不带 OFFSET、不跑 COUNT，末批不给游标，指定排序时退回 OFFSET。
+    #[tokio::test]
+    #[ignore = "需要真实 PostgreSQL 测试库：设置 AURORADB_TEST_PG_* 后执行 cargo test -- --ignored"]
+    async fn pg_cursor_pagination_walks_by_primary_key() {
+        let Some((manager, id, db)) = pg_test_connection().await else {
+            return;
+        };
+        let table = format!("qa_pg_cursor_{}", std::process::id());
+        manager
+            .execute(
+                &id,
+                &db,
+                &format!("CREATE TABLE {table} (id INT PRIMARY KEY, note VARCHAR(32) NOT NULL)"),
+            )
+            .await
+            .unwrap();
+
+        let values: Vec<String> = (1..=25).map(|i| format!("({i}, 'row{i}')")).collect();
+        manager
+            .execute(
+                &id,
+                &db,
+                &format!("INSERT INTO {table} (id, note) VALUES {}", values.join(", ")),
+            )
+            .await
+            .unwrap();
+
+        let mut req = paging_request(&id, &db, &table);
+        req.filter = None;
+        req.page = 1;
+        req.page_size = 10;
+
+        // 首页：OFFSET 取数并统计总数
+        let first = manager.query_table(&id, &db, &table, req.clone()).await.unwrap();
+        assert_eq!(first.rows.len(), 10);
+        assert_eq!(first.total_count, 25, "首页仍需总数");
+        let cursor = first.next_cursor.expect("整批取满应给出游标");
+        assert_eq!(cursor, serde_json::json!(10), "游标是本批最后一行的主键");
+
+        // 续页：keyset 条件取数，跳过 COUNT（total_count 保持 0 由前端沿用首页值）
+        let mut next = req.clone();
+        next.after = Some(cursor);
+        let second = manager.query_table(&id, &db, &table, next.clone()).await.unwrap();
+        assert_eq!(second.rows.len(), 10);
+        assert_eq!(second.total_count, 0, "续页不应再跑 COUNT");
+        assert_eq!(second.next_cursor, Some(serde_json::json!(20)));
+
+        // 末批不足一页：不再给游标，前端停止预取
+        let mut last = req.clone();
+        last.after = second.next_cursor.clone();
+        let third = manager.query_table(&id, &db, &table, last).await.unwrap();
+        assert_eq!(third.rows.len(), 5);
+        assert_eq!(third.next_cursor, None);
+
+        // 指定排序时不走游标（保证排序结果正确，前端退回 OFFSET 翻页）
+        let mut sorted = req;
+        sorted.sort_column = Some("note".to_string());
+        let sorted_page = manager.query_table(&id, &db, &table, sorted).await.unwrap();
+        assert_eq!(sorted_page.next_cursor, None);
+        assert_eq!(sorted_page.total_count, 25);
+
+        let _ = manager
+            .execute(&id, &db, &format!("DROP TABLE IF EXISTS {table}"))
             .await;
     }
 }
