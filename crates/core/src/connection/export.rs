@@ -8,10 +8,18 @@
 //! - NULL 输出为空字段；空字符串输出为 `""`，使导入侧能区分两者。
 //! - `TableExportSink` 逐行写盘，整表导出不再把全部数据堆在内存里。
 
-use super::resultset::{classify_column, convert_value, format_sql_value, ColumnKind};
+use super::driver::DriverKind;
+use super::resultset::{
+    classify_column, classify_pg_column, convert_pg_value, convert_value, format_sql_value,
+    ColumnKind, PgColumnKind,
+};
 use super::types::CellValue;
+use super::validation::{
+    escape_string_pg, quote_pg_identifier, quote_pg_table_reference,
+};
 use anyhow::{anyhow, Result};
-use sqlx::{Column, Row};
+use sqlx::postgres::PgRow;
+use sqlx::{Column, Row, ValueRef};
 use std::io::Write;
 
 /// 导出列定义（名称 + INFORMATION_SCHEMA 中的 DATA_TYPE）
@@ -79,32 +87,48 @@ pub struct TableExportSink<W: Write> {
     writer: W,
     format: ExportFormat,
     table: String,
+    driver: DriverKind,
     columns: Vec<ExportColumn>,
     kinds: Vec<ColumnKind>,
+    pg_kinds: Vec<PgColumnKind>,
     rows: u64,
     started: bool,
 }
 
 impl<W: Write> TableExportSink<W> {
-    /// `columns` 来自 INFORMATION_SCHEMA；为空时由首行结果集的列信息兜底
-    pub fn new(writer: W, format: ExportFormat, table: &str, columns: Vec<ExportColumn>) -> Self {
+    /// `columns` 来自元数据查询（MySQL 的 COLUMN_TYPE / PG 的 typname）；
+    /// 为空时由首行结果集的列信息兜底。
+    pub fn new(
+        writer: W,
+        format: ExportFormat,
+        table: &str,
+        columns: Vec<ExportColumn>,
+        driver: DriverKind,
+    ) -> Self {
         let kinds = columns
             .iter()
             .map(|col| classify_column(&col.data_type))
+            .collect();
+        let pg_kinds = columns
+            .iter()
+            .map(|col| classify_pg_column(&col.data_type))
             .collect();
         Self {
             writer,
             format,
             table: table.to_string(),
+            driver,
             columns,
             kinds,
+            pg_kinds,
             rows: 0,
             started: false,
         }
     }
 
-    /// 写出一行结果集
+    /// 写出一行 MySQL 结果集
     pub fn write_row(&mut self, row: &sqlx::mysql::MySqlRow) -> Result<()> {
+        debug_assert_eq!(self.driver, DriverKind::MySql);
         if self.columns.is_empty() {
             self.columns = row
                 .columns()
@@ -142,6 +166,55 @@ impl<W: Write> TableExportSink<W> {
         let mut cells = Vec::with_capacity(self.kinds.len());
         for (index, kind) in self.kinds.iter().enumerate() {
             cells.push(convert_value(row, index, *kind)?);
+        }
+        self.write_cells(&cells)
+    }
+
+    /// 写出一行 PostgreSQL 结果集
+    ///
+    /// 与 MySQL 版对称，但 SQL 导出使用 PG 的 `INSERT INTO … VALUES` 语法，
+    /// 表名按 `schema.table` 展示名拆段加双引号，字面量按 PG 类型系统生成。
+    pub fn write_pg_row(&mut self, row: &PgRow) -> Result<()> {
+        debug_assert_eq!(self.driver, DriverKind::Postgres);
+        if self.columns.is_empty() {
+            self.columns = row
+                .columns()
+                .iter()
+                .map(|col| ExportColumn {
+                    name: col.name().to_string(),
+                    data_type: col.type_info().to_string(),
+                })
+                .collect();
+            self.pg_kinds = self
+                .columns
+                .iter()
+                .map(|col| classify_pg_column(&col.data_type))
+                .collect();
+        }
+
+        // SQL 导出按原始行的类型生成字面量，不能走类型化单元格（会丢失数值/日期字面量形式）
+        if self.format == ExportFormat::Sql {
+            self.start()?;
+            let mut columns = Vec::with_capacity(self.columns.len());
+            let mut values = Vec::with_capacity(self.columns.len());
+            for col in &self.columns {
+                columns.push(quote_pg_identifier(&col.name)?);
+                values.push(format_pg_sql_value(row, &col.name, &col.data_type)?);
+            }
+            writeln!(
+                self.writer,
+                "INSERT INTO {} ({}) VALUES ({});",
+                quote_pg_table_reference(&self.table)?,
+                columns.join(", "),
+                values.join(", ")
+            )?;
+            self.rows += 1;
+            return Ok(());
+        }
+
+        let mut cells = Vec::with_capacity(self.pg_kinds.len());
+        for (index, kind) in self.pg_kinds.iter().enumerate() {
+            cells.push(convert_pg_value(row, index, *kind)?);
         }
         self.write_cells(&cells)
     }
@@ -232,6 +305,137 @@ impl<W: Write> TableExportSink<W> {
         }
         self.started = true;
         Ok(())
+    }
+}
+
+/// 把 PG 行值格式化为 SQL 字面量（用于 SQL 格式导出）。
+///
+/// 与 MySQL 版语义一致：先判断原始值是否为 NULL，再解码；解码失败直接报错，
+/// 绝不静默写成 NULL（否则重新导入会永久丢数据）。
+fn format_pg_sql_value(row: &PgRow, column_name: &str, data_type: &str) -> Result<String> {
+    let kind = classify_pg_column(data_type);
+    let decode_error = |e: sqlx::Error| {
+        anyhow!(
+            "列 \"{}\"（{}）的值无法解码，已停止导出以避免写入错误的 NULL：{}",
+            column_name,
+            data_type,
+            e
+        )
+    };
+
+    match kind {
+        PgColumnKind::Bool => match row.try_get::<Option<bool>, _>(column_name) {
+            Ok(Some(v)) => Ok(if v { "TRUE" } else { "FALSE" }.to_string()),
+            Ok(None) => Ok("NULL".to_string()),
+            Err(e) => Err(decode_error(e)),
+        },
+        PgColumnKind::Int2 => match row.try_get::<Option<i16>, _>(column_name) {
+            Ok(Some(v)) => Ok(v.to_string()),
+            Ok(None) => Ok("NULL".to_string()),
+            Err(e) => Err(decode_error(e)),
+        },
+        PgColumnKind::Int4 => match row.try_get::<Option<i32>, _>(column_name) {
+            Ok(Some(v)) => Ok(v.to_string()),
+            Ok(None) => Ok("NULL".to_string()),
+            Err(e) => Err(decode_error(e)),
+        },
+        PgColumnKind::Int8 => match row.try_get::<Option<i64>, _>(column_name) {
+            Ok(Some(v)) => Ok(v.to_string()),
+            Ok(None) => Ok("NULL".to_string()),
+            Err(e) => Err(decode_error(e)),
+        },
+        PgColumnKind::Float4 => match row.try_get::<Option<f32>, _>(column_name) {
+            Ok(Some(v)) => Ok(float_literal(v as f64)),
+            Ok(None) => Ok("NULL".to_string()),
+            Err(e) => Err(decode_error(e)),
+        },
+        PgColumnKind::Float8 => match row.try_get::<Option<f64>, _>(column_name) {
+            Ok(Some(v)) => Ok(float_literal(v)),
+            Ok(None) => Ok("NULL".to_string()),
+            Err(e) => Err(decode_error(e)),
+        },
+        PgColumnKind::Numeric => match row.try_get::<Option<rust_decimal::Decimal>, _>(column_name) {
+            Ok(Some(v)) => Ok(v.to_string()),
+            Ok(None) => Ok("NULL".to_string()),
+            Err(e) => Err(decode_error(e)),
+        },
+        PgColumnKind::Timestamp => match row.try_get::<Option<chrono::NaiveDateTime>, _>(column_name) {
+            Ok(Some(v)) => Ok(format!("'{}'", v.format("%Y-%m-%d %H:%M:%S%.f"))),
+            Ok(None) => Ok("NULL".to_string()),
+            Err(e) => Err(decode_error(e)),
+        },
+        PgColumnKind::TimestampTz => match row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(column_name) {
+            Ok(Some(v)) => Ok(format!("'{}'", v.format("%Y-%m-%d %H:%M:%S%.f+00"))),
+            Ok(None) => Ok("NULL".to_string()),
+            Err(e) => Err(decode_error(e)),
+        },
+        PgColumnKind::Date => match row.try_get::<Option<chrono::NaiveDate>, _>(column_name) {
+            Ok(Some(v)) => Ok(format!("'{}'", v.format("%Y-%m-%d"))),
+            Ok(None) => Ok("NULL".to_string()),
+            Err(e) => Err(decode_error(e)),
+        },
+        PgColumnKind::Time => match row.try_get::<Option<chrono::NaiveTime>, _>(column_name) {
+            Ok(Some(v)) => Ok(format!("'{}'", v.format("%H:%M:%S%.f"))),
+            Ok(None) => Ok("NULL".to_string()),
+            Err(e) => Err(decode_error(e)),
+        },
+        PgColumnKind::Json => match row.try_get::<Option<serde_json::Value>, _>(column_name) {
+            Ok(Some(v)) => Ok(format!("'{}'", escape_string_pg(&v.to_string()))),
+            Ok(None) => Ok("NULL".to_string()),
+            Err(e) => Err(decode_error(e)),
+        },
+        PgColumnKind::Bytea => match row.try_get::<Option<Vec<u8>>, _>(column_name) {
+            Ok(Some(v)) => {
+                let hex: String = v.iter().map(|b| format!("{:02x}", b)).collect();
+                Ok(format!("'\\x{}'", hex))
+            }
+            Ok(None) => Ok("NULL".to_string()),
+            Err(e) => Err(decode_error(e)),
+        },
+        PgColumnKind::Uuid => match row.try_get::<Option<sqlx::types::Uuid>, _>(column_name) {
+            Ok(Some(v)) => Ok(format!("'{}'", v)),
+            Ok(None) => Ok("NULL".to_string()),
+            Err(e) => Err(decode_error(e)),
+        },
+        PgColumnKind::Text => match row.try_get::<Option<String>, _>(column_name) {
+            Ok(Some(v)) => Ok(format!("'{}'", escape_string_pg(&v))),
+            Ok(None) => Ok("NULL".to_string()),
+            Err(e) => {
+                // 未识别类型（数组、自定义类型等）回退到原始字节，与单元格展示规则一致
+                match row.try_get_raw(column_name) {
+                    Ok(raw) if raw.is_null() => Ok("NULL".to_string()),
+                    Ok(raw) => match raw.as_bytes() {
+                        Ok(bytes) => {
+                            let hex: String =
+                                bytes.iter().map(|b| format!("{:02x}", b)).collect();
+                            Ok(format!("'\\x{}'", hex))
+                        }
+                        Err(err) => Err(anyhow!(
+                            "列 \"{}\"（{}）的值无法解码，已停止导出以避免写入错误的 NULL：{}",
+                            column_name,
+                            data_type,
+                            err
+                        )),
+                    },
+                    Err(_) => Err(decode_error(e)),
+                }
+            }
+        },
+    }
+}
+
+/// 浮点字面量：NaN/Infinity 需要带引号才能被 PG 解析。
+fn float_literal(v: f64) -> String {
+    if v.is_nan() {
+        "'NaN'".to_string()
+    } else if v.is_infinite() {
+        if v.is_sign_positive() {
+            "'Infinity'".to_string()
+        } else {
+            "'-Infinity'".to_string()
+        }
+    } else {
+        v.to_string()
     }
 }
 
@@ -383,7 +587,8 @@ mod tests {
 
     /// 用内存 writer 跑一遍流式写出，得到完整文本
     fn render(data: &TableExportData, format: ExportFormat) -> String {
-        let mut sink = TableExportSink::new(Vec::new(), format, "t", data.columns.clone());
+        let mut sink =
+            TableExportSink::new(Vec::new(), format, "t", data.columns.clone(), DriverKind::MySql);
         for row in &data.rows {
             sink.write_cells(row).unwrap();
         }

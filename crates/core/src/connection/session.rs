@@ -375,7 +375,8 @@ impl ConnectionManager {
     }
 
     /// 连接的驱动类型
-    pub(super) async fn driver_of(&self, connection_id: &str) -> Result<DriverKind> {
+    /// 查询连接驱动类型；前端据此决定可用功能（如 Excel 导出走 MySQL/PG 两套行转换）。
+    pub async fn driver_of(&self, connection_id: &str) -> Result<DriverKind> {
         let connections = self.connections.read().await;
         connections
             .get(connection_id)

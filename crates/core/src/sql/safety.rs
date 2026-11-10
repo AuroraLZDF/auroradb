@@ -8,9 +8,10 @@
 
 use anyhow::{anyhow, Result};
 use sqlparser::ast::{Query, SetExpr, Statement};
-use sqlparser::dialect::MySqlDialect;
+use sqlparser::dialect::{MySqlDialect, PostgreSqlDialect};
 use sqlparser::parser::Parser;
 
+use crate::connection::driver::DriverKind;
 use crate::connection::types::SafetyMode;
 
 pub const READ_ONLY_MESSAGE: &str = "当前连接为只读模式，已阻止执行非查询语句";
@@ -25,37 +26,58 @@ const READ_ONLY_KEYWORDS: &[&str] = &[
     "START", "COMMIT", "ROLLBACK", "SAVEPOINT", "RELEASE",
 ];
 
-/// 校验 SQL 是否允许在当前访问模式下执行。
+/// 校验 SQL 是否允许在当前访问模式下执行（MySQL 方言，兼容旧调用点）。
 pub fn enforce(mode: SafetyMode, sql: &str) -> Result<()> {
+    enforce_for(mode, sql, DriverKind::MySql)
+}
+
+/// 按驱动方言校验 SQL 是否允许在当前访问模式下执行。
+///
+/// 方言只影响解析器选择与 MySQL 专属的兜底规则（可执行注释、`INTO OUTFILE` 等），
+/// 拦截语义本身与驱动无关。
+pub fn enforce_for(mode: SafetyMode, sql: &str, driver: DriverKind) -> Result<()> {
     if mode == SafetyMode::Off {
         return Ok(());
     }
 
-    enforce_statement(mode, sql)?;
+    enforce_statement(mode, sql, driver)?;
 
     // MySQL 可执行注释（`/*!...*/`、`/*!50000 ...*/`）会被服务端当作真实 SQL 执行，
     // 但普通切分/解析会把整段当作注释丢弃；这里逐个取出注释体，按普通语句同样校验，
-    // 否则 `/*!50000 DROP TABLE t*/` 可以绕过只读/安全模式。
-    for body in executable_comment_bodies(sql) {
-        enforce_statement(mode, &body)?;
+    // 否则 `/*!50000 DROP TABLE t*/` 可以绕过只读/安全模式。PG 不执行该语法，跳过。
+    if driver == DriverKind::MySql {
+        for body in executable_comment_bodies(sql) {
+            enforce_statement(mode, &body, driver)?;
+        }
     }
     Ok(())
 }
 
 /// 对一段普通 SQL 文本执行模式校验（不含可执行注释的展开）
-fn enforce_statement(mode: SafetyMode, sql: &str) -> Result<()> {
+fn enforce_statement(mode: SafetyMode, sql: &str, driver: DriverKind) -> Result<()> {
     // 破坏性语句用文本级判定，解析成功与否都要拦（`TRUNCATE`/`DROP` 等
     // 在 sqlparser 里没有统一的"危险"标记，逐变体匹配容易漏）
-    if has_destructive_statement(sql) {
+    if has_destructive_statement(sql, driver) {
         return Err(anyhow!(match mode {
             SafetyMode::ReadOnly => READ_ONLY_MESSAGE,
             _ => SAFE_MODE_MESSAGE,
         }));
     }
 
-    match Parser::parse_sql(&MySqlDialect {}, sql) {
+    match parse_statements(driver, sql) {
         Ok(statements) => check_statements(mode, &statements),
         Err(_) => check_by_keyword(mode, sql),
+    }
+}
+
+/// 按驱动方言解析 SQL（返回错误交由调用方决定是否退化为关键字判断）
+fn parse_statements(
+    driver: DriverKind,
+    sql: &str,
+) -> std::result::Result<Vec<Statement>, sqlparser::parser::ParserError> {
+    match driver {
+        DriverKind::MySql => Parser::parse_sql(&MySqlDialect {}, sql),
+        DriverKind::Postgres => Parser::parse_sql(&PostgreSqlDialect {}, sql),
     }
 }
 
@@ -153,31 +175,46 @@ fn executable_comment_bodies(sql: &str) -> Vec<String> {
 
 /// 安全模式下额外拦截的破坏性语句：
 /// - `TRUNCATE`/`DROP`：整表或整库清除，误执行不可恢复；
-/// - `LOAD`（LOAD DATA/XML）：从服务器或客户端文件批量写入；
+/// - `LOAD`（LOAD DATA/XML）：从服务器或客户端文件批量写入（仅 MySQL）；
 /// - `CALL`：存储过程内部动作无法静态判定，按 fail-closed 处理；
-/// - `SELECT ... INTO OUTFILE/DUMPFILE`：绕过导出功能直接写服务器磁盘。
-fn has_destructive_statement(sql: &str) -> bool {
-    const DESTRUCTIVE_KEYWORDS: &[&str] = &["TRUNCATE", "DROP", "LOAD", "CALL"];
+/// - `SELECT ... INTO OUTFILE/DUMPFILE`：绕过导出功能直接写服务器磁盘（仅 MySQL）。
+fn has_destructive_statement(sql: &str, driver: DriverKind) -> bool {
+    const MYSQL_DESTRUCTIVE_KEYWORDS: &[&str] = &["TRUNCATE", "DROP", "LOAD", "CALL"];
+    const PG_DESTRUCTIVE_KEYWORDS: &[&str] = &["TRUNCATE", "DROP", "CALL"];
+    let keywords = match driver {
+        DriverKind::MySql => MYSQL_DESTRUCTIVE_KEYWORDS,
+        DriverKind::Postgres => PG_DESTRUCTIVE_KEYWORDS,
+    };
 
     crate::sql::split_sql_statements(sql).iter().any(|statement| {
         let keyword = leading_keyword(statement);
-        DESTRUCTIVE_KEYWORDS.contains(&keyword.as_str())
-            || contains_keyword(statement, "OUTFILE")
-            || contains_keyword(statement, "DUMPFILE")
+        keywords.contains(&keyword.as_str())
+            || (driver == DriverKind::MySql
+                && (contains_keyword(statement, "OUTFILE")
+                    || contains_keyword(statement, "DUMPFILE")))
     })
 }
 
-/// 校验前端提交的定位条件（WHERE 片段）。
+/// 校验前端提交的定位条件（WHERE 片段），MySQL 方言入口。
+pub fn validate_where_clause(table: &str, where_clause: &str) -> Result<()> {
+    validate_where_clause_for(table, where_clause, DriverKind::MySql)
+}
+
+/// 按驱动方言校验前端提交的定位条件（WHERE 片段）。
 ///
 /// 该片段会被拼进 `SELECT 1 FROM <table> WHERE <fragment>`，必须保证它只是一条
 /// 普通 SELECT 的条件表达式：不接受多语句、UNION 等集合运算与 CTE，
 /// 否则可借 `;` / `UNION SELECT` 改变语句结构。
-pub fn validate_where_clause(table: &str, where_clause: &str) -> Result<()> {
+pub fn validate_where_clause_for(
+    table: &str,
+    where_clause: &str,
+    driver: DriverKind,
+) -> Result<()> {
     if where_clause.trim().is_empty() {
         return Err(anyhow!("定位条件不能为空"));
     }
     let probe = format!("SELECT 1 FROM {} WHERE {}", table, where_clause);
-    let statements = Parser::parse_sql(&MySqlDialect {}, &probe)
+    let statements = parse_statements(driver, &probe)
         .map_err(|e| anyhow!("定位条件无法解析：{}", e))?;
     if statements.len() != 1 {
         return Err(anyhow!("定位条件只能是一条表达式"));
@@ -632,5 +669,90 @@ mod tests {
             assert!(enforce(SafetyMode::ReadOnly, sql).is_ok(), "should allow: {sql}");
             assert!(enforce(SafetyMode::Safe, sql).is_ok(), "should allow: {sql}");
         }
+    }
+
+    #[test]
+    fn postgres_read_only_allows_queries() {
+        for sql in [
+            "SELECT * FROM public.users",
+            "SHOW search_path",
+            "EXPLAIN SELECT * FROM t",
+            "BEGIN",
+            "COMMIT",
+            "WITH x AS (SELECT 1) SELECT * FROM x",
+        ] {
+            assert!(
+                enforce_for(SafetyMode::ReadOnly, sql, DriverKind::Postgres).is_ok(),
+                "should allow: {sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn postgres_read_only_blocks_writes() {
+        for sql in [
+            "INSERT INTO t VALUES (1)",
+            "UPDATE t SET a = 1 WHERE id = 1",
+            "DELETE FROM t WHERE id = 1",
+            "DROP TABLE t",
+            "ALTER TABLE t ADD COLUMN c INT",
+            "TRUNCATE TABLE t",
+            "CALL p()",
+            "CREATE TABLE t (id INT)",
+        ] {
+            let err = enforce_for(SafetyMode::ReadOnly, sql, DriverKind::Postgres)
+                .unwrap_err()
+                .to_string();
+            assert_eq!(err, READ_ONLY_MESSAGE, "should block: {sql}");
+        }
+    }
+
+    #[test]
+    fn postgres_safe_mode_blocks_unconditional_writes() {
+        for sql in ["UPDATE t SET a = 1", "DELETE FROM t"] {
+            let err = enforce_for(SafetyMode::Safe, sql, DriverKind::Postgres)
+                .unwrap_err()
+                .to_string();
+            assert_eq!(err, SAFE_MODE_MESSAGE, "should block: {sql}");
+        }
+        for sql in [
+            "UPDATE t SET a = 1 WHERE id = 1",
+            "DELETE FROM t WHERE id = 1",
+            "SELECT * FROM t",
+        ] {
+            assert!(
+                enforce_for(SafetyMode::Safe, sql, DriverKind::Postgres).is_ok(),
+                "should allow: {sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn postgres_where_clause_accepts_double_quoted_identifiers() {
+        // PG 的标识符用双引号；MySQL 方言会把双引号当字符串，必须按驱动选方言
+        assert!(
+            validate_where_clause_for("\"crm\".\"orders\"", "\"id\" = 1", DriverKind::Postgres)
+                .is_ok()
+        );
+        assert!(
+            validate_where_clause_for("`orders`", "id = 1", DriverKind::MySql).is_ok()
+        );
+    }
+
+    #[test]
+    fn postgres_where_clause_rejects_multi_statement_injection() {
+        for clause in ["1 = 1; DROP TABLE t", "1 = 1 UNION SELECT 1"] {
+            assert!(
+                validate_where_clause_for("\"orders\"", clause, DriverKind::Postgres).is_err(),
+                "should reject: {clause}"
+            );
+        }
+    }
+
+    #[test]
+    fn postgres_does_not_treat_mysql_executable_comments_as_statements() {
+        // `/*! ... */` 在 PG 里只是普通注释，不能误判为可执行语句而拦住合法查询
+        let sql = "SELECT 1 /*!50000 DROP TABLE t*/";
+        assert!(enforce_for(SafetyMode::ReadOnly, sql, DriverKind::Postgres).is_ok());
     }
 }

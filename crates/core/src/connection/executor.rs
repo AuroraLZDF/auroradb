@@ -17,7 +17,7 @@ use sqlx::mysql::MySqlPool;
 use sqlx::postgres::{PgConnection, PgPool};
 use sqlx::{Acquire, Column, Executor, MySql, MySqlConnection, Postgres, Row, Statement};
 use sqlparser::ast as sql_ast;
-use sqlparser::dialect::MySqlDialect;
+use sqlparser::dialect::{MySqlDialect, PostgreSqlDialect};
 use sqlparser::parser::Parser;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -333,7 +333,7 @@ async fn apply_changes_in_txn(
             .map_err(|e| anyhow!("第 {} 条变更的表名不合法：{}", position, e))?;
 
         // 变更 SQL 来自前端，必须逐条校验后才能执行
-        validate_table_change(change, position, safety_mode)?;
+        validate_table_change(change, position, safety_mode, DriverKind::MySql)?;
 
         // 在任何变更执行前完成主键校验，无主键则整体失败并回滚
         if checked_tables.insert(change.table.clone()) {
@@ -402,6 +402,138 @@ async fn apply_changes_in_txn(
     Ok(unchanged)
 }
 
+/// 校验 PG 目标表存在主键（与 MySQL 版本同位：无主键表拒绝 UPDATE/DELETE）。
+///
+/// 表名是对象树展示名：非 public schema 带 `schema.` 前缀，裸名按 public 处理。
+async fn ensure_pg_table_has_primary_key(
+    txn: &mut PgConnection,
+    table: &str,
+    position: usize,
+) -> Result<()> {
+    let (schema, name) = match table.split_once('.') {
+        Some((schema, name)) => (schema, name),
+        None => ("public", table),
+    };
+
+    let has_primary_key = sqlx::query_scalar::<_, String>(
+        "SELECT a.attname::text \
+         FROM pg_index i \
+         JOIN pg_class c ON c.oid = i.indrelid \
+         JOIN pg_namespace n ON n.oid = c.relnamespace \
+         JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey) \
+         WHERE c.relname = $1 AND n.nspname = $2 AND i.indisprimary \
+         LIMIT 1",
+    )
+    .bind(name)
+    .bind(schema)
+    .fetch_optional(&mut *txn)
+    .await
+    .map_err(|e| {
+        anyhow!(
+            "第 {} 条变更失败：检查表主键时出错：{}",
+            position,
+            crate::error::translate(&e)
+        )
+    })?
+    .is_some();
+
+    if !has_primary_key {
+        return Err(anyhow!(
+            "第 {} 条变更失败：表 `{}` 没有主键，无法安全定位行，已拒绝修改",
+            position,
+            table
+        ));
+    }
+
+    Ok(())
+}
+
+/// PG 版本的表数据保存：逐条校验 + 执行，语义与 MySQL 版本保持一致。
+///
+/// PG 的 database 在连接时固定，且变更 SQL 里的表名已按对象树展示名带上
+/// schema（bare 名解析到 search_path 首项，通常就是 public），
+/// 因此事务内无需也不应执行 USE / SET search_path。
+async fn apply_changes_in_txn_pg(
+    txn: &mut PgConnection,
+    changes: &[TableChange],
+    safety_mode: SafetyMode,
+) -> Result<usize> {
+    let mut unchanged = 0usize;
+    let mut checked_tables: HashSet<String> = HashSet::new();
+    for (index, change) in changes.iter().enumerate() {
+        let position = index + 1;
+        validate_identifier(&change.table)
+            .map_err(|e| anyhow!("第 {} 条变更的表名不合法：{}", position, e))?;
+
+        validate_table_change(change, position, safety_mode, DriverKind::Postgres)?;
+
+        // 在任何变更执行前完成主键校验，无主键则整体失败并回滚
+        if checked_tables.insert(change.table.clone()) {
+            ensure_pg_table_has_primary_key(txn, &change.table, position).await?;
+        }
+
+        let affected = Executor::execute(&mut *txn, change.sql.as_str())
+            .await
+            .map_err(|e| {
+                anyhow!(
+                    "第 {} 条变更失败：{}",
+                    position,
+                    crate::error::translate(&e)
+                )
+            })?
+            .rows_affected();
+
+        let problem = match change.kind {
+            TableChangeKind::Insert => (affected != 1)
+                .then(|| format!("新增未影响任何行（影响 {} 行）", affected)),
+            TableChangeKind::Delete => match affected {
+                1 => None,
+                0 => Some("目标行已不存在，可能已被其他会话删除".to_string()),
+                n => Some(format!("删除条件命中 {} 行，已中止（定位条件不安全）", n)),
+            },
+            TableChangeKind::Update => {
+                if affected == 1 {
+                    None
+                } else if affected > 1 {
+                    Some(format!("更新条件命中 {} 行，已中止（定位条件不安全）", affected))
+                } else {
+                    match &change.where_clause {
+                        None => Some("更新未影响任何行".to_string()),
+                        Some(where_clause) => {
+                            let exists_sql = format!(
+                                "SELECT 1 FROM {} WHERE {} LIMIT 1",
+                                quote_pg_table_reference(&change.table)?,
+                                where_clause
+                            );
+                            match sqlx::query_scalar::<_, i32>(&exists_sql)
+                                .fetch_optional(&mut *txn)
+                                .await
+                            {
+                                // 行仍在：值与原值相同，PG 返回 0 行受影响
+                                Ok(Some(_)) => {
+                                    unchanged += 1;
+                                    None
+                                }
+                                Ok(None) => Some("目标行已不存在，可能已被其他会话删除".to_string()),
+                                Err(e) => Some(format!(
+                                    "确认目标行是否仍存在时失败：{}",
+                                    crate::error::translate(&e)
+                                )),
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        if let Some(message) = problem {
+            return Err(anyhow!("第 {} 条变更失败：{}", position, message));
+        }
+    }
+
+    Ok(unchanged)
+}
+
 /// 校验前端提交的单条表数据变更。
 ///
 /// 变更 SQL 由前端拼接后直接执行，属于信任边界，必须保证：
@@ -414,6 +546,7 @@ fn validate_table_change(
     change: &TableChange,
     position: usize,
     safety_mode: SafetyMode,
+    driver: DriverKind,
 ) -> Result<()> {
     let statements = split_sql_statements(&change.sql);
     if statements.len() != 1 {
@@ -433,11 +566,11 @@ fn validate_table_change(
         TableChangeKind::Delete => "DELETE",
     };
 
-    crate::sql::safety::enforce(safety_mode, statement)
+    crate::sql::safety::enforce_for(safety_mode, statement, driver)
         .map_err(|e| anyhow!("第 {} 条变更未通过安全校验：{}", position, e))?;
 
     // 目标表必须从 AST 取：文本匹配会被注释、字符串字面量、JOIN 的其它表绕过
-    let target = change_target_table(statement, change.kind)
+    let target = change_target_table(statement, change.kind, driver)
         .map_err(|e| anyhow!("第 {} 条变更不合法（期望 {}）：{}", position, expected, e))?;
     if !target.eq_ignore_ascii_case(&change.table) {
         return Err(anyhow!(
@@ -449,21 +582,34 @@ fn validate_table_change(
     }
 
     if let Some(where_clause) = &change.where_clause {
-        let quoted = quote_identifier(&change.table)?;
-        crate::sql::safety::validate_where_clause(&quoted, where_clause)
+        let quoted = match driver {
+            DriverKind::MySql => quote_identifier(&change.table)?,
+            DriverKind::Postgres => quote_pg_table_reference(&change.table)?,
+        };
+        crate::sql::safety::validate_where_clause_for(&quoted, where_clause, driver)
             .map_err(|e| anyhow!("第 {} 条变更的定位条件不合法：{}", position, e))?;
     }
 
     Ok(())
 }
 
-/// 解析变更语句并取出实际写入的表名（末段），同时校验语句形态与操作类型一致。
+/// 解析变更语句并取出实际写入的表名，同时校验语句形态与操作类型一致。
 ///
 /// 只接受单表、无 JOIN 的简单 DML：多表 UPDATE/DELETE 无法确认影响范围，
 /// 与「一次变更只改一行」的模型不符，直接拒绝。
-fn change_target_table(statement: &str, kind: TableChangeKind) -> Result<String> {
-    let mut statements = Parser::parse_sql(&MySqlDialect {}, statement)
-        .map_err(|e| anyhow!("SQL 无法解析：{}", e))?;
+///
+/// MySQL 返回末段表名（语句里不带库名前缀）；PG 返回 `schema.table` 形式，
+/// 与对象树的展示名保持一致。
+fn change_target_table(
+    statement: &str,
+    kind: TableChangeKind,
+    driver: DriverKind,
+) -> Result<String> {
+    let mut statements = match driver {
+        DriverKind::MySql => Parser::parse_sql(&MySqlDialect {}, statement),
+        DriverKind::Postgres => Parser::parse_sql(&PostgreSqlDialect {}, statement),
+    }
+    .map_err(|e| anyhow!("SQL 无法解析：{}", e))?;
     if statements.len() != 1 {
         return Err(anyhow!("必须且只能包含一条 SQL 语句"));
     }
@@ -471,14 +617,16 @@ fn change_target_table(statement: &str, kind: TableChangeKind) -> Result<String>
 
     match (kind, parsed) {
         (TableChangeKind::Insert, sql_ast::Statement::Insert(insert)) => match insert.table {
-            sql_ast::TableObject::TableName(name) => object_name_tail(&name),
+            sql_ast::TableObject::TableName(name) => {
+                table_name_for_driver(&name, driver)
+            }
             _ => Err(anyhow!("INSERT 的目标不是普通表")),
         },
         (TableChangeKind::Update, sql_ast::Statement::Update(update)) => {
             if update.from.is_some() || !update.table.joins.is_empty() {
                 return Err(anyhow!("UPDATE 不能包含 JOIN 或 FROM 子句"));
             }
-            table_factor_name(&update.table.relation)
+            table_factor_name(&update.table.relation, driver)
         }
         (TableChangeKind::Delete, sql_ast::Statement::Delete(delete)) => {
             if !delete.tables.is_empty() || delete.using.is_some() {
@@ -491,11 +639,33 @@ fn change_target_table(statement: &str, kind: TableChangeKind) -> Result<String>
             if tables.len() != 1 || !tables[0].joins.is_empty() {
                 return Err(anyhow!("DELETE 只能作用于单表且不能包含 JOIN"));
             }
-            table_factor_name(&tables[0].relation)
+            table_factor_name(&tables[0].relation, driver)
         }
         (TableChangeKind::Insert, _) => Err(anyhow!("SQL 与操作类型不匹配")),
         (TableChangeKind::Update, _) => Err(anyhow!("SQL 与操作类型不匹配")),
         (TableChangeKind::Delete, _) => Err(anyhow!("SQL 与操作类型不匹配")),
+    }
+}
+
+/// 取表名：MySQL 只取末段（语句里不带库名），PG 取完整 `schema.table` 展示名。
+fn table_name_for_driver(name: &sql_ast::ObjectName, driver: DriverKind) -> Result<String> {
+    match driver {
+        DriverKind::MySql => object_name_tail(name),
+        DriverKind::Postgres => {
+            let parts: Vec<&str> = name
+                .0
+                .iter()
+                .map(|part| match part {
+                    sql_ast::ObjectNamePart::Identifier(ident) => Ok(ident.value.as_str()),
+                    _ => Err(anyhow!("无法识别表名")),
+                })
+                .collect::<Result<Vec<_>>>()?;
+            match parts.as_slice() {
+                [name] => Ok((*name).to_string()),
+                [schema, name] => Ok(format!("{}.{}", schema, name)),
+                _ => Err(anyhow!("无法识别表名")),
+            }
+        }
     }
 }
 
@@ -508,9 +678,11 @@ fn object_name_tail(name: &sql_ast::ObjectName) -> Result<String> {
 }
 
 /// 从表因子中取出表名；表函数（`users()`）等非常规目标一律拒绝
-fn table_factor_name(factor: &sql_ast::TableFactor) -> Result<String> {
+fn table_factor_name(factor: &sql_ast::TableFactor, driver: DriverKind) -> Result<String> {
     match factor {
-        sql_ast::TableFactor::Table { name, args, .. } if args.is_none() => object_name_tail(name),
+        sql_ast::TableFactor::Table { name, args, .. } if args.is_none() => {
+            table_name_for_driver(name, driver)
+        }
         _ => Err(anyhow!("变更的目标不是普通表")),
     }
 }
@@ -542,7 +714,7 @@ impl ConnectionManager {
             }
 
             // 访问模式守卫：只读模式拒绝非查询语句，安全模式拒绝不带 WHERE 的 UPDATE/DELETE
-            crate::sql::safety::enforce(conn.config.safety_mode, sql)?;
+            crate::sql::safety::enforce_for(conn.config.safety_mode, sql, conn.config.driver)?;
 
             // 池的克隆只是 Arc 计数增加，用于把具体驱动类型交给对应执行路径
             let pool = conn
@@ -1069,11 +1241,11 @@ impl ConnectionManager {
                 return Err(anyhow!("当前连接为只读模式，无法保存表数据变更"));
             }
 
+            // 池按驱动分派：MySQL 用 USE 切库，PG 的表名带 schema 限定
             let pool = conn
                 .pool
                 .as_ref()
                 .ok_or_else(|| anyhow!("连接不可用: {}", connection_id))?
-                .as_mysql("保存表数据变更")?
                 .clone();
             (
                 pool,
@@ -1095,7 +1267,28 @@ impl ConnectionManager {
             return Err(anyhow!("当前连接有未提交的事务，请先 COMMIT 或 ROLLBACK 再保存"));
         }
 
-        let unchanged = match apply_changes_in_txn(&mut txn, database, &changes, safety_mode).await {
+        let unchanged = match txn.driver() {
+            DriverKind::MySql => {
+                apply_changes_in_txn(
+                    txn.as_mysql_connection()?,
+                    database,
+                    &changes,
+                    safety_mode,
+                )
+                .await
+            }
+            DriverKind::Postgres => {
+                // PG 的 database 在连接时固定，表名已带 schema 限定（对象树展示名），
+                // 无需也不应执行 USE / SET search_path
+                apply_changes_in_txn_pg(
+                    txn.as_pg_connection()?,
+                    &changes,
+                    safety_mode,
+                )
+                .await
+            }
+        };
+        let unchanged = match unchanged {
             Ok(count) => count,
             Err(e) => {
                 let _ = txn.rollback().await;
@@ -1104,7 +1297,7 @@ impl ConnectionManager {
         };
 
         if let Err(e) = txn.commit().await {
-            return Err(anyhow!("提交保存事务失败：{}", crate::error::translate(&e)));
+            return Err(anyhow!("提交保存事务失败：{}", e));
         }
         drop(txn_guard);
 
@@ -1782,6 +1975,13 @@ impl ConnectionManager {
         validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
         validate_identifier(table).map_err(|e| anyhow!("表名验证失败: {}", e))?;
 
+        // PostgreSQL 的 database 在连接时固定，导出走目标库专用池
+        if self.driver_of(connection_id).await? == DriverKind::Postgres {
+            return self
+                .export_table_to_file_pg(connection_id, database, table, format, path)
+                .await;
+        }
+
         // 只取池的克隆后释放连接表读锁，导出期间不阻塞其他连接操作
         let pool = {
             let connections = self.connections.read().await;
@@ -1823,6 +2023,7 @@ impl ConnectionManager {
             format,
             table,
             columns,
+            DriverKind::MySql,
         );
 
         stream_table_rows(&mut conn, &query_cancel, &query_notify, table, |row| {
@@ -1846,6 +2047,15 @@ impl ConnectionManager {
     ) -> Result<Vec<ExportColumn>> {
         validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
         validate_identifier(table).map_err(|e| anyhow!("表名验证失败: {}", e))?;
+
+        if self.driver_of(connection_id).await? == DriverKind::Postgres {
+            let pool = self.pg_pool_for(connection_id, database).await?;
+            let mut conn = pool
+                .acquire()
+                .await
+                .map_err(|e| anyhow!("获取数据库连接失败: {}", e))?;
+            return Ok(export_columns_pg(&mut conn, table).await);
+        }
 
         let pool = {
             let connections = self.connections.read().await;
@@ -1913,6 +2123,72 @@ impl ConnectionManager {
         stream_table_rows(&mut conn, &query_cancel, &query_notify, table, &mut on_row).await
     }
 
+    /// PG 版流式遍历整表，供 Excel 导出使用；调用方需按连接驱动选择本方法。
+    pub async fn export_table_stream_pg<F>(
+        &self,
+        connection_id: &str,
+        database: &str,
+        table: &str,
+        mut on_row: F,
+    ) -> Result<u64>
+    where
+        F: FnMut(&sqlx::postgres::PgRow) -> Result<()>,
+    {
+        validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
+        validate_identifier(table).map_err(|e| anyhow!("表名验证失败: {}", e))?;
+
+        let pool = self.pg_pool_for(connection_id, database).await?;
+        let mut conn = pool
+            .acquire()
+            .await
+            .map_err(|e| anyhow!("获取数据库连接失败: {}", e))?;
+
+        let (query_cancel, query_notify, query_running) =
+            self.exec_handles(connection_id).await?;
+        let _run_guard = QueryRunGuard::start(&query_cancel, &query_running);
+
+        stream_pg_table_rows(&mut conn, &query_cancel, &query_notify, table, &mut on_row).await
+    }
+
+    /// PG 版整表导出：表名按 `schema.table` 展示名加双引号，字面量按 PG 语法生成。
+    async fn export_table_to_file_pg(
+        &self,
+        connection_id: &str,
+        database: &str,
+        table: &str,
+        format: ExportFormat,
+        path: &std::path::Path,
+    ) -> Result<u64> {
+        let pool = self.pg_pool_for(connection_id, database).await?;
+        let mut conn = pool
+            .acquire()
+            .await
+            .map_err(|e| anyhow!("获取数据库连接失败: {}", e))?;
+
+        let (query_cancel, query_notify, query_running) =
+            self.exec_handles(connection_id).await?;
+        let _run_guard = QueryRunGuard::start(&query_cancel, &query_running);
+
+        let file =
+            std::fs::File::create(path).map_err(|e| anyhow!("创建导出文件失败: {}", e))?;
+        let columns = export_columns_pg(&mut conn, table).await;
+        let mut sink = TableExportSink::new(
+            std::io::BufWriter::with_capacity(256 * 1024, file),
+            format,
+            table,
+            columns,
+            DriverKind::Postgres,
+        );
+
+        stream_pg_table_rows(&mut conn, &query_cancel, &query_notify, table, |row| {
+            sink.write_pg_row(row)
+        })
+        .await?;
+
+        sink.finish()?;
+        Ok(sink.rows())
+    }
+
     /// 导入数据
     pub async fn import_data(
         &self,
@@ -1938,6 +2214,13 @@ impl ConnectionManager {
         const MAX_IMPORT_SIZE: usize = 100_000_000; // 100MB
         if data.len() > MAX_IMPORT_SIZE {
             return Err(anyhow!("导入数据大小不能超过 100MB"));
+        }
+
+        // PostgreSQL 的表名与 INSERT 语法都不同，且 database 在连接时固定
+        if self.driver_of(connection_id).await? == DriverKind::Postgres {
+            return self
+                .import_data_pg(connection_id, database, table, format, data)
+                .await;
         }
 
         // 只取池的克隆后释放连接表读锁：导入可能持续很久，不能在此期间阻塞其他连接操作
@@ -2066,7 +2349,7 @@ impl ConnectionManager {
                         continue;
                     }
                     // 导入脚本此前只拦只读模式，Safe 模式下仍会执行 DROP/TRUNCATE 等危险语句
-                    crate::sql::safety::enforce(safety_mode, stmt).map_err(|e| {
+                    crate::sql::safety::enforce_for(safety_mode, stmt, DriverKind::MySql).map_err(|e| {
                         anyhow!("第 {} 条 SQL 被安全模式拦截：{}\nStatement: {}", index + 1, e, stmt)
                     })?;
                     // 文本协议执行：DDL、存储过程等语句无法走预处理协议
@@ -2075,6 +2358,170 @@ impl ConnectionManager {
                     count += 1;
                 }
                 tx.commit().await
+                    .map_err(|e| anyhow!("提交导入事务失败：{}", e))?;
+            }
+            _ => return Err(anyhow!("不支持的导入格式: {}", format)),
+        }
+
+        Ok(count)
+    }
+
+    /// PostgreSQL 版数据导入：CSV 与 SQL 脚本两种格式，语义与 MySQL 版一致。
+    ///
+    /// 与 MySQL 的差异：表名按 `schema.table` 加双引号、字符串用 PG 转义规则、
+    /// bytea 用 `'\x…'` 字面量；PG 的 DDL 也在事务内，整批可原子回滚。
+    async fn import_data_pg(
+        &self,
+        connection_id: &str,
+        database: &str,
+        table: &str,
+        format: &str,
+        data: &str,
+    ) -> Result<u64> {
+        let safety_mode = {
+            let connections = self.connections.read().await;
+            let conn = connections
+                .get(connection_id)
+                .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
+            if conn.config.safety_mode == SafetyMode::ReadOnly {
+                return Err(anyhow!("当前连接为只读模式，无法导入数据"));
+            }
+            conn.config.safety_mode
+        };
+
+        let pool = self.pg_pool_for(connection_id, database).await?;
+        let mut conn = pool
+            .acquire()
+            .await
+            .map_err(|e| anyhow!("获取数据库连接失败: {}", e))?;
+
+        let quoted_table = quote_pg_table_reference(table)?;
+        let mut count = 0u64;
+
+        match format.to_lowercase().as_str() {
+            "csv" => {
+                let records = export::parse_csv(data);
+                if records.is_empty() {
+                    return Ok(0);
+                }
+
+                let headers: Vec<String> = records[0]
+                    .iter()
+                    .map(|field| field.value.trim().to_string())
+                    .collect();
+                for header in &headers {
+                    validate_identifier(header)
+                        .map_err(|e| anyhow!("CSV 列名验证失败 '{}': {}", header, e))?;
+                }
+
+                const MAX_IMPORT_ROWS: usize = 10000;
+                if records.len() - 1 > MAX_IMPORT_ROWS {
+                    return Err(anyhow!("CSV 导入行数不能超过 {}", MAX_IMPORT_ROWS));
+                }
+
+                // bytea 导出时是 Base64 文本，导入需要反解成 PG 的十六进制字面量
+                let binary_columns = pg_table_binary_columns(&mut conn, table).await;
+                let columns_str = headers
+                    .iter()
+                    .map(|header| quote_pg_identifier(header))
+                    .collect::<Result<Vec<_>>>()?
+                    .join(", ");
+
+                let mut tx = conn
+                    .begin()
+                    .await
+                    .map_err(|e| anyhow!("开始导入事务失败：{}", e))?;
+                for (index, record) in records.iter().enumerate().skip(1) {
+                    if record.len() == 1 && record[0].value.trim().is_empty() && !record[0].quoted {
+                        continue;
+                    }
+                    if record.len() != headers.len() {
+                        return Err(anyhow!(
+                            "CSV 第 {} 行列数为 {}，与表头列数 {} 不一致",
+                            index + 1,
+                            record.len(),
+                            headers.len()
+                        ));
+                    }
+
+                    let mut values: Vec<String> = Vec::with_capacity(record.len());
+                    for (col_index, field) in record.iter().enumerate() {
+                        if !field.quoted && (field.value.is_empty() || field.value == "NULL") {
+                            values.push("NULL".to_string());
+                        } else if headers
+                            .get(col_index)
+                            .is_some_and(|name| binary_columns.contains(name))
+                        {
+                            let column = headers.get(col_index).map(String::as_str).unwrap_or("");
+                            let literal = decode_base64_to_pg_bytea(&field.value).with_context(|| {
+                                format!(
+                                    "CSV 第 {} 行列 '{}' 不是合法的 Base64（二进制列需按导出的 Base64 文本导入）",
+                                    index + 1,
+                                    column
+                                )
+                            })?;
+                            values.push(literal);
+                        } else {
+                            values.push(format!("'{}'", escape_string_pg(&field.value)));
+                        }
+                    }
+
+                    let query = format!(
+                        "INSERT INTO {} ({}) VALUES ({})",
+                        quoted_table,
+                        columns_str,
+                        values.join(", ")
+                    );
+                    sqlx::query(&query)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|e| {
+                            anyhow!(
+                                "CSV 第 {} 行插入失败（表 {}）：{}",
+                                index + 1,
+                                table,
+                                crate::error::translate(&e)
+                            )
+                        })?;
+                    count += 1;
+                }
+                tx.commit()
+                    .await
+                    .map_err(|e| anyhow!("提交导入事务失败：{}", e))?;
+            }
+            "sql" => {
+                // PG 的 DDL 也在事务内，整批脚本可以原子回滚
+                let mut tx = conn
+                    .begin()
+                    .await
+                    .map_err(|e| anyhow!("开始导入事务失败：{}", e))?;
+                let statements = split_sql_statements(data);
+                for (index, stmt) in statements.iter().enumerate() {
+                    let stmt = stmt.trim();
+                    if stmt.is_empty() || stmt.starts_with("--") {
+                        continue;
+                    }
+                    crate::sql::safety::enforce_for(safety_mode, stmt, DriverKind::Postgres)
+                        .map_err(|e| {
+                            anyhow!(
+                                "第 {} 条 SQL 被安全模式拦截：{}\nStatement: {}",
+                                index + 1,
+                                e,
+                                stmt
+                            )
+                        })?;
+                    Executor::execute(&mut *tx, stmt).await.map_err(|e| {
+                        anyhow!(
+                            "第 {} 条 SQL 执行失败：{}\nStatement: {}",
+                            index + 1,
+                            e,
+                            stmt
+                        )
+                    })?;
+                    count += 1;
+                }
+                tx.commit()
+                    .await
                     .map_err(|e| anyhow!("提交导入事务失败：{}", e))?;
             }
             _ => return Err(anyhow!("不支持的导入格式: {}", format)),
@@ -2098,6 +2545,10 @@ impl ConnectionManager {
         const MAX_SQL_SIZE: usize = 100_000_000; // 100MB
         if sql.len() > MAX_SQL_SIZE {
             return Err(anyhow!("SQL 文件大小不能超过 100MB"));
+        }
+
+        if self.driver_of(connection_id).await? == DriverKind::Postgres {
+            return self.import_database_sql_pg(connection_id, database, sql).await;
         }
 
         // 只取池的克隆后释放连接表读锁：大批量导入期间不应阻塞其他连接操作
@@ -2143,7 +2594,7 @@ impl ConnectionManager {
             }
 
             // 之前仅拦截只读模式，Safe 模式下脚本里的 DROP/TRUNCATE 依然会执行
-            crate::sql::safety::enforce(safety_mode, stmt).map_err(|e| {
+            crate::sql::safety::enforce_for(safety_mode, stmt, DriverKind::MySql).map_err(|e| {
                 anyhow!("第 {} 条 SQL 被安全模式拦截：{}\nStatement: {}", index + 1, e, stmt)
             })?;
 
@@ -2153,6 +2604,61 @@ impl ConnectionManager {
         }
 
         tx.commit().await
+            .map_err(|e| anyhow!("提交导入事务失败：{}", e))?;
+
+        Ok(())
+    }
+
+    /// PostgreSQL 版整库 SQL 导入：不执行 USE，语句在目标库连接上执行。
+    async fn import_database_sql_pg(
+        &self,
+        connection_id: &str,
+        database: &str,
+        sql: &str,
+    ) -> Result<()> {
+        let safety_mode = {
+            let connections = self.connections.read().await;
+            let conn = connections
+                .get(connection_id)
+                .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
+            if conn.config.safety_mode == SafetyMode::ReadOnly {
+                return Err(anyhow!("当前连接为只读模式，无法导入 SQL"));
+            }
+            conn.config.safety_mode
+        };
+
+        let pool = self.pg_pool_for(connection_id, database).await?;
+        let mut conn = pool
+            .acquire()
+            .await
+            .map_err(|e| anyhow!("获取数据库连接失败: {}", e))?;
+
+        let statements = split_sql_statements(sql);
+        let mut tx = conn
+            .begin()
+            .await
+            .map_err(|e| anyhow!("开始导入事务失败：{}", e))?;
+
+        for (index, stmt) in statements.iter().enumerate() {
+            let stmt = stmt.trim();
+            if stmt.is_empty() {
+                continue;
+            }
+            crate::sql::safety::enforce_for(safety_mode, stmt, DriverKind::Postgres).map_err(
+                |e| anyhow!("第 {} 条 SQL 被安全模式拦截：{}\nStatement: {}", index + 1, e, stmt),
+            )?;
+            Executor::execute(&mut *tx, stmt).await.map_err(|e| {
+                anyhow!(
+                    "第 {} 条 SQL 执行失败：{}\nStatement: {}",
+                    index + 1,
+                    e,
+                    stmt
+                )
+            })?;
+        }
+
+        tx.commit()
+            .await
             .map_err(|e| anyhow!("提交导入事务失败：{}", e))?;
 
         Ok(())
@@ -2188,6 +2694,89 @@ async fn export_columns(
     meta.into_iter()
         .map(|(name, data_type)| ExportColumn { name, data_type })
         .collect()
+}
+
+/// 读取 PG 表的列定义（名称 + typname），顺序与 `SELECT *` 一致。
+///
+/// 返回的 typname（`int4`/`timestamptz`/`bytea`…）正好是 `classify_pg_column` 的输入键；
+/// 元数据查询失败时返回空列表并记告警，调用方回退到结果集列信息。
+async fn export_columns_pg(conn: &mut PgConnection, table: &str) -> Vec<ExportColumn> {
+    let (schema, name) = match table.split_once('.') {
+        Some((schema, name)) => (schema, name),
+        None => ("public", table),
+    };
+    let meta: Vec<(String, String)> = match sqlx::query_as(
+        "SELECT a.attname::text, t.typname::text \
+         FROM pg_attribute a \
+         JOIN pg_class c ON c.oid = a.attrelid \
+         JOIN pg_namespace n ON n.oid = c.relnamespace \
+         JOIN pg_type t ON t.oid = a.atttypid \
+         WHERE c.relname = $1 AND n.nspname = $2 \
+           AND a.attnum > 0 AND NOT a.attisdropped \
+         ORDER BY a.attnum",
+    )
+    .bind(name)
+    .bind(schema)
+    .fetch_all(&mut *conn)
+    .await
+    {
+        Ok(meta) => meta,
+        Err(e) => {
+            tracing::warn!("读取 PG 列元数据失败，改用结果集列信息: {}", e);
+            Vec::new()
+        }
+    };
+
+    meta.into_iter()
+        .map(|(name, data_type)| ExportColumn { name, data_type })
+        .collect()
+}
+
+/// PG 版逐行流式读取整表；取消标志与导出超时的语义与 MySQL 版一致。
+async fn stream_pg_table_rows<F>(
+    conn: &mut PgConnection,
+    query_cancel: &AtomicBool,
+    query_notify: &Notify,
+    table: &str,
+    mut on_row: F,
+) -> Result<u64>
+where
+    F: FnMut(&sqlx::postgres::PgRow) -> Result<()>,
+{
+    let query = format!("SELECT * FROM {}", quote_pg_table_reference(table)?);
+    let mut rows = sqlx::query(&query).fetch(&mut *conn);
+    let deadline = Instant::now() + MAX_EXPORT_DURATION;
+    let mut count = 0u64;
+
+    loop {
+        if query_cancel.load(Ordering::SeqCst) {
+            return Err(anyhow!("查询已被用户取消"));
+        }
+        if Instant::now() >= deadline {
+            return Err(anyhow!(
+                "导出超过 {} 分钟，已终止；请缩小数据范围后重试",
+                MAX_EXPORT_DURATION.as_secs() / 60
+            ));
+        }
+
+        let next = tokio::select! {
+            item = rows.try_next() => item
+                .map_err(|e| anyhow!("查询失败: {}", crate::error::translate(&e)))?,
+            // 通知可能早于本轮检查到达，下一轮由 cancel 标志兜住
+            _ = query_notify.notified() => continue,
+            _ = tokio::time::sleep(Duration::from_millis(300)) => continue,
+        };
+
+        match next {
+            Some(row) => {
+                on_row(&row)?;
+                count += 1;
+            }
+            None => break,
+        }
+    }
+
+    Ok(count)
 }
 
 /// 逐行流式读取整表，每读一行调用一次 `on_row`。
@@ -2258,11 +2847,55 @@ async fn table_binary_columns(conn: &mut MySqlConnection, table: &str) -> HashSe
         .collect()
 }
 
+/// 查询 PG 表中所有 bytea 列名；元数据查询失败时返回空集合。
+async fn pg_table_binary_columns(conn: &mut PgConnection, table: &str) -> HashSet<String> {
+    let (schema, name) = match table.split_once('.') {
+        Some((schema, name)) => (schema, name),
+        None => ("public", table),
+    };
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT a.attname::text \
+         FROM pg_attribute a \
+         JOIN pg_class c ON c.oid = a.attrelid \
+         JOIN pg_namespace n ON n.oid = c.relnamespace \
+         JOIN pg_type t ON t.oid = a.atttypid \
+         WHERE c.relname = $1 AND n.nspname = $2 \
+           AND t.typname = 'bytea' AND a.attnum > 0 AND NOT a.attisdropped",
+    )
+    .bind(name)
+    .bind(schema)
+    .fetch_all(&mut *conn)
+    .await
+    .unwrap_or_default();
+
+    rows.into_iter().map(|(name,)| name).collect()
+}
+
 /// 把导出的 Base64 文本还原成 MySQL 十六进制字面量（`0x…`）。
 ///
 /// - 空文本代表零长度二进制，写成 `''` 而不是 NULL；
 /// - 导出时 CSV 公式中和可能给 `+` 开头的 Base64 补了前导单引号，这里先剥掉。
 fn decode_base64_to_hex(value: &str) -> Result<String> {
+    let bytes = decode_base64_bytes(value)?;
+    if bytes.is_empty() {
+        return Ok("''".to_string());
+    }
+    let hex: String = bytes.iter().map(|b| format!("{:02X}", b)).collect();
+    Ok(format!("0x{}", hex))
+}
+
+/// PG 的 bytea 十六进制字面量（`'\x…'`）；空字节串写成 `''`。
+fn decode_base64_to_pg_bytea(value: &str) -> Result<String> {
+    let bytes = decode_base64_bytes(value)?;
+    if bytes.is_empty() {
+        return Ok("''".to_string());
+    }
+    let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+    Ok(format!("'\\x{}'", hex))
+}
+
+/// 把导出的 Base64 文本解回原始字节（导出时公式中和可能补了前导单引号）。
+fn decode_base64_bytes(value: &str) -> Result<Vec<u8>> {
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine as _;
 
@@ -2272,14 +2905,12 @@ fn decode_base64_to_hex(value: &str) -> Result<String> {
         .filter(|c| !c.is_whitespace())
         .collect();
     if compact.is_empty() {
-        return Ok("''".to_string());
+        return Ok(Vec::new());
     }
 
-    let bytes = STANDARD
+    STANDARD
         .decode(compact.as_bytes())
-        .map_err(|e| anyhow!("Base64 解码失败: {}", e))?;
-    let hex: String = bytes.iter().map(|b| format!("{:02X}", b)).collect();
-    Ok(format!("0x{}", hex))
+        .map_err(|e| anyhow!("Base64 解码失败: {}", e))
 }
 
 /// 计算两个时间点之间的毫秒数（保留小数，用于耗时统计）。
@@ -2670,7 +3301,8 @@ mod tests {
         assert_eq!(
             change_target_table(
                 "DELETE FROM other WHERE note = 'users'",
-                TableChangeKind::Delete
+                TableChangeKind::Delete,
+                DriverKind::MySql,
             )
             .unwrap(),
             "other"
@@ -2679,18 +3311,28 @@ mod tests {
         assert_eq!(
             change_target_table(
                 "UPDATE `db`.`users` AS u SET u.name = 'x' WHERE u.id = 1",
-                TableChangeKind::Update
+                TableChangeKind::Update,
+                DriverKind::MySql,
             )
             .unwrap(),
             "users"
         );
         assert_eq!(
-            change_target_table("INSERT INTO `users` (id) VALUES (1)", TableChangeKind::Insert)
+            change_target_table(
+                "INSERT INTO `users` (id) VALUES (1)",
+                TableChangeKind::Insert,
+                DriverKind::MySql,
+            )
                 .unwrap(),
             "users"
         );
         assert_eq!(
-            change_target_table("DELETE FROM users WHERE id = 1", TableChangeKind::Delete).unwrap(),
+            change_target_table(
+                "DELETE FROM users WHERE id = 1",
+                TableChangeKind::Delete,
+                DriverKind::MySql,
+            )
+            .unwrap(),
             "users"
         );
     }
@@ -2699,16 +3341,23 @@ mod tests {
     fn change_target_table_rejects_multi_table_and_wrong_kind() {
         assert!(change_target_table(
             "UPDATE a JOIN users ON a.id = users.id SET a.x = 1",
-            TableChangeKind::Update
+            TableChangeKind::Update,
+            DriverKind::MySql,
         )
         .is_err());
         assert!(change_target_table(
             "DELETE a, users FROM a JOIN users ON a.id = users.id",
-            TableChangeKind::Delete
+            TableChangeKind::Delete,
+            DriverKind::MySql,
         )
         .is_err());
-        assert!(change_target_table("SELECT 1 FROM users", TableChangeKind::Delete).is_err());
-        assert!(change_target_table("DELETE FROM", TableChangeKind::Delete).is_err());
+        assert!(change_target_table(
+            "SELECT 1 FROM users",
+            TableChangeKind::Delete,
+            DriverKind::MySql
+        )
+        .is_err());
+        assert!(change_target_table("DELETE FROM", TableChangeKind::Delete, DriverKind::MySql).is_err());
     }
 
     #[test]
@@ -2720,7 +3369,8 @@ mod tests {
             table: "users".to_string(),
             where_clause: None,
         };
-        let err = validate_table_change(&change, 1, SafetyMode::Off).unwrap_err();
+        let err =
+            validate_table_change(&change, 1, SafetyMode::Off, DriverKind::MySql).unwrap_err();
         assert!(err.to_string().contains("不一致"), "{err}");
     }
 
@@ -2957,6 +3607,199 @@ mod tests {
 
         let _ = manager
             .execute(&id, &db, &format!("DROP TABLE IF EXISTS {table}"))
+            .await;
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn pg_apply_changes_updates_and_rolls_back() {
+        let Some((manager, id, db)) = pg_test_connection().await else {
+            return;
+        };
+        let table = format!("qa_pg_changes_{}", std::process::id());
+        manager
+            .execute(
+                &id,
+                &db,
+                &format!("CREATE TABLE {table} (id INT PRIMARY KEY, note TEXT NOT NULL)"),
+            )
+            .await
+            .unwrap();
+        manager
+            .execute(
+                &id,
+                &db,
+                &format!("INSERT INTO {table} (id, note) VALUES (1, 'a'), (2, 'b')"),
+            )
+            .await
+            .unwrap();
+
+        // 正常更新：一条语句、带 WHERE、影响 1 行
+        let update_id_1 = TableChange {
+            kind: TableChangeKind::Update,
+            sql: format!("UPDATE \"{table}\" SET note = 'x' WHERE id = 1"),
+            table: table.clone(),
+            where_clause: Some("id = 1".to_string()),
+        };
+        let result = manager
+            .apply_changes(&id, &db, vec![update_id_1.clone()])
+            .await
+            .unwrap();
+        assert_eq!(result.applied, 1);
+        assert_eq!(result.unchanged, 0);
+
+        // 重复写入同值：PG 的 UPDATE 统计命中行数（不同于 MySQL 的「实际变化行数」），
+        // 因此这里仍按 applied 计；unchanged 只可能来自 0 行命中且 where 条件确认行存在。
+        let result = manager
+            .apply_changes(&id, &db, vec![update_id_1])
+            .await
+            .unwrap();
+        assert_eq!(result.applied, 1);
+        assert_eq!(result.unchanged, 0);
+
+        // 写入不存在的行：报错且整批回滚，第一条（id = 2 → 'y'）不生效
+        let changes = vec![
+            TableChange {
+                kind: TableChangeKind::Update,
+                sql: format!("UPDATE \"{table}\" SET note = 'y' WHERE id = 2"),
+                table: table.clone(),
+                where_clause: Some("id = 2".to_string()),
+            },
+            TableChange {
+                kind: TableChangeKind::Delete,
+                sql: format!("DELETE FROM \"{table}\" WHERE id = 999"),
+                table: table.clone(),
+                where_clause: Some("id = 999".to_string()),
+            },
+        ];
+        assert!(manager.apply_changes(&id, &db, changes).await.is_err());
+        let rows = manager
+            .execute(&id, &db, &format!("SELECT note FROM {table} WHERE id = 2"))
+            .await
+            .unwrap();
+        assert_eq!(serde_json::to_value(&rows.rows[0][0]).unwrap(), serde_json::json!("b"));
+
+        // 无主键表拒绝保存
+        let no_pk = format!("qa_pg_no_pk_{}", std::process::id());
+        manager
+            .execute(&id, &db, &format!("CREATE TABLE {no_pk} (id INT, note TEXT)"))
+            .await
+            .unwrap();
+        let err = manager
+            .apply_changes(
+                &id,
+                &db,
+                vec![TableChange {
+                    kind: TableChangeKind::Update,
+                    sql: format!("UPDATE \"{no_pk}\" SET note = 'x' WHERE id = 1"),
+                    table: no_pk.clone(),
+                    where_clause: Some("id = 1".to_string()),
+                }],
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("没有主键"), "{err}");
+
+        let _ = manager
+            .execute(&id, &db, &format!("DROP TABLE IF EXISTS {table}"))
+            .await;
+        let _ = manager
+            .execute(&id, &db, &format!("DROP TABLE IF EXISTS {no_pk}"))
+            .await;
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn pg_export_and_import_roundtrip() {
+        let Some((manager, id, db)) = pg_test_connection().await else {
+            return;
+        };
+        let table = format!("qa_pg_export_{}", std::process::id());
+        manager
+            .execute(
+                &id,
+                &db,
+                &format!(
+                    "CREATE TABLE {table} (id INT PRIMARY KEY, note TEXT, payload BYTEA, created TIMESTAMPTZ)"
+                ),
+            )
+            .await
+            .unwrap();
+        manager
+            .execute(
+                &id,
+                &db,
+                &format!(
+                    "INSERT INTO {table} (id, note, payload, created) VALUES \
+                     (1, 'alpha', '\\xdeadbeef'::bytea, '2024-01-02 03:04:05+00'), \
+                     (2, 'b''eta', NULL, NULL)"
+                ),
+            )
+            .await
+            .unwrap();
+
+        let file = std::env::temp_dir().join(format!("qa_pg_export_{}.sql", std::process::id()));
+        let exported = manager
+            .export_table_to_file(&id, &db, &table, "sql", &file)
+            .await
+            .unwrap();
+        assert_eq!(exported, 2);
+        let content = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            content.contains(&format!(
+                "INSERT INTO \"{table}\" (\"id\", \"note\", \"payload\", \"created\") VALUES (1, 'alpha', '\\xdeadbeef', '2024-01-02 03:04:05+00');"
+            )),
+            "{content}"
+        );
+        assert!(content.contains("(2, 'b''eta', NULL, NULL);"), "{content}");
+
+        // CSV 导出 → 导入另一张同结构表
+        let csv_file = std::env::temp_dir().join(format!("qa_pg_export_{}.csv", std::process::id()));
+        manager
+            .export_table_to_file(&id, &db, &table, "csv", &csv_file)
+            .await
+            .unwrap();
+        let csv = std::fs::read_to_string(&csv_file).unwrap();
+        let target = format!("qa_pg_import_{}", std::process::id());
+        manager
+            .execute(
+                &id,
+                &db,
+                &format!(
+                    "CREATE TABLE {target} (id INT PRIMARY KEY, note TEXT, payload BYTEA, created TIMESTAMPTZ)"
+                ),
+            )
+            .await
+            .unwrap();
+        let rows = manager
+            .import_data(&id, &db, &target, "csv", &csv)
+            .await
+            .unwrap();
+        assert_eq!(rows, 2);
+        let imported = manager
+            .execute(
+                &id,
+                &db,
+                &format!("SELECT id, note, encode(payload, 'hex') FROM {target} ORDER BY id"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&imported.rows[0][2]).unwrap(),
+            serde_json::json!("deadbeef")
+        );
+        assert_eq!(
+            serde_json::to_value(&imported.rows[1][1]).unwrap(),
+            serde_json::json!("b'eta")
+        );
+
+        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_file(&csv_file);
+        let _ = manager
+            .execute(&id, &db, &format!("DROP TABLE IF EXISTS {table}"))
+            .await;
+        let _ = manager
+            .execute(&id, &db, &format!("DROP TABLE IF EXISTS {target}"))
             .await;
     }
 }

@@ -119,6 +119,26 @@ pub fn validate_value(value: &serde_json::Value) -> Result<()> {
     }
 }
 
+/// 把 `schema.table` 形式的对象展示名拆段后分别加双引号。
+///
+/// 对象树里非 public schema 的对象以 `schema.table` 展示；表名本身含点号的
+/// 极端情况按约定不支持（与展示规则一致）。
+pub fn quote_pg_table_reference(table: &str) -> Result<String> {
+    match table.split_once('.') {
+        Some((schema, name)) => {
+            if name.contains('.') {
+                return Err(anyhow!("表名不能包含多个点号: {}", table));
+            }
+            Ok(format!(
+                "{}.{}",
+                quote_pg_identifier(schema)?,
+                quote_pg_identifier(name)?
+            ))
+        }
+        None => quote_pg_identifier(table),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

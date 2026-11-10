@@ -261,7 +261,7 @@ pub fn convert_value(
 /// 与 MySQL 的 `ColumnKind` 分开维护：PG 的类型名（`INT4`/`FLOAT8`/`TIMESTAMPTZ`…）
 /// 与 MySQL 的 DDL 类型串差异较大，合并会让两边的分支互相污染。
 #[derive(Clone, Copy)]
-pub(super) enum PgColumnKind {
+pub enum PgColumnKind {
     Bool,
     Int2,
     Int4,
@@ -280,7 +280,7 @@ pub(super) enum PgColumnKind {
 }
 
 /// 根据 PostgreSQL 类型名分类。类型名取自 `PgTypeInfo::to_string()`（大写，如 `INT4`）。
-pub(super) fn classify_pg_column(data_type: &str) -> PgColumnKind {
+pub fn classify_pg_column(data_type: &str) -> PgColumnKind {
     match data_type.to_uppercase().as_str() {
         "BOOL" | "BOOLEAN" => PgColumnKind::Bool,
         "INT2" | "SMALLINT" | "SMALLSERIAL" => PgColumnKind::Int2,
@@ -304,7 +304,7 @@ pub(super) fn classify_pg_column(data_type: &str) -> PgColumnKind {
 ///
 /// 规则与 MySQL 版本一致：NULL 返回 `CellValue::Null`；日期时间类解码失败时
 /// 降级为按字符串读取；所有路径都失败时返回带列名/类型的错误，禁止静默返回假 NULL。
-pub(super) fn convert_pg_value(
+pub fn convert_pg_value(
     row: &sqlx::postgres::PgRow,
     index: usize,
     kind: PgColumnKind,
