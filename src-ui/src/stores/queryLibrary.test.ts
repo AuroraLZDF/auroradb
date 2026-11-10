@@ -1,11 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { nextTick } from 'vue'
-import { t } from '@/i18n'
 import { useQueryLibraryStore } from './queryLibrary'
 
 const HISTORY_KEY = 'auroradb.query-history.v2'
-const SAVED_KEY = 'auroradb.saved-queries.v1'
 const LEGACY_HISTORY_KEY = 'sql-query-history'
 
 type Store = ReturnType<typeof useQueryLibraryStore>
@@ -119,86 +117,5 @@ describe('queryLibrary 查询历史', () => {
     expect(store.history[0]?.connectionId).toBe('')
     expect(localStorage.getItem(LEGACY_HISTORY_KEY)).toBeNull()
     expect(localStorage.getItem(HISTORY_KEY)).not.toBeNull()
-  })
-})
-
-describe('queryLibrary 保存的查询', () => {
-  beforeEach(() => {
-    setActivePinia(createPinia())
-  })
-
-  it('同一文件夹内重名自动追加序号，跨文件夹不受影响', () => {
-    const store = useQueryLibraryStore()
-
-    expect(store.saveQuery({ name: '用户列表', sql: 'SELECT 1', connectionId: 'c' }).name).toBe(
-      '用户列表',
-    )
-    expect(store.saveQuery({ name: '用户列表', sql: 'SELECT 2', connectionId: 'c' }).name).toBe(
-      '用户列表 (2)',
-    )
-    expect(
-      store.saveQuery({ name: '用户列表', sql: 'SELECT 3', folder: '报表', connectionId: 'c' }).name,
-    ).toBe('用户列表')
-  })
-
-  it('空名称使用未命名查询文案', () => {
-    const store = useQueryLibraryStore()
-    const saved = store.saveQuery({ name: '  ', sql: 'SELECT 1', connectionId: 'c' })
-
-    expect(saved.name).toBe(t('store.untitledQuery'))
-  })
-
-  it('保存的 SQL 会 trim', () => {
-    const store = useQueryLibraryStore()
-    const saved = store.saveQuery({ name: 'Q', sql: '  SELECT 1  ', connectionId: 'c' })
-
-    expect(saved.sql).toBe('SELECT 1')
-  })
-
-  it('folders 去重排序且不含未分类', () => {
-    const store = useQueryLibraryStore()
-    store.saveQuery({ name: 'Q1', sql: 'SELECT 1', folder: '报表', connectionId: 'c' })
-    store.saveQuery({ name: 'Q2', sql: 'SELECT 2', folder: '日常', connectionId: 'c' })
-    store.saveQuery({ name: 'Q3', sql: 'SELECT 3', folder: '报表', connectionId: 'c' })
-    store.saveQuery({ name: 'Q4', sql: 'SELECT 4', connectionId: 'c' })
-
-    // 排序依赖运行时 ICU，这里只断言去重与「不含未分类」
-    expect(store.folders).toHaveLength(2)
-    expect(store.folders).toContain('报表')
-    expect(store.folders).toContain('日常')
-  })
-
-  it('updateSavedQuery 合并补丁，未知 id 忽略', () => {
-    const store = useQueryLibraryStore()
-    const saved = store.saveQuery({ name: 'Q', sql: 'SELECT 1', connectionId: 'c' })
-
-    store.updateSavedQuery(saved.id, { name: 'Q2', folder: '报表' })
-    expect(store.savedQueries[0]?.name).toBe('Q2')
-    expect(store.savedQueries[0]?.folder).toBe('报表')
-    expect(store.savedQueries[0]?.sql).toBe('SELECT 1')
-
-    expect(() => store.updateSavedQuery('missing', { name: 'X' })).not.toThrow()
-    expect(store.savedQueries).toHaveLength(1)
-  })
-
-  it('deleteSavedQuery 按 id 删除', () => {
-    const store = useQueryLibraryStore()
-    const first = store.saveQuery({ name: 'Q1', sql: 'SELECT 1', connectionId: 'c' })
-    store.saveQuery({ name: 'Q2', sql: 'SELECT 2', connectionId: 'c' })
-
-    store.deleteSavedQuery(first.id)
-
-    expect(store.savedQueries.map(item => item.name)).toEqual(['Q2'])
-  })
-
-  it('保存后写入 localStorage', async () => {
-    const store = useQueryLibraryStore()
-    store.saveQuery({ name: 'Q', sql: 'SELECT 1', connectionId: 'c' })
-
-    await nextTick()
-
-    const persisted = JSON.parse(localStorage.getItem(SAVED_KEY) ?? '[]')
-    expect(persisted).toHaveLength(1)
-    expect(persisted[0].name).toBe('Q')
   })
 })

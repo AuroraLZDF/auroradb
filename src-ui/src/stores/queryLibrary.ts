@@ -1,6 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, computed, watch } from 'vue'
-import { t } from '@/i18n'
+import { ref, watch } from 'vue'
 
 /** 查询历史条目 */
 export interface QueryHistoryEntry {
@@ -27,20 +26,7 @@ export interface QueryHistoryEntry {
   rowsAffected?: number
 }
 
-/** 保存的查询 */
-export interface SavedQuery {
-  id: string
-  name: string
-  sql: string
-  /** 文件夹名；空串表示未分类 */
-  folder: string
-  connectionId: string
-  createdAt: string
-  updatedAt: string
-}
-
 const HISTORY_STORAGE_KEY = 'auroradb.query-history.v2'
-const SAVED_STORAGE_KEY = 'auroradb.saved-queries.v1'
 /** 旧版本只存了全局 20 条历史，这里做一次性迁移 */
 const LEGACY_HISTORY_KEY = 'sql-query-history'
 /** 每个连接保留的历史条数 */
@@ -75,7 +61,6 @@ function persist(key: string, value: unknown) {
 
 export const useQueryLibraryStore = defineStore('queryLibrary', () => {
   const history = ref<QueryHistoryEntry[]>(loadJson<QueryHistoryEntry[]>(HISTORY_STORAGE_KEY, []))
-  const savedQueries = ref<SavedQuery[]>(loadJson<SavedQuery[]>(SAVED_STORAGE_KEY, []))
 
   // 旧版本历史一次性迁移到新结构（归属连接未知，统一放到空 connectionId 下）
   if (history.value.length === 0) {
@@ -97,7 +82,6 @@ export const useQueryLibraryStore = defineStore('queryLibrary', () => {
   }
 
   watch(history, value => persist(HISTORY_STORAGE_KEY, value), { deep: true })
-  watch(savedQueries, value => persist(SAVED_STORAGE_KEY, value), { deep: true })
 
   /** 按连接取历史（新→旧）；同时包含旧版本迁移来的、无法归属连接的历史 */
   function historyFor(connectionId: string): QueryHistoryEntry[] {
@@ -150,69 +134,11 @@ export const useQueryLibraryStore = defineStore('queryLibrary', () => {
     history.value = history.value.filter(item => item.connectionId !== connectionId)
   }
 
-  /** 保存查询；name 重复时追加序号 */
-  function saveQuery(input: { name: string; sql: string; folder?: string; connectionId: string }): SavedQuery {
-    const now = new Date().toISOString()
-    const sql = input.sql.trim()
-    const baseName = input.name.trim() || t('store.untitledQuery')
-    const folder = (input.folder ?? '').trim()
-
-    const sameFolder = savedQueries.value.filter(q => q.folder === folder)
-    let name = baseName
-    if (sameFolder.some(q => q.name === name)) {
-      let index = 2
-      while (sameFolder.some(q => q.name === `${baseName} (${index})`)) index++
-      name = `${baseName} (${index})`
-    }
-
-    const record: SavedQuery = {
-      id: newId(),
-      name,
-      sql,
-      folder,
-      connectionId: input.connectionId,
-      createdAt: now,
-      updatedAt: now
-    }
-    savedQueries.value = [record, ...savedQueries.value]
-    return record
-  }
-
-  function updateSavedQuery(id: string, patch: Partial<Pick<SavedQuery, 'name' | 'sql' | 'folder'>>) {
-    const index = savedQueries.value.findIndex(q => q.id === id)
-    if (index === -1) return
-    const current = savedQueries.value[index]
-    if (!current) return
-    savedQueries.value[index] = {
-      ...current,
-      ...patch,
-      updatedAt: new Date().toISOString()
-    }
-  }
-
-  function deleteSavedQuery(id: string) {
-    savedQueries.value = savedQueries.value.filter(q => q.id !== id)
-  }
-
-  /** 已存在的文件夹（按名称排序，不含未分类） */
-  const folders = computed(() => {
-    const names = new Set<string>()
-    for (const q of savedQueries.value) {
-      if (q.folder) names.add(q.folder)
-    }
-    return [...names].sort((a, b) => a.localeCompare(b, 'zh-CN'))
-  })
-
   return {
     history,
-    savedQueries,
-    folders,
     historyFor,
     addHistory,
     removeHistory,
-    clearHistory,
-    saveQuery,
-    updateSavedQuery,
-    deleteSavedQuery
+    clearHistory
   }
 })

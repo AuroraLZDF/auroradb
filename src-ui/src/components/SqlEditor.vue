@@ -23,14 +23,6 @@
           <Trash2 :size="14" />
           {{ t('common.clear') }}
         </button>
-        <button
-          @click="panelOpen = !panelOpen"
-          class="btn-format"
-          :class="{ 'is-active': panelOpen }"
-        >
-          <History :size="14" />
-          {{ t('sqlEditor.savedQueries') }}
-        </button>
       </div>
       <div class="toolbar-right">
         <div class="database-select">
@@ -229,43 +221,6 @@
       </div>
     </div>
 
-    <!-- 已保存查询 -->
-    <div v-if="panelOpen" class="library-panel">
-      <div class="library-header">
-        <div class="library-tabs">
-          <span class="library-title">
-            {{ t('sqlEditor.savedTab', { count: queryLibrary.savedQueries.length }) }}
-          </span>
-        </div>
-        <input v-model="librarySearch" class="library-search" :placeholder="t('sqlEditor.searchLibrary')" />
-        <button class="btn-clear-history" :title="t('common.close')" @click="panelOpen = false" :aria-label="t('common.close')">
-          <X :size="14" />
-        </button>
-      </div>
-
-      <div class="history-list">
-        <div v-if="savedGroups.length === 0" class="library-empty">
-          {{ t('sqlEditor.noSaved') }}
-        </div>
-        <template v-for="group in savedGroups" :key="group.folder">
-          <div class="library-folder">{{ group.folder }}</div>
-          <div
-            v-for="item in group.items"
-            :key="item.id"
-            class="history-item"
-            :title="item.sql"
-            @click="loadSavedQuery(item)"
-          >
-            <span class="history-sql">{{ item.name }}</span>
-            <span class="history-time">{{ formatTime(item.updatedAt) }}</span>
-            <button class="btn-item-delete" :title="t('common.delete')" @click.stop="queryLibrary.deleteSavedQuery(item.id)" :aria-label="t('common.delete')">
-              ×
-            </button>
-          </div>
-        </template>
-      </div>
-    </div>
-
     <!-- 查询结果单元格右键菜单 -->
     <div
       v-if="resultCellMenu.show"
@@ -320,8 +275,8 @@ import { useConnectionStore } from '@/stores/connection'
 import { resolveTabConnectionId } from '@/utils/tabConnection'
 import { useDataBrowserStore } from '@/stores/dataBrowser'
 import { useEditorTabsStore } from '@/stores/editorTabs'
-import { useQueryLibraryStore, type SavedQuery } from '@/stores/queryLibrary'
-import { Play, FileText, Trash2, Download, XCircle, CheckCircle, Loader2, Square, History, X, Cpu } from 'lucide-vue-next'
+import { useQueryLibraryStore } from '@/stores/queryLibrary'
+import { Play, FileText, Trash2, Download, XCircle, CheckCircle, Loader2, Square, Cpu } from 'lucide-vue-next'
 import { t } from '@/i18n'
 import { findDangerousStatements, formatSql, quoteIdentifier } from '@/utils/sql'
 import { formatSqlValue } from '@/utils/tableChanges'
@@ -411,8 +366,6 @@ const explaining = ref(false)
 // 结果视图切换：'result' | 'explain'，默认跟执行走
 const resultView = ref<'result' | 'explain'>('result')
 // 查询历史 / 已保存查询面板
-const panelOpen = ref(false)
-const librarySearch = ref('')
 
 // 导出格式
 const exportFormat = ref<'csv' | 'json' | 'xlsx' | 'sql' | 'markdown'>('csv')
@@ -1067,38 +1020,6 @@ function viewResultCell() {
   openResultCellViewer(resultCellMenu.value.cell, resultCellMenu.value.columnIndex)
 }
 
-// ===== 已保存查询 =====
-const savedGroups = computed(() => {
-  const keyword = librarySearch.value.trim().toLowerCase()
-  const items = queryLibrary.savedQueries.filter(item =>
-    !keyword ||
-    item.name.toLowerCase().includes(keyword) ||
-    item.sql.toLowerCase().includes(keyword)
-  )
-
-  const groups = new Map<string, SavedQuery[]>()
-  const uncategorized = t('sqlEditor.uncategorized')
-  for (const item of items) {
-    const folder = item.folder || uncategorized
-    const list = groups.get(folder) ?? []
-    list.push(item)
-    groups.set(folder, list)
-  }
-
-  return [...groups.entries()]
-    .sort(([a], [b]) => {
-      if (a === uncategorized) return 1
-      if (b === uncategorized) return -1
-      return a.localeCompare(b, 'zh-CN')
-    })
-    .map(([folder, list]) => ({ folder, items: list }))
-})
-
-function loadSavedQuery(item: SavedQuery) {
-  editorApi?.replaceDoc(item.sql)
-  nextTick(() => editorApi?.focus())
-}
-
 /** 记录一次执行结果（成功/失败都留痕，便于回溯） */
 function recordHistory(
   success: boolean,
@@ -1290,18 +1211,6 @@ function truncateSql(querySql: string): string {
   const maxLength = 60
   if (querySql.length <= maxLength) return querySql
   return querySql.substring(0, maxLength) + '...'
-}
-
-// 格式化时间
-function formatTime(time: string | Date): string {
-  const date = new Date(time)
-  const now = new Date()
-  const diff = now.getTime() - date.getTime()
-
-  if (diff < 60000) return t('sqlEditor.timeJustNow')
-  if (diff < 3600000) return t('sqlEditor.minutesAgo', { count: Math.floor(diff / 60000) })
-  if (diff < 86400000) return t('sqlEditor.hoursAgo', { count: Math.floor(diff / 3600000) })
-  return date.toLocaleDateString()
 }
 
 // 导出结果
@@ -1998,188 +1907,6 @@ onUnmounted(() => {
   color: var(--warning-700, #b45309);
   font-size: 13px;
   flex-shrink: 0;
-}
-
-/* 查询历史 / 已保存查询面板 */
-.library-panel {
-  flex: 0 0 220px;
-  display: flex;
-  flex-direction: column;
-  border-top: 1px solid var(--hairline);
-  overflow: hidden;
-}
-
-.library-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--hairline);
-  flex-shrink: 0;
-}
-
-.library-title {
-  font-size: var(--text-xs);
-  font-weight: var(--font-medium);
-  color: var(--text-secondary);
-}
-
-.library-tabs {
-  display: flex;
-  gap: 4px;
-}
-
-.library-tab {
-  background: none;
-  border: none;
-  padding: 5px 9px;
-  border-radius: 4px;
-  font-size: 12px;
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-
-.library-tab:hover {
-  background: var(--hover-fill);
-}
-
-.library-tab.active {
-  background: var(--canvas);
-  color: var(--text-primary);
-  font-weight: 500;
-  box-shadow: inset 0 0 0 1px var(--hairline);
-}
-
-.library-search {
-  flex: 1;
-  min-width: 0;
-  padding: 5px 8px;
-  border: 1px solid var(--hairline);
-  border-radius: 4px;
-  font-size: 12px;
-  background: var(--canvas);
-  color: var(--text-primary);
-}
-
-.library-search:focus {
-  outline: none;
-  border-color: var(--brand-500);
-}
-
-.library-empty {
-  padding: 24px 16px;
-  text-align: center;
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
-.library-folder {
-  padding: 6px 16px;
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--text-secondary);
-  background: var(--panel);
-  border-bottom: 1px solid var(--hairline);
-  position: sticky;
-  top: 0;
-}
-
-.history-sql {
-  flex: 1;
-  font-family: monospace;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  margin-right: 12px;
-}
-
-.history-failed {
-  font-size: 10px;
-  color: var(--error-500);
-  border: 1px solid currentColor;
-  border-radius: 3px;
-  padding: 0 4px;
-  margin-right: 8px;
-  flex-shrink: 0;
-}
-
-.btn-item-delete {
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 14px;
-  line-height: 1;
-  padding: 0 2px;
-  margin-left: 8px;
-  flex-shrink: 0;
-}
-
-.btn-item-delete:hover {
-  color: var(--error-500);
-}
-
-.btn-clear-history {
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 12px;
-  padding: 4px;
-  display: flex;
-  align-items: center;
-}
-
-.btn-clear-history:hover {
-  color: var(--error-500);
-}
-
-.btn-clear-history.block {
-  display: block;
-  width: 100%;
-  padding: 8px;
-  border-top: 1px solid var(--hairline);
-  font-size: 12px;
-}
-
-.btn-format.is-active {
-  background: var(--hover-fill);
-  border-color: var(--brand-500);
-  color: var(--brand-500);
-}
-
-.history-list {
-  flex: 1;
-  overflow-y: auto;
-}
-
-.history-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 16px;
-  cursor: pointer;
-  border-bottom: 1px solid var(--hairline);
-  font-size: 12px;
-}
-
-.history-item:hover {
-  background: var(--hover-fill);
-}
-
-.history-sql {
-  flex: 1;
-  font-family: monospace;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  margin-right: 12px;
-}
-
-.history-time {
-  color: var(--text-secondary);
-  font-size: 11px;
 }
 
 /* 参数化查询弹窗 */
