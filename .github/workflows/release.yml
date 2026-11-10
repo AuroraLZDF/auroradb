@@ -24,8 +24,8 @@ on:
         required: false
         type: boolean
         default: false
-      skip_macos:
-        description: '跳过 macOS 构建（GitHub 不给 macOS runner 时用）'
+      build_macos:
+        description: '同时构建 macOS（需要账号有可用的 macOS runner，默认关闭）'
         required: false
         type: boolean
         default: false
@@ -318,8 +318,11 @@ jobs:
   build-macos:
     name: Build macOS bundles
     needs: check
-    # macOS 是预览版平台，允许跳过；失败也不阻塞 Linux/Windows 发布
-    if: github.event_name != 'workflow_dispatch' || inputs.skip_macos == false
+    # 实测本账号没有可用的 macOS runner：macos-14 直接报
+    # "The configuration 'macos-14-arm64-us-default' is not supported"，
+    # macos-13 则会一直 queued 不启动（连带 verify 永远等不到）。
+    # 因此改为「显式勾选才构建」，默认发布只出 Linux + Windows。
+    if: github.event_name == 'workflow_dispatch' && inputs.build_macos == true
     # macos-14 的 arm64 runner 并非所有账号可用（实测报
     # "The configuration 'macos-14-arm64-us-default' is not supported"），
     # 改用 Intel 的 macos-13 交叉编译 aarch64，兼容性最好
