@@ -115,6 +115,12 @@ pub fn rewrite_table_names(database: &str, sql: &str, driver: DriverKind) -> (St
                     _ => {}
                 }
             }
+            // 上游 sqlparser 0.63 的 `MySQLColumnPosition` Display 直接拼接 `Ident.value`，
+            // 丢掉标识符原有的引号：`... AFTER \`desc\`` 序列化后变成 `... AFTER desc`。
+            // `desc` 是 MySQL 保留字，这种 DDL 会以 42000 语法错误失败，因此在序列化前补回引号。
+            for statement in &mut statements {
+                requote_mysql_column_position(statement);
+            }
             let rewritten = statements
                 .iter()
                 .map(|s| s.to_string())
@@ -123,6 +129,45 @@ pub fn rewrite_table_names(database: &str, sql: &str, driver: DriverKind) -> (St
             (rewritten, true)
         }
         Err(_) => (sql.to_string(), false),
+    }
+}
+
+/// 修复 `MySQLColumnPosition::After` 重新序列化时丢失标识符引号的问题。
+///
+/// sqlparser 0.63 的 `Display for MySQLColumnPosition` 输出的是 `ident.value` 而不是
+/// `ident`，于是原本带反引号的列名（如 ``AFTER `desc```）被序列化成裸标识符
+/// （`AFTER desc`）。MySQL 中 `desc`/`case` 等是保留字，这样改写后的 SQL 会直接
+/// 报 42000 语法错误（用户上报：`ALTER TABLE ... ADD COLUMN ... AFTER `desc`` 失败）。
+///
+/// 序列化前把引号补回 `value` 并清空 `quote_style`：`Ident` 在 `quote_style == None`
+/// 时会原样输出 `value`，等价于让 Display 输出带引号的标识符。
+/// `ADD COLUMN` / `CHANGE COLUMN` / `MODIFY COLUMN` 三种操作都带该位置子句。
+fn requote_mysql_column_position(statement: &mut sqlparser::ast::Statement) {
+    use sqlparser::ast::{AlterTableOperation, MySQLColumnPosition, Statement};
+
+    let Statement::AlterTable(alter) = statement else {
+        return;
+    };
+    for operation in &mut alter.operations {
+        let position = match operation {
+            AlterTableOperation::AddColumn {
+                column_position, ..
+            }
+            | AlterTableOperation::ChangeColumn {
+                column_position, ..
+            }
+            | AlterTableOperation::ModifyColumn {
+                column_position, ..
+            } => column_position,
+            _ => continue,
+        };
+        if let Some(MySQLColumnPosition::After(ident)) = position {
+            if ident.quote_style.is_some() {
+                // `Ident` 的 Display 会按原引号风格转义输出，先渲染成带引号的字面值
+                ident.value = ident.to_string();
+                ident.quote_style = None;
+            }
+        }
     }
 }
 
@@ -593,6 +638,8 @@ mod tests {
         split_sql_statements, strip_sql_comments, SqlKind,
     };
     use crate::connection::driver::DriverKind;
+    use sqlparser::dialect::MySqlDialect;
+    use sqlparser::parser::Parser;
 
     #[test]
     fn test_rewrite_simple_select() {
@@ -719,6 +766,55 @@ mod tests {
         assert!(parsed);
         assert!(sql.contains("`mydb`.`users`"), "got: {sql}");
         assert!(!sql.contains("`mydb`.`idx_name`"), "got: {sql}");
+    }
+
+    #[test]
+    fn test_rewrite_alter_add_column_keeps_quotes_after_reserved_column() {
+        // 回归用例：AFTER 目标列名带反引号时，重新序列化不能丢掉引号。
+        // sqlparser 0.63 的 MySQLColumnPosition Display 直接输出 ident.value，
+        // 会把 `desc` 变成裸标识符；desc 是保留字，整条 ALTER 会报 42000 语法错误。
+        let input = "ALTER TABLE `t_demo`\n\
+                     ADD COLUMN `desc` TEXT NULL COMMENT 'c1' AFTER `ref_col`,\n\
+                     ADD COLUMN `col_b` VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'c2' AFTER `desc`,\n\
+                     ADD COLUMN `col_c` TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'c3' AFTER `col_b`";
+        let (sql, parsed) = rewrite_table_names("mydb", input, DriverKind::MySql);
+        assert!(parsed);
+        assert!(sql.contains("`mydb`.`t_demo`"), "got: {sql}");
+        assert!(sql.contains("AFTER `ref_col`"), "got: {sql}");
+        assert!(sql.contains("AFTER `desc`"), "got: {sql}");
+        assert!(sql.contains("AFTER `col_b`"), "got: {sql}");
+        assert!(!sql.contains("AFTER desc"), "got: {sql}");
+        // 改写后的文本必须仍是合法 SQL，否则错误会推迟到执行时才暴露
+        assert!(
+            Parser::parse_sql(&MySqlDialect {}, &sql).is_ok(),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn test_rewrite_alter_change_modify_column_keep_quotes_after_reserved_column() {
+        // CHANGE/MODIFY COLUMN 同样带 AFTER 位置子句
+        for input in [
+            "ALTER TABLE `t` CHANGE COLUMN `a` `b` INT NOT NULL AFTER `desc`",
+            "ALTER TABLE `t` MODIFY COLUMN `a` INT AFTER `desc`",
+        ] {
+            let (sql, parsed) = rewrite_table_names("mydb", input, DriverKind::MySql);
+            assert!(parsed, "input: {input}");
+            assert!(sql.contains("AFTER `desc`"), "input: {input}, got: {sql}");
+        }
+    }
+
+    #[test]
+    fn test_rewrite_alter_after_unquoted_column_stays_unquoted() {
+        // 用户原本写裸标识符时不要凭空加反引号
+        let (sql, parsed) = rewrite_table_names(
+            "mydb",
+            "ALTER TABLE t ADD COLUMN c INT AFTER b",
+            DriverKind::MySql,
+        );
+        assert!(parsed);
+        assert!(sql.contains("AFTER b"), "got: {sql}");
+        assert!(!sql.contains("AFTER `b`"), "got: {sql}");
     }
 
     #[test]

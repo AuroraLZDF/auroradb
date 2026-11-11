@@ -3784,6 +3784,110 @@ mod tests {
             .await;
     }
 
+    /// `ALTER TABLE ... ADD COLUMN ... AFTER `保留字列名`` 必须能执行（回归用例）。
+    ///
+    /// 应用会把 SQL 解析成 AST 再补库名前缀，sqlparser 0.63 的
+    /// `MySQLColumnPosition` Display 会丢掉 AFTER 目标列名的反引号
+    /// （``AFTER `desc``` → `AFTER desc`），而 desc 是 MySQL 保留字，直接 42000。
+    #[tokio::test]
+    #[ignore = "需要真实 MySQL 测试库：设置 AURORADB_TEST_MYSQL_* 后执行 cargo test -- --ignored"]
+    async fn mysql_alter_table_add_column_after_quoted_reserved_word() {
+        let Some((manager, id, db)) = mysql_test_connection().await else {
+            return;
+        };
+        let table = format!("qa_alter_after_{}", std::process::id());
+        manager
+            .execute(
+                &id,
+                &db,
+                &format!("CREATE TABLE `{table}` (id INT PRIMARY KEY, ref_col INT NULL)"),
+            )
+            .await
+            .unwrap();
+
+        // 与问题场景同形态的通用 DDL：12 个连续的 ADD COLUMN，
+        // AFTER 链里含反引号包裹的 `desc`（MySQL 保留字）。
+        let alter = format!(
+            "ALTER TABLE `{table}`
+                 ADD COLUMN `desc` TEXT NULL COMMENT 'c1' AFTER `ref_col`,
+                 ADD COLUMN `col_a` VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'c2' AFTER `desc`,
+                 ADD COLUMN `col_b` TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'c3' AFTER `col_a`,
+                 ADD COLUMN `col_c` TEXT NULL COMMENT 'c4' AFTER `col_b`,
+                 ADD COLUMN `col_d` TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'c5' AFTER `col_c`,
+                 ADD COLUMN `col_e` TEXT NULL COMMENT 'c6' AFTER `col_d`,
+                 ADD COLUMN `col_f` TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'c7' AFTER `col_e`,
+                 ADD COLUMN `col_g` TEXT NULL COMMENT 'c8' AFTER `col_f`,
+                 ADD COLUMN `col_h` TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'c9' AFTER `col_g`,
+                 ADD COLUMN `col_i` TEXT NULL COMMENT 'c10' AFTER `col_h`,
+                 ADD COLUMN `col_j` TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'c11' AFTER `col_i`,
+                 ADD COLUMN `col_k` TEXT NULL COMMENT 'c12' AFTER `col_j`"
+        );
+        manager
+            .execute(&id, &db, &alter)
+            .await
+            .expect("ALTER TABLE ... AFTER `desc` 执行失败");
+
+        // 列按 AFTER 指定的顺序落在 ref_col 之后
+        let columns = manager
+            .execute(&id, &db, &format!("SHOW COLUMNS FROM `{table}`"))
+            .await
+            .unwrap();
+        let names: Vec<String> = columns
+            .rows
+            .iter()
+            .map(|row| match &row[0] {
+                CellValue::String(name) => name.clone(),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "id",
+                "ref_col",
+                "desc",
+                "col_a",
+                "col_b",
+                "col_c",
+                "col_d",
+                "col_e",
+                "col_f",
+                "col_g",
+                "col_h",
+                "col_i",
+                "col_j",
+                "col_k",
+            ],
+            "列顺序不符合 AFTER 指定"
+        );
+
+        // 保留字列可正常写入/读取
+        manager
+            .execute(
+                &id,
+                &db,
+                &format!("INSERT INTO `{table}` (id, ref_col, `desc`) VALUES (1, 2, 'ok')"),
+            )
+            .await
+            .unwrap();
+        let selected = manager
+            .execute(
+                &id,
+                &db,
+                &format!("SELECT `desc` FROM `{table}` WHERE id = 1"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&selected.rows[0][0]).unwrap(),
+            serde_json::json!("ok")
+        );
+
+        let _ = manager
+            .execute(&id, &db, &format!("DROP TABLE IF EXISTS `{table}`"))
+            .await;
+    }
+
     /// PG keyset 翻页：续页不带 OFFSET、不跑 COUNT，末批不给游标，指定排序时退回 OFFSET。
     #[tokio::test]
     #[ignore = "需要真实 PostgreSQL 测试库：设置 AURORADB_TEST_PG_* 后执行 cargo test -- --ignored"]
