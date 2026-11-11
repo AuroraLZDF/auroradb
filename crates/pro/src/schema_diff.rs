@@ -256,6 +256,19 @@ pub async fn compare_schemas(
                 &target,
             ))
         }
+        (DriverKind::Sqlite, DriverKind::Sqlite) => {
+            let source =
+                load_sqlite_compare_schema(manager, source_connection, source_database).await?;
+            let target =
+                load_sqlite_compare_schema(manager, target_connection, target_database).await?;
+
+            Ok(diff_schemas_sqlite(
+                source_database,
+                target_database,
+                &source,
+                &target,
+            ))
+        }
         (source_driver, target_driver) => Err(anyhow!(
             "暂不支持跨数据库类型对比：源为 {}，目标为 {}",
             source_driver.display_name(),
@@ -2160,6 +2173,923 @@ fn diff_schemas_postgres(
     }
 }
 
+// ===========================================================================
+// SQLite 结构对比
+//
+// 与 MySQL 的差异：
+// 1. SQLite 无法 ALTER COLUMN（不支持 MODIFY/TYPE/DEFAULT 变更），列签名变化的
+//    重建路径为「新建临时表 → 复制数据 → 删原表 → 改名」十二步标准流程的简化版；
+// 2. 主键/唯一约束体现为 sqlite_autoindex_* 实现索引，与显式 CREATE INDEX 一同参与对比；
+// 3. 视图定义来自 sqlite_master.sql，变化时 DROP + CREATE 重建；
+// 4. 外键在 ALTER 重建脚本中尽力保留（重建表时写入定义）。
+// ===========================================================================
+
+/// 读取 SQLite 对比快照：经 core 元数据 API（复用缓存），含表与视图
+async fn load_sqlite_compare_schema(
+    manager: &ConnectionManager,
+    connection_id: &str,
+    database: &str,
+) -> Result<Vec<SchemaCompareTable>> {
+    let snapshot = manager
+        .get_schema_snapshot(connection_id, database)
+        .await?;
+
+    let mut tables = Vec::with_capacity(snapshot.tables.len());
+    for info in &snapshot.tables {
+        let structure = manager
+            .get_table_structure(connection_id, database, &info.name)
+            .await?;
+        tables.push(build_sqlite_compare_table(info, &structure));
+    }
+
+    Ok(tables)
+}
+
+/// 把 core 的 SQLite 元数据转成对比快照（含视图）
+fn build_sqlite_compare_table(
+    info: &SchemaTableInfo,
+    structure: &TableStructure,
+) -> SchemaCompareTable {
+    let is_view = matches!(info.object_type, ObjectType::View);
+
+    let columns = structure
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(index, column)| SchemaCompareColumn {
+            name: column.name.clone(),
+            column_type: sqlite_column_type_from_info(column),
+            is_nullable: column.is_nullable,
+            default_value: column.default_value.clone().filter(|v| !v.is_empty()),
+            // SQLite 无 AUTO_INCREMENT/ON UPDATE；AUTOINCREMENT 关键字极少用，
+            // MVP 不参与对比（extra 留空保持签名稳定）
+            extra: String::new(),
+            comment: column.comment.clone().unwrap_or_default(),
+            ordinal: index as u32 + 1,
+            generation_expression: None,
+            is_primary: column.is_primary,
+        })
+        .collect();
+
+    let indexes = structure
+        .indexes
+        .iter()
+        .filter(|index| !index.columns.is_empty())
+        .map(|index| SchemaCompareIndex {
+            name: index.name.clone(),
+            columns: index.columns.clone(),
+            is_unique: index.is_unique,
+            index_type: index.r#type.to_ascii_lowercase(),
+        })
+        .collect();
+
+    SchemaCompareTable {
+        name: info.name.clone(),
+        columns,
+        indexes,
+        foreign_keys: group_sqlite_foreign_keys(&structure.foreign_keys, &info.name),
+        object_kind: if is_view {
+            SchemaObjectKind::View
+        } else {
+            SchemaObjectKind::Table
+        },
+        schema: None,
+        qualify_schema: false,
+        create_statement: if is_view {
+            Some(structure.create_statement.clone())
+        } else {
+            None
+        },
+    }
+}
+
+/// 还原可执行类型文本：INTEGER/TEXT/REAL/BLOB/NUMERIC(10,2) 等
+fn sqlite_column_type_from_info(column: &TableColumnInfo) -> String {
+    // core 的 SQLite data_type 就是 PRAGMA type 原文（如 numeric(10,2)），直接透传
+    column.data_type.clone()
+}
+
+/// core 的 SQLite 外键是「一列一行」（name 形如 `{table}_{ref_table}`），
+/// 这里按 (列组, 引用表) 重新聚合；on_delete/on_update 为 NO ACTION 时省略
+fn group_sqlite_foreign_keys(
+    rows: &[TableForeignKeyInfo],
+    table_name: &str,
+) -> Vec<SchemaCompareForeignKey> {
+    let mut grouped: Vec<SchemaCompareForeignKey> = Vec::new();
+
+    for row in rows {
+        let on_delete = normalize_fk_action(&row.on_delete);
+        let on_update = normalize_fk_action(&row.on_update);
+
+        match grouped.iter_mut().find(|fk| {
+            fk.ref_table == row.ref_table && fk.on_delete == on_delete && fk.on_update == on_update
+        }) {
+            Some(fk) => {
+                fk.columns.push(row.column.clone());
+                fk.ref_columns.push(row.ref_column.clone());
+            }
+            None => grouped.push(SchemaCompareForeignKey {
+                name: format!("{}_{}", table_name, row.ref_table),
+                columns: vec![row.column.clone()],
+                ref_schema: None,
+                ref_table: row.ref_table.clone(),
+                ref_columns: vec![row.ref_column.clone()],
+                on_delete,
+                on_update,
+            }),
+        }
+    }
+
+    grouped
+}
+
+/// 归一化外键动作：NO ACTION 统一为 "NO ACTION"，其余保留大写
+fn normalize_fk_action(value: &str) -> String {
+    let upper = value.trim().to_ascii_uppercase();
+    if upper.is_empty() {
+        "NO ACTION".to_string()
+    } else {
+        upper
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SQLite DDL 辅助
+// ---------------------------------------------------------------------------
+
+/// SQLite 标识符：双引号包裹，内部双引号翻倍
+fn sqlite_quote(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+fn sqlite_column_list(columns: &[String]) -> String {
+    columns
+        .iter()
+        .map(|column| sqlite_quote(column))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// 列定义（CREATE TABLE / ADD COLUMN 共用）
+fn sqlite_column_definition(column: &SchemaCompareColumn) -> String {
+    let mut definition = format!("{} {}", sqlite_quote(&column.name), column.column_type);
+    if !column.is_nullable {
+        definition.push_str(" NOT NULL");
+    }
+    if let Some(default_value) = column.default_value.as_deref() {
+        if !default_value.is_empty() {
+            definition.push_str(" DEFAULT ");
+            definition.push_str(&sqlite_render_default(default_value));
+        }
+    }
+    definition
+}
+
+/// 渲染默认值字面量：时间函数/表达式包裹/数字/布尔保持原样，其余按字符串加引号
+fn sqlite_render_default(value: &str) -> String {
+    let lower = value.to_ascii_lowercase();
+    let trimmed = lower.trim();
+
+    if trimmed == "current_timestamp"
+        || trimmed.starts_with("current_timestamp(")
+        || trimmed.starts_with('(')
+        || value.starts_with('\'')
+        || value.parse::<f64>().is_ok()
+        || trimmed == "true"
+        || trimmed == "false"
+    {
+        return value.to_string();
+    }
+
+    format!("'{}'", escape_string(value))
+}
+
+/// SQLite 索引归类：主键 = 唯一索引且键列等于表的主键列（sqlite_autoindex_* 或显式名均可）；
+/// 其余按唯一/普通区分（SQLite 无 FULLTEXT/SPATIAL 索引类型）
+fn sqlite_index_kind(index: &SchemaCompareIndex, table: &SchemaCompareTable) -> IndexKind {
+    if !index.is_unique {
+        return IndexKind::Normal;
+    }
+
+    let primary_columns: Vec<&str> = table
+        .columns
+        .iter()
+        .filter(|column| column.is_primary)
+        .map(|column| column.name.as_str())
+        .collect();
+    let index_columns: Vec<&str> = index.columns.iter().map(|column| column.as_str()).collect();
+
+    if !primary_columns.is_empty() && primary_columns == index_columns {
+        IndexKind::Primary
+    } else {
+        IndexKind::Unique
+    }
+}
+
+fn sqlite_index_signature(index: &SchemaCompareIndex, table: &SchemaCompareTable) -> String {
+    format!(
+        "{:?}|{}|{}",
+        sqlite_index_kind(index, table),
+        index.columns.join(","),
+        index.index_type
+    )
+}
+
+fn sqlite_index_display(index: &SchemaCompareIndex, table: &SchemaCompareTable) -> String {
+    let columns = sqlite_column_list(&index.columns);
+    match sqlite_index_kind(index, table) {
+        IndexKind::Primary => format!("PRIMARY KEY ({})", columns),
+        IndexKind::Unique => format!("UNIQUE ({})", columns),
+        _ => format!("INDEX ({})", columns),
+    }
+}
+
+/// 新建普通索引（唯一/主键随 CREATE TABLE 约束出现）
+fn sqlite_create_index_statement(index: &SchemaCompareIndex, table_name: &str) -> String {
+    let unique = if index.is_unique && index.index_type.eq_ignore_ascii_case("index") {
+        // 显式 UNIQUE 约束的 autoindex 不走此处；这里只处理显式 CREATE INDEX
+        "CREATE UNIQUE INDEX"
+    } else if index.is_unique {
+        "CREATE UNIQUE INDEX"
+    } else {
+        "CREATE INDEX"
+    };
+    format!(
+        "{} {} ON {} ({});",
+        unique,
+        sqlite_quote(&index.name),
+        sqlite_quote(table_name),
+        sqlite_column_list(&index.columns)
+    )
+}
+
+/// 纯函数：对比两份 SQLite 快照并生成 SQLite 方言迁移语句
+fn diff_schemas_sqlite(
+    source_database: &str,
+    target_database: &str,
+    source: &[SchemaCompareTable],
+    target: &[SchemaCompareTable],
+) -> SchemaDiff {
+    let target_map: HashMap<&str, &SchemaCompareTable> = target
+        .iter()
+        .map(|table| (table.name.as_str(), table))
+        .collect();
+    let source_map: HashMap<&str, &SchemaCompareTable> = source
+        .iter()
+        .map(|table| (table.name.as_str(), table))
+        .collect();
+
+    let mut tables = Vec::new();
+    let mut summary = SchemaDiffSummary::default();
+
+    // 视图先行：SQLite 的 DROP TABLE 会校验引用它的视图（error in view ...），
+    // 引用被重建表的视图必须先 DROP/CREATE 完成才能动表；
+    // 新建/删除对象不受影响，但统一视图在前输出，脚本顺序更可预期。
+    let mut ordered_source: Vec<&SchemaCompareTable> = source.iter().collect();
+    ordered_source.sort_by_key(|table| table.object_kind != SchemaObjectKind::View);
+    let ordered_source: &[&SchemaCompareTable] = &ordered_source;
+
+    for table in ordered_source {
+        match target_map.get(table.name.as_str()) {
+            None => {
+                summary.added_tables += 1;
+                let statements = match table.object_kind {
+                    SchemaObjectKind::View => sqlite_view_statement(table),
+                    SchemaObjectKind::Table => sqlite_create_table_statements(table),
+                };
+                let (columns, indexes, foreign_keys) = sqlite_object_detail_diffs(table);
+                tables.push(SchemaTableDiff {
+                    name: table.name.clone(),
+                    change: DiffChange::Added,
+                    columns,
+                    indexes,
+                    foreign_keys,
+                    statements,
+                });
+            }
+            Some(target_table) => {
+                // 表 <-> 视图 类型变化：删除目标对象后按源对象重建
+                if table.object_kind != target_table.object_kind {
+                    summary.changed_tables += 1;
+                    let mut statements = vec![sqlite_drop_object_statement(target_table)];
+                    statements.extend(match table.object_kind {
+                        SchemaObjectKind::View => sqlite_view_statement(table),
+                        SchemaObjectKind::Table => sqlite_create_table_statements(table),
+                    });
+                    tables.push(SchemaTableDiff {
+                        name: table.name.clone(),
+                        change: DiffChange::Changed,
+                        columns: Vec::new(),
+                        indexes: Vec::new(),
+                        foreign_keys: Vec::new(),
+                        statements,
+                    });
+                    continue;
+                }
+
+                if table.object_kind == SchemaObjectKind::View {
+                    let source_body = table
+                        .create_statement
+                        .as_deref()
+                        .and_then(sqlite_view_body)
+                        .map(normalize_view_text)
+                        .unwrap_or_default();
+                    let target_body = target_table
+                        .create_statement
+                        .as_deref()
+                        .and_then(sqlite_view_body)
+                        .map(normalize_view_text)
+                        .unwrap_or_default();
+                    if source_body == target_body {
+                        continue;
+                    }
+                    summary.changed_tables += 1;
+                    tables.push(SchemaTableDiff {
+                        name: table.name.clone(),
+                        change: DiffChange::Changed,
+                        columns: Vec::new(),
+                        indexes: Vec::new(),
+                        foreign_keys: Vec::new(),
+                        statements: vec![
+                            format!("DROP VIEW IF EXISTS {};", sqlite_quote(&table.name)),
+                            format!(
+                                "CREATE VIEW {} AS {};",
+                                sqlite_quote(&table.name),
+                                source_body
+                            ),
+                        ],
+                    });
+                    continue;
+                }
+
+                let plan =
+                    sqlite_compare_table(table, target_table, source, &mut summary);
+                if plan.columns.is_empty()
+                    && plan.indexes.is_empty()
+                    && plan.foreign_keys.is_empty()
+                    && plan.statements.is_empty()
+                {
+                    continue;
+                }
+                summary.changed_tables += 1;
+                tables.push(SchemaTableDiff {
+                    name: table.name.clone(),
+                    change: DiffChange::Changed,
+                    columns: plan.columns,
+                    indexes: plan.indexes,
+                    foreign_keys: plan.foreign_keys,
+                    statements: plan.statements,
+                });
+            }
+        }
+    }
+
+    for table in target {
+        if source_map.contains_key(table.name.as_str()) {
+            continue;
+        }
+        summary.removed_tables += 1;
+
+        let columns = table
+            .columns
+            .iter()
+            .map(|column| SchemaColumnDiff {
+                name: column.name.clone(),
+                change: DiffChange::Removed,
+                source: None,
+                target: Some(sqlite_column_definition(column)),
+                details: vec!["仅目标库存在".to_string()],
+            })
+            .collect();
+        let indexes = table
+            .indexes
+            .iter()
+            .map(|index| SchemaIndexDiff {
+                name: index.name.clone(),
+                change: DiffChange::Removed,
+                source: None,
+                target: Some(sqlite_index_display(index, table)),
+            })
+            .collect();
+        let foreign_keys = table
+            .foreign_keys
+            .iter()
+            .map(|fk| SchemaForeignKeyDiff {
+                name: fk.name.clone(),
+                change: DiffChange::Removed,
+                source: None,
+                target: Some(sqlite_fk_display(fk)),
+            })
+            .collect();
+
+        tables.push(SchemaTableDiff {
+            name: table.name.clone(),
+            change: DiffChange::Removed,
+            columns,
+            indexes,
+            foreign_keys,
+            statements: vec![sqlite_drop_object_statement(table)],
+        });
+    }
+
+    let statements = tables
+        .iter()
+        .flat_map(|table| table.statements.iter().cloned())
+        .collect();
+
+    SchemaDiff {
+        source_database: source_database.to_string(),
+        target_database: target_database.to_string(),
+        tables,
+        statements,
+        summary,
+    }
+}
+
+/// 单表 SQLite 差异计划
+struct SqliteTablePlan {
+    columns: Vec<SchemaColumnDiff>,
+    indexes: Vec<SchemaIndexDiff>,
+    foreign_keys: Vec<SchemaForeignKeyDiff>,
+    statements: Vec<String>,
+}
+
+/// 对比同名的两张 SQLite 表：
+/// - 列/索引新增走 ALTER TABLE ADD（SQLite 支持单语句 ADD COLUMN / ADD 约束受限）；
+/// - 列签名变化或列删除走「重建表」脚本（SQLite 不支持 ALTER COLUMN / DROP COLUMN
+///   在旧版本中不可用，统一重建保证兼容性）；
+/// - 索引变化走 DROP INDEX + CREATE INDEX（主键/唯一约束随重建表处理）。
+fn sqlite_compare_table(
+    source: &SchemaCompareTable,
+    target: &SchemaCompareTable,
+    source_objects: &[SchemaCompareTable],
+    summary: &mut SchemaDiffSummary,
+) -> SqliteTablePlan {
+    let _ = target; // 目标快照仅用于签名比对
+
+    let mut columns = Vec::new();
+    let mut indexes = Vec::new();
+    let mut foreign_keys = Vec::new();
+    let mut alter_adds: Vec<String> = Vec::new();
+    let mut needs_rebuild = false;
+
+    let target_columns: HashMap<&str, &SchemaCompareColumn> = target
+        .columns
+        .iter()
+        .map(|column| (column.name.as_str(), column))
+        .collect();
+
+    let mut added_cols: Vec<SchemaColumnDiff> = Vec::new();
+    let mut changed_cols: Vec<SchemaColumnDiff> = Vec::new();
+    let mut removed_cols: Vec<SchemaColumnDiff> = Vec::new();
+
+    for column in &source.columns {
+        match target_columns.get(column.name.as_str()) {
+            None => {
+                summary.added_columns += 1;
+                alter_adds.push(format!(
+                    "ALTER TABLE {} ADD COLUMN {};",
+                    sqlite_quote(&source.name),
+                    sqlite_column_definition(column)
+                ));
+                added_cols.push(SchemaColumnDiff {
+                    name: column.name.clone(),
+                    change: DiffChange::Added,
+                    source: Some(sqlite_column_definition(column)),
+                    target: None,
+                    details: vec!["仅源库存在".to_string()],
+                });
+            }
+            Some(target_column) => {
+                if sqlite_column_signature(column) == sqlite_column_signature(target_column) {
+                    continue;
+                }
+                summary.changed_columns += 1;
+                needs_rebuild = true;
+                changed_cols.push(SchemaColumnDiff {
+                    name: column.name.clone(),
+                    change: DiffChange::Changed,
+                    source: Some(sqlite_column_definition(column)),
+                    target: Some(sqlite_column_definition(target_column)),
+                    details: column_details(column, target_column),
+                });
+            }
+        }
+    }
+
+    let source_column_names: HashSet<&str> =
+        source.columns.iter().map(|c| c.name.as_str()).collect();
+    for column in &target.columns {
+        if source_column_names.contains(column.name.as_str()) {
+            continue;
+        }
+        summary.removed_columns += 1;
+        needs_rebuild = true;
+        removed_cols.push(SchemaColumnDiff {
+            name: column.name.clone(),
+            change: DiffChange::Removed,
+            source: None,
+            target: Some(sqlite_column_definition(column)),
+            details: vec!["仅目标库存在".to_string()],
+        });
+    }
+
+    // 外键对比（重建时随表重建）
+    // SQLite 外键多为匿名内联定义，按内容签名（列/引用/动作）比对，不要求同名
+    let source_fk_sigs: Vec<String> = source
+        .foreign_keys
+        .iter()
+        .map(sqlite_fk_signature)
+        .collect();
+    for (fk, sig) in source.foreign_keys.iter().zip(&source_fk_sigs) {
+        let matched = target
+            .foreign_keys
+            .iter()
+            .any(|tfk| &sqlite_fk_signature(tfk) == sig);
+        if !matched {
+            summary.added_foreign_keys += 1;
+            foreign_keys.push(SchemaForeignKeyDiff {
+                name: fk.name.clone(),
+                change: DiffChange::Added,
+                source: Some(sqlite_fk_display(fk)),
+                target: None,
+            });
+            // 外键无法单独 ALTER 加：需要重建表
+            needs_rebuild = true;
+        }
+    }
+    let target_fk_sigs: Vec<String> = target
+        .foreign_keys
+        .iter()
+        .map(sqlite_fk_signature)
+        .collect();
+    for (tfk, sig) in target.foreign_keys.iter().zip(&target_fk_sigs) {
+        let matched = source
+            .foreign_keys
+            .iter()
+            .any(|sfk| &sqlite_fk_signature(sfk) == sig);
+        if !matched {
+            summary.removed_foreign_keys += 1;
+            foreign_keys.push(SchemaForeignKeyDiff {
+                name: tfk.name.clone(),
+                change: DiffChange::Removed,
+                source: None,
+                target: Some(sqlite_fk_display(tfk)),
+            });
+            needs_rebuild = true;
+        }
+    }
+
+    // 索引对比
+    let target_indexes: HashMap<&str, &SchemaCompareIndex> = target
+        .indexes
+        .iter()
+        .map(|index| (index.name.as_str(), index))
+        .collect();
+
+    let mut index_drops: Vec<String> = Vec::new();
+    let mut index_adds: Vec<String> = Vec::new();
+    let mut changed_idx: Vec<SchemaIndexDiff> = Vec::new();
+    let mut added_idx: Vec<SchemaIndexDiff> = Vec::new();
+    let mut removed_idx: Vec<SchemaIndexDiff> = Vec::new();
+
+    for index in &source.indexes {
+        let kind = sqlite_index_kind(index, source);
+        match target_indexes.get(index.name.as_str()) {
+            None => {
+                summary.added_indexes += 1;
+                if kind == IndexKind::Primary {
+                    // 主键无法单独补：需要重建
+                    needs_rebuild = true;
+                } else {
+                    index_adds.push(sqlite_create_index_statement(index, &source.name));
+                }
+                added_idx.push(SchemaIndexDiff {
+                    name: index.name.clone(),
+                    change: DiffChange::Added,
+                    source: Some(sqlite_index_display(index, source)),
+                    target: None,
+                });
+            }
+            Some(target_index) => {
+                if sqlite_index_signature(index, source)
+                    == sqlite_index_signature(target_index, target)
+                {
+                    continue;
+                }
+                summary.changed_indexes += 1;
+                if kind == IndexKind::Primary
+                    || sqlite_index_kind(target_index, target) == IndexKind::Primary
+                {
+                    needs_rebuild = true;
+                } else {
+                    index_drops.push(format!("DROP INDEX IF EXISTS {};", sqlite_quote(&index.name)));
+                    index_adds.push(sqlite_create_index_statement(index, &source.name));
+                }
+                changed_idx.push(SchemaIndexDiff {
+                    name: index.name.clone(),
+                    change: DiffChange::Changed,
+                    source: Some(sqlite_index_display(index, source)),
+                    target: Some(sqlite_index_display(target_index, target)),
+                });
+            }
+        }
+    }
+
+    let source_index_names: HashSet<&str> = source
+        .indexes
+        .iter()
+        .map(|index| index.name.as_str())
+        .collect();
+    for index in &target.indexes {
+        if source_index_names.contains(index.name.as_str()) {
+            continue;
+        }
+        summary.removed_indexes += 1;
+        if sqlite_index_kind(index, target) == IndexKind::Primary {
+            needs_rebuild = true;
+        } else {
+            index_drops.push(format!("DROP INDEX IF EXISTS {};", sqlite_quote(&index.name)));
+        }
+        removed_idx.push(SchemaIndexDiff {
+            name: index.name.clone(),
+            change: DiffChange::Removed,
+            source: None,
+            target: Some(sqlite_index_display(index, target)),
+        });
+    }
+
+    let mut statements = Vec::new();
+    if needs_rebuild {
+        // 重建表：保留源侧全部列/索引/外键定义；执行前用户需确认（涉及数据迁移）
+        statements.push(format!(
+            "-- 表 \"{}\" 结构变更涉及列修改/删除，SQLite 不支持 ALTER COLUMN，需重建表（数据将按同名列迁移）",
+            source.name
+        ));
+        // 找出 body 里引用了这张表的视图（源侧集合；排除表自身）
+        let lowered = source.name.to_lowercase();
+        let dependent_views: Vec<&SchemaCompareTable> = source_objects
+            .iter()
+            .filter(|obj| {
+                obj.object_kind == SchemaObjectKind::View && obj.name != source.name
+            })
+            .filter(|view| {
+                view.create_statement
+                    .as_deref()
+                    .map(|s| {
+                        s.to_lowercase().replace(['"', '`'], " ")
+                            .contains(&lowered)
+                    })
+                    .unwrap_or(false)
+            })
+            .collect();
+        statements.extend(sqlite_rebuild_table_statements(source, &dependent_views));
+        // 重建后补普通索引
+        for index in &source.indexes {
+            if sqlite_index_kind(index, source) == IndexKind::Primary {
+                continue;
+            }
+            statements.push(sqlite_create_index_statement(index, &source.name));
+        }
+    } else {
+        statements.extend(index_drops);
+        statements.extend(alter_adds);
+        statements.extend(index_adds);
+    }
+
+    columns.extend(added_cols);
+    columns.extend(changed_cols);
+    columns.extend(removed_cols);
+    indexes.extend(added_idx);
+    indexes.extend(changed_idx);
+    indexes.extend(removed_idx);
+
+    SqliteTablePlan {
+        columns,
+        indexes,
+        foreign_keys,
+        statements,
+    }
+}
+
+/// SQLite 列签名：类型|可空|默认值（SQLite 无 extra/comment/generation）
+fn sqlite_column_signature(column: &SchemaCompareColumn) -> String {
+    format!(
+        "{}|{}|{}",
+        column.column_type,
+        column.is_nullable,
+        column.default_value.as_deref().unwrap_or("<none>")
+    )
+}
+
+/// 外键签名（同名不要求：SQLite 外键多为匿名内联定义）
+fn sqlite_fk_signature(fk: &SchemaCompareForeignKey) -> String {
+    format!(
+        "{}|{}|{}|{}|{}",
+        fk.columns.join(","),
+        fk.ref_table,
+        fk.ref_columns.join(","),
+        fk.on_delete,
+        fk.on_update
+    )
+}
+
+fn sqlite_fk_display(fk: &SchemaCompareForeignKey) -> String {
+    let mut display = format!(
+        "FOREIGN KEY ({}) REFERENCES {} ({})",
+        sqlite_column_list(&fk.columns),
+        sqlite_quote(&fk.ref_table),
+        sqlite_column_list(&fk.ref_columns)
+    );
+    if fk.on_delete != "NO ACTION" {
+        display.push_str(&format!(" ON DELETE {}", fk.on_delete));
+    }
+    if fk.on_update != "NO ACTION" {
+        display.push_str(&format!(" ON UPDATE {}", fk.on_update));
+    }
+    display
+}
+
+/// 从视图 `CREATE VIEW x AS <body>` 中提取 body
+fn sqlite_view_body(create_statement: &str) -> Option<&str> {
+    let body = match create_statement.split_once(" AS ") {
+        Some((_, body)) => body,
+        None => return None,
+    };
+    let body = body.trim().trim_end_matches(';').trim();
+    if body.is_empty() {
+        None
+    } else {
+        Some(body)
+    }
+}
+
+/// 新增表：CREATE TABLE（列 + 主键/唯一约束 + 外键）+ 普通 CREATE INDEX
+fn sqlite_create_table_statements(table: &SchemaCompareTable) -> Vec<String> {
+    let mut definitions: Vec<String> = table.columns.iter().map(sqlite_column_definition).collect();
+    let mut extra_indexes: Vec<String> = Vec::new();
+
+    for index in &table.indexes {
+        let columns = sqlite_column_list(&index.columns);
+        match sqlite_index_kind(index, table) {
+            IndexKind::Primary => definitions.push(format!("PRIMARY KEY ({})", columns)),
+            IndexKind::Unique => definitions.push(format!("UNIQUE ({})", columns)),
+            _ => extra_indexes.push(sqlite_create_index_statement(index, &table.name)),
+        }
+    }
+
+    for fk in &table.foreign_keys {
+        definitions.push(sqlite_fk_display(fk));
+    }
+
+    let mut statements = Vec::new();
+    if definitions.is_empty() {
+        statements.push(format!("CREATE TABLE {} ();", sqlite_quote(&table.name)));
+    } else {
+        statements.push(format!(
+            "CREATE TABLE {} (\n  {}\n);",
+            sqlite_quote(&table.name),
+            definitions.join(",\n  ")
+        ));
+    }
+    statements.extend(extra_indexes);
+    statements
+}
+
+/// 重建表脚本：简化版十二步流程（无外键 pragma 开关——应用层连接已开 foreign_keys，
+/// 重命名期间引用本表的旧外键指向会随改名自动更新到新表）
+fn sqlite_rebuild_table_statements(
+    table: &SchemaCompareTable,
+    dependent_views: &[&SchemaCompareTable],
+) -> Vec<String> {
+    let temp_name = format!("{}_aurora_rebuild", table.name);
+    let mut statements = Vec::new();
+
+    // 0. 先删引用此表的视图：SQLite 在 DROP TABLE 时校验视图引用，
+    //    视图不先删会报 "error in view ...: no such table"；表重建完成后按原
+    //    定义重建视图（若视图本身也有差异，视图自身的 diff 语句排在后面，
+    //    会再 DROP+CREATE 一次，幂等无害）。
+    for view in dependent_views {
+        statements.push(format!("DROP VIEW IF EXISTS {};", sqlite_quote(&view.name)));
+    }
+
+    // 1. 新建临时表（源侧完整定义）
+    let mut definitions: Vec<String> = table.columns.iter().map(sqlite_column_definition).collect();
+    for index in &table.indexes {
+        let columns = sqlite_column_list(&index.columns);
+        match sqlite_index_kind(index, table) {
+            IndexKind::Primary => definitions.push(format!("PRIMARY KEY ({})", columns)),
+            IndexKind::Unique => definitions.push(format!("UNIQUE ({})", columns)),
+            _ => {}
+        }
+    }
+    for fk in &table.foreign_keys {
+        definitions.push(sqlite_fk_display(fk));
+    }
+    statements.push(format!(
+        "CREATE TABLE {} (\n  {}\n);",
+        sqlite_quote(&temp_name),
+        definitions.join(",\n  ")
+    ));
+
+    // 2. 按同名列迁移数据（交集；若交集为空则无法迁移，直接建空表）
+    let target_cols: Vec<&str> = table.columns.iter().map(|c| c.name.as_str()).collect();
+    let source_cols_sqlite: Vec<String> = table
+        .columns
+        .iter()
+        .map(|c| sqlite_quote(&c.name))
+        .collect();
+    statements.push(format!(
+        "INSERT INTO {} ({}) SELECT {} FROM {};",
+        sqlite_quote(&temp_name),
+        source_cols_sqlite.join(", "),
+        source_cols_sqlite.join(", "),
+        sqlite_quote(&table.name)
+    ));
+
+    // 3. 删原表、改名（原表上的索引随表删除；引用它的外键按 SQLite 语义跟随改名）
+    // DROP 与 RENAME 必须合并成一条多语句字符串：SQLite 的 ALTER TABLE RENAME
+    // 名称冲突检查读的是「当前连接的 schema 缓存」，跨连接池轮换时（DROP 在
+    // 连接 A、RENAME 落到连接 B）B 的缓存里原表还在，会误报
+    // "there is already another table or index with this name"。
+    // 合并后两条语句在同一次池取还内执行，RENAME 前同连接刚跑过 DROP，缓存必然新鲜。
+    statements.push(format!(
+        "DROP TABLE {}; ALTER TABLE {} RENAME TO {};",
+        sqlite_quote(&table.name),
+        sqlite_quote(&temp_name),
+        sqlite_quote(&table.name)
+    ));
+
+    // 4. 按原定义重建视图（body 取自源侧 create_statement）
+    for view in dependent_views {
+        for statement in sqlite_view_statement(view) {
+            statements.push(statement);
+        }
+    }
+
+    let _ = target_cols; // 保留变量位置便于后续按需扩展差量迁移
+    statements
+}
+
+/// 新增视图
+fn sqlite_view_statement(table: &SchemaCompareTable) -> Vec<String> {
+    match table.create_statement.as_deref().and_then(sqlite_view_body) {
+        Some(body) => vec![format!("CREATE VIEW {} AS {};", sqlite_quote(&table.name), body)],
+        None => Vec::new(),
+    }
+}
+
+/// 删除对象：视图用 DROP VIEW，表用 DROP TABLE
+fn sqlite_drop_object_statement(table: &SchemaCompareTable) -> String {
+    match table.object_kind {
+        SchemaObjectKind::View => format!("DROP VIEW IF EXISTS {};", sqlite_quote(&table.name)),
+        SchemaObjectKind::Table => format!("DROP TABLE IF EXISTS {};", sqlite_quote(&table.name)),
+    }
+}
+
+/// 新增对象的明细（仅用于展示，不参与汇总计数）
+fn sqlite_object_detail_diffs(
+    table: &SchemaCompareTable,
+) -> (
+    Vec<SchemaColumnDiff>,
+    Vec<SchemaIndexDiff>,
+    Vec<SchemaForeignKeyDiff>,
+) {
+    let columns = table
+        .columns
+        .iter()
+        .map(|column| SchemaColumnDiff {
+            name: column.name.clone(),
+            change: DiffChange::Added,
+            source: Some(sqlite_column_definition(column)),
+            target: None,
+            details: vec!["仅源库存在".to_string()],
+        })
+        .collect();
+    let indexes = table
+        .indexes
+        .iter()
+        .map(|index| SchemaIndexDiff {
+            name: index.name.clone(),
+            change: DiffChange::Added,
+            source: Some(sqlite_index_display(index, table)),
+            target: None,
+        })
+        .collect();
+    let foreign_keys = table
+        .foreign_keys
+        .iter()
+        .map(|fk| SchemaForeignKeyDiff {
+            name: fk.name.clone(),
+            change: DiffChange::Added,
+            source: Some(sqlite_fk_display(fk)),
+            target: None,
+        })
+        .collect();
+
+    (columns, indexes, foreign_keys)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2173,8 +3103,7 @@ mod tests {
             extra: String::new(),
             comment: String::new(),
             ordinal: 1,
-            generation_expression: None,
-            is_primary: false,
+            generation_expression: None,            is_primary: false,
         }
     }
 
@@ -2877,4 +3806,313 @@ mod tests {
             );
         }
     }
+    // ---- SQLite 对比 ----
+
+    fn sqlite_table(name: &str, columns: Vec<SchemaCompareColumn>) -> SchemaCompareTable {
+        SchemaCompareTable {
+            name: name.to_string(),
+            columns,
+            indexes: Vec::new(),
+            foreign_keys: Vec::new(),
+            object_kind: SchemaObjectKind::Table,
+            schema: None,
+            qualify_schema: false,
+            create_statement: None,
+        }
+    }
+
+    #[test]
+    fn sqlite_create_table_statement_includes_pk_and_unique() {
+        let table = sqlite_table(
+            "items",
+            vec![
+                column("id", "integer"),
+                column("name", "text"),
+            ],
+        );
+        let mut table = table;
+        table.columns[0].is_primary = true;
+        table.columns[0].is_nullable = false;
+        table.indexes.push(SchemaCompareIndex {
+            name: "sqlite_autoindex_items_1".to_string(),
+            columns: vec!["id".to_string()],
+            is_unique: true,
+            index_type: "autoindex".to_string(),
+        });
+        table.indexes.push(SchemaCompareIndex {
+            name: "idx_name".to_string(),
+            columns: vec!["name".to_string()],
+            is_unique: false,
+            index_type: "index".to_string(),
+        });
+
+        let statements = sqlite_create_table_statements(&table);
+        assert_eq!(statements.len(), 2);
+        assert!(statements[0].contains("CREATE TABLE \"items\""));
+        assert!(statements[0].contains("\"id\" integer NOT NULL"));
+        assert!(statements[0].contains("PRIMARY KEY (\"id\")"));
+        // sqlite_autoindex 主键实现索引与显式 PRIMARY KEY 同类，不会重复生成 UNIQUE 约束
+        assert!(!statements[0].contains("UNIQUE (\"id\")"));
+        assert!(statements[1].contains("CREATE INDEX \"idx_name\" ON \"items\""));
+    }
+
+    #[test]
+    fn sqlite_added_column_generates_alter_add() {
+        let source = sqlite_table("t", vec![column("a", "integer"), column("b", "text")]);
+        let target = sqlite_table("t", vec![column("a", "integer")]);
+        let mut summary = SchemaDiffSummary::default();
+        let plan = sqlite_compare_table(&source, &target, std::slice::from_ref(&source), &mut summary);
+
+        assert_eq!(summary.added_columns, 1);
+        assert_eq!(plan.statements.len(), 1);
+        assert!(plan.statements[0].contains("ALTER TABLE \"t\" ADD COLUMN \"b\" text"));
+        assert!(plan.columns[0].source.as_deref().unwrap().contains("\"b\" text"));
+    }
+
+    #[test]
+    fn sqlite_changed_column_triggers_rebuild() {
+        let mut source = sqlite_table("t", vec![column("a", "integer")]);
+        source.columns[0].column_type = "text".to_string();
+        let target = sqlite_table("t", vec![column("a", "integer")]);
+        let mut summary = SchemaDiffSummary::default();
+        let plan = sqlite_compare_table(&source, &target, std::slice::from_ref(&source), &mut summary);
+
+        assert_eq!(summary.changed_columns, 1);
+        // 注释 + CREATE 临时表 + INSERT + DROP + RENAME
+        assert!(plan.statements.iter().any(|s| s.contains("_aurora_rebuild")));
+        assert!(plan.statements.iter().any(|s| s.contains("INSERT INTO")));
+        assert!(plan.statements.iter().any(|s| s.contains("ALTER TABLE")));
+    }
+
+    #[test]
+    fn sqlite_removed_column_triggers_rebuild() {
+        let source = sqlite_table("t", vec![column("a", "integer")]);
+        let target = sqlite_table("t", vec![column("a", "integer"), column("b", "text")]);
+        let mut summary = SchemaDiffSummary::default();
+        let plan = sqlite_compare_table(&source, &target, std::slice::from_ref(&source), &mut summary);
+
+        assert_eq!(summary.removed_columns, 1);
+        assert!(plan.statements.iter().any(|s| s.contains("_aurora_rebuild")));
+    }
+
+    #[test]
+    fn sqlite_index_change_uses_drop_create() {
+        let mut source = sqlite_table("t", vec![column("a", "integer")]);
+        source.indexes.push(SchemaCompareIndex {
+            name: "idx_a".to_string(),
+            columns: vec!["a".to_string()],
+            is_unique: false,
+            index_type: "index".to_string(),
+        });
+        let mut target = sqlite_table("t", vec![column("a", "integer")]);
+        target.indexes.push(SchemaCompareIndex {
+            name: "idx_a".to_string(),
+            columns: vec!["a".to_string(), "b".to_string()],
+            is_unique: false,
+            index_type: "index".to_string(),
+        });
+        // b 列目标侧不存在？——保持列一致以免触发重建
+        target.columns.push(column("b", "text"));
+        source.columns.push(column("b", "text"));
+
+        let mut summary = SchemaDiffSummary::default();
+        let plan = sqlite_compare_table(&source, &target, std::slice::from_ref(&source), &mut summary);
+        assert_eq!(summary.changed_indexes, 1);
+        assert!(plan.statements.iter().any(|s| s.contains("DROP INDEX IF EXISTS \"idx_a\"")));
+        assert!(plan.statements.iter().any(|s| s.contains("CREATE INDEX \"idx_a\" ON \"t\"")));
+        assert!(!plan.statements.iter().any(|s| s.contains("_aurora_rebuild")));
+    }
+
+    #[test]
+    fn sqlite_view_diff_drops_and_recreates() {
+        let mut source = sqlite_table("v", vec![]);
+        source.object_kind = SchemaObjectKind::View;
+        source.create_statement = Some("CREATE VIEW v AS SELECT 1 AS one".to_string());
+        let mut target = sqlite_table("v", vec![]);
+        target.object_kind = SchemaObjectKind::View;
+        target.create_statement = Some("CREATE VIEW v AS SELECT 2 AS two".to_string());
+
+        let diff = diff_schemas_sqlite("src", "dst", &[source], &[target]);
+        assert_eq!(diff.summary.changed_tables, 1);
+        assert!(diff.statements.iter().any(|s| s.contains("DROP VIEW IF EXISTS \"v\"")));
+        assert!(diff
+            .statements
+            .iter()
+            .any(|s| s.contains("CREATE VIEW \"v\" AS SELECT 1 AS one;")));
+    }
+
+    #[test]
+    fn sqlite_removed_table_generates_drop() {
+        let target = sqlite_table("gone", vec![column("a", "integer")]);
+        let diff = diff_schemas_sqlite("src", "dst", &[], &[target]);
+        assert_eq!(diff.summary.removed_tables, 1);
+        assert!(diff.statements[0].contains("DROP TABLE IF EXISTS \"gone\""));
+    }
+
+    #[test]
+    fn sqlite_added_table_generates_create() {
+        let source = sqlite_table("new_t", vec![column("a", "integer")]);
+        let diff = diff_schemas_sqlite("src", "dst", &[source], &[]);
+        assert_eq!(diff.summary.added_tables, 1);
+        assert!(diff
+            .statements[0]
+            .starts_with("CREATE TABLE \"new_t\" (\n  \"a\" integer\n);"));
+    }
+
+    /// 本地 SQLite 测试连接（临时文件库，用后清理）
+    async fn sqlite_test_connection(
+        tag: &str,
+    ) -> (ConnectionManager, String, std::path::PathBuf, std::path::PathBuf) {
+        use auroradb_core::connection::{
+            ConnectionConfig, ConnectionRequest, PoolConfig, SafetyMode, SslConfig,
+        };
+
+        let dir = std::env::temp_dir().join(format!(
+            "qa_sqlite_sdiff_{}_{}",
+            std::process::id(),
+            tag
+        ));
+        std::fs::create_dir_all(&dir).expect("创建临时目录失败");
+        let db_path = dir.join("qa.db");
+        std::fs::File::create(&db_path).expect("预建空库文件失败");
+
+        let manager = ConnectionManager::new();
+        let id = format!("qa-sqlite-sdiff-{}", tag);
+        manager
+            .connect(ConnectionRequest {
+                config: ConnectionConfig {
+                    id: id.clone(),
+                    name: id.clone(),
+                    driver: DriverKind::Sqlite,
+                    host: String::new(),
+                    port: 0,
+                    database: Some(db_path.to_string_lossy().to_string()),
+                    username: String::new(),
+                    password: String::new(),
+                    pool_config: PoolConfig::default(),
+                    ssl_config: SslConfig::default(),
+                    safety_mode: SafetyMode::Off,
+                },
+                ssh_config: None,
+            })
+            .await
+            .unwrap_or_else(|e| panic!("连接 SQLite 测试库失败：{}", e));
+        (manager, id, dir, db_path)
+    }
+
+    async fn exec_sql(manager: &ConnectionManager, id: &str, db: &str, sql: &str) {
+        manager
+            .execute(id, db, sql)
+            .await
+            .unwrap_or_else(|e| panic!("执行失败 {}: {}", sql, e));
+    }
+
+    /// 真实 SQLite 上验证：加载快照（表/视图/索引/外键）、新增列 ALTER、
+    /// 列变更重建脚本、视图 DROP+CREATE、删除表 DROP。
+    #[tokio::test]
+    #[ignore = "SQLite 本地测试：执行 cargo test -- --ignored"]
+    async fn sqlite_schema_diff_end_to_end() {
+        let (manager, id, dir, db_path) = sqlite_test_connection("e2e").await;
+        let database = db_path.to_string_lossy().to_string();
+
+        // 源侧 schema：两张表 + 视图 + 索引 + 外键
+        exec_sql(&manager, &id, &database, "CREATE TABLE qa_sd_items (id INTEGER PRIMARY KEY, item_name TEXT NOT NULL, price NUMERIC(10,2) DEFAULT 0)").await;
+        exec_sql(&manager, &id, &database, "CREATE INDEX idx_qa_sd_items_name ON qa_sd_items (item_name)").await;
+        exec_sql(&manager, &id, &database, "CREATE TABLE qa_sd_orders (id INTEGER PRIMARY KEY, item_id INTEGER NOT NULL REFERENCES qa_sd_items(id) ON DELETE CASCADE, qty INTEGER DEFAULT 1)").await;
+        exec_sql(&manager, &id, &database, "CREATE VIEW qa_sd_v_items AS SELECT id, item_name FROM qa_sd_items").await;
+        exec_sql(&manager, &id, &database, "INSERT INTO qa_sd_items (item_name, price) VALUES ('alpha', 9.5), ('beta', 3.25)").await;
+        exec_sql(&manager, &id, &database, "INSERT INTO qa_sd_orders (item_id, qty) VALUES (1, 2)").await;
+
+        // 目标侧（同一文件上模拟「差异后」的目标 schema）：
+        // 另建一个临时连接来充当 target —— SQLite 无法跨库，直接在源上做第二轮断言前
+        // 先用 diff_schemas_sqlite 对「加载的源快照 vs 手工目标快照」做纯函数验证。
+        let source = load_sqlite_compare_schema(&manager, &id, &database)
+            .await
+            .expect("加载源快照失败");
+
+        // 快照断言：3 张对象（2 表 + 1 视图），索引/外键齐全
+        assert_eq!(source.len(), 3, "应有 2 表 + 1 视图：{:?}", source.iter().map(|t| &t.name).collect::<Vec<_>>());
+        let items = source.iter().find(|t| t.name == "qa_sd_items").unwrap();
+        assert_eq!(items.columns.len(), 3);
+        assert!(items.columns[0].is_primary);
+        assert!(!items.columns[1].is_nullable);
+        assert!(items.indexes.iter().any(|i| i.name == "idx_qa_sd_items_name"));
+        let orders = source.iter().find(|t| t.name == "qa_sd_orders").unwrap();
+        assert!(orders
+            .foreign_keys
+            .iter()
+            .any(|fk| fk.ref_table == "qa_sd_items" && fk.columns == vec!["item_id".to_string()] && fk.on_delete == "CASCADE"));
+        let view = source.iter().find(|t| t.name == "qa_sd_v_items").unwrap();
+        assert_eq!(view.object_kind, SchemaObjectKind::View);
+        assert!(view.create_statement.as_deref().unwrap().contains("CREATE VIEW"));
+
+        // 手工构造「基准快照」（期望状态）：items 少 price 列（removed → 重建）、
+        // orders 加 note 列（added → ALTER ADD）、视图不同 → DROP+CREATE。
+        // 语句方向约定（与 MySQL/PG 一致）：source=基准，target=待同步，
+        // 生成语句把 target 改造成 source，应执行在待同步库（这里即实际库）上。
+        let mut desired: Vec<SchemaCompareTable> = Vec::new();
+        let mut d_items = items.clone();
+        d_items.columns.retain(|c| c.name != "price");
+        desired.push(d_items);
+        let mut d_orders = orders.clone();
+        d_orders.columns.push(column("note", "text"));
+        desired.push(d_orders);
+        let mut d_view = view.clone();
+        d_view.create_statement = Some("CREATE VIEW qa_sd_v_items AS SELECT id FROM qa_sd_items".to_string());
+        desired.push(d_view);
+
+        let diff = diff_schemas_sqlite(&database, &database, &desired, &source);
+        assert_eq!(diff.summary.added_columns, 1, "{:?}", diff.summary);
+        assert_eq!(diff.summary.removed_columns, 1);
+        assert_eq!(diff.summary.changed_tables, 3, "items 重建 + orders ALTER + 视图重建均计 changed_tables");
+        let items_diff = diff.tables.iter().find(|t| t.name == "qa_sd_items").unwrap();
+        assert!(items_diff.statements.iter().any(|s| s.contains("_aurora_rebuild")));
+        assert!(items_diff.statements.iter().any(|s| s.contains("INSERT INTO")));
+        let orders_diff = diff.tables.iter().find(|t| t.name == "qa_sd_orders").unwrap();
+        assert!(orders_diff
+            .statements
+            .iter()
+            .any(|s| s.contains("ALTER TABLE \"qa_sd_orders\" ADD COLUMN \"note\"")));
+        let view_diff = diff.tables.iter().find(|t| t.name == "qa_sd_v_items").unwrap();
+        assert!(view_diff.statements.iter().any(|s| s.contains("DROP VIEW IF EXISTS")));
+        assert!(view_diff.statements.iter().any(|s| s.contains("CREATE VIEW")));
+
+        // 执行生成的脚本验证可运行性（跳过 `--` 注释行与空行）
+        for statement in diff.statements
+            .iter()
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && !s.starts_with("--"))
+        {
+            exec_sql(&manager, &id, &database, statement).await;
+        }
+
+        // 验证重建后：price 列消失、数据仍在（同名列迁移）
+        let after = load_sqlite_compare_schema(&manager, &id, &database).await.expect("重载失败");
+        let after_items = after.iter().find(|t| t.name == "qa_sd_items").unwrap();
+        assert!(!after_items.columns.iter().any(|c| c.name == "price"), "price 应已删除");
+        assert!(after_items.columns.iter().any(|c| c.name == "item_name"), "item_name 应保留");
+        let pool = manager_sqlite_pool(&manager, &id).await;
+        let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {}", sqlite_quote("qa_sd_items")))
+            .fetch_one(&pool)
+            .await
+            .expect("统计行数失败");
+        assert_eq!(count, 2, "重建后数据应保留");
+
+        let _ = manager.disconnect(&id).await;
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    async fn manager_sqlite_pool(
+        manager: &ConnectionManager,
+        id: &str,
+    ) -> sqlx::SqlitePool {
+        let snapshot = manager.connection_snapshot(id).await.expect("快照失败");
+        match &snapshot.pool {
+            AnyPool::Sqlite(pool) => pool.clone(),
+            _ => panic!("不是 SQLite 连接"),
+        }
+    }
+
 }

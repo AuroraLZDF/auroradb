@@ -189,12 +189,13 @@ export const DRIVER_CAPABILITIES: Record<DriverKind, DriverCapabilities> = {
     requiresDatabase: true,
     tableQualification: 'database',
     proTools: {
-      schemaDiff: false,
+      // P5：结构对比/全局搜索/ER 图后端已支持 SQLite
+      schemaDiff: true,
       monitor: false,
       // 文件级备份（复制库文件）
       backup: true,
-      globalSearch: false,
-      erDiagram: false,
+      globalSearch: true,
+      erDiagram: true,
     },
     monitorDialect: 'mysql',
     backupDialect: 'sqlite',

@@ -12,6 +12,7 @@ use auroradb_core::connection::driver::AnyPool;
 use auroradb_core::connection::executor::is_searchable_type;
 use auroradb_core::connection::ConnectionManager;
 use serde::{Deserialize, Serialize};
+use sqlx::Row;
 use sqlx::Acquire;
 use sqlx::postgres::PgPool;
 use sqlx::MySqlPool;
@@ -177,9 +178,9 @@ pub async fn global_search(
                 .await;
         }
         AnyPool::MySql(mysql_pool) => mysql_pool,
-        // SQLite 为本地单文件库，全局搜索暂不支持
-        AnyPool::Sqlite(_) => {
-            return Err(anyhow!("SQLite 本地文件连接暂不支持全局搜索"));
+        // SQLite 走独立分支：单文件库，database 参数是文件路径
+        AnyPool::Sqlite(sqlite_pool) => {
+            return global_search_sqlite(&sqlite_pool, &request, mode, keyword, started).await;
         }
     };
 
@@ -706,6 +707,301 @@ async fn global_search_postgres(
     })
 }
 
+// ===================== SQLite 实现 =====================
+
+/// SQLite 全局搜索：单文件库没有「多库」概念，表/列来自 sqlite_master，
+/// 数据搜索用 CAST(col AS TEXT) LIKE 匹配（SQLite 无内置 REGEXP，
+/// regex 模式退化为大小写不敏感的 LIKE）。
+async fn global_search_sqlite(
+    pool: &sqlx::SqlitePool,
+    request: &GlobalSearchRequest,
+    mode: SearchMode,
+    keyword: &str,
+    started: Instant,
+) -> Result<GlobalSearchResult> {
+    let mut notes: Vec<String> = Vec::new();
+    if mode == SearchMode::Regex {
+        notes.push("SQLite 无内置正则支持，正则模式已按不区分大小写的包含匹配执行".to_string());
+    }
+
+    let mut truncated = false;
+    let (tables, table_truncated) = if request.search_tables.unwrap_or(true) {
+        sqlite_search_table_names(pool, mode, keyword).await?
+    } else {
+        (Vec::new(), false)
+    };
+    truncated |= table_truncated;
+
+    let (columns, column_truncated) = if request.search_columns.unwrap_or(true) {
+        sqlite_search_column_names(pool, mode, keyword).await?
+    } else {
+        (Vec::new(), false)
+    };
+    truncated |= column_truncated;
+
+    let mut scanned_tables = 0usize;
+    let data = if request.search_data.unwrap_or(false) {
+        let (matches, scanned, data_truncated, data_notes) =
+            sqlite_search_data_content(pool, mode, keyword, started).await?;
+        scanned_tables = scanned;
+        truncated |= data_truncated;
+        notes.extend(data_notes);
+        matches
+    } else {
+        Vec::new()
+    };
+
+    if truncated && notes.is_empty() {
+        notes.push(format!(
+            "结果已截断：表名/字段名最多返回 {} 条，数据搜索最多扫描 {} 张表",
+            MAX_NAME_MATCHES, MAX_DATA_TABLES
+        ));
+    }
+
+    Ok(GlobalSearchResult {
+        tables,
+        columns,
+        data,
+        scanned_tables,
+        truncated,
+        warning: if notes.is_empty() {
+            None
+        } else {
+            Some(notes.join("；"))
+        },
+        execution_time_ms: started.elapsed().as_millis() as u64,
+    })
+}
+
+/// SQLite 匹配片段：表/列名来自 sqlite_master，双引号包裹；值统一绑定参数。
+/// SQLite 的 LIKE 对 ASCII 字母默认不区分大小写，恰好覆盖两种模式的兜底语义。
+fn sqlite_match_expr(column: &str, mode: SearchMode) -> String {
+    let quoted = sqlite_quote_name(column);
+    match mode {
+        SearchMode::Like => format!("{} LIKE ? ESCAPE '\\'", quoted),
+        SearchMode::Regex => format!("{} LIKE ? ESCAPE '\\'", quoted),
+    }
+}
+
+/// SQLite 标识符双引号包裹（内部引号翻倍）
+fn sqlite_quote_name(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// SQLite 声明类型是否可搜索：BLOB 与无类型列排除
+fn sqlite_is_searchable_type(decl_type: &str) -> bool {
+    let t = decl_type.trim().to_ascii_lowercase();
+    !t.is_empty() && !t.contains("blob")
+}
+
+/// 搜索 SQLite 表名 / 视图名
+async fn sqlite_search_table_names(
+    pool: &sqlx::SqlitePool,
+    mode: SearchMode,
+    keyword: &str,
+) -> Result<(Vec<GlobalSearchTableMatch>, bool)> {
+    let sql = format!(
+        "SELECT name, type FROM sqlite_master \
+         WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' \
+           AND {} \
+         ORDER BY name LIMIT {}",
+        sqlite_match_expr("name", mode),
+        MAX_NAME_MATCHES + 1
+    );
+    let rows: Vec<(String, String)> = sqlx::query_as(&sql)
+        .bind(bind_value(mode, keyword))
+        .fetch_all(pool)
+        .await
+        .map_err(|e| anyhow!("搜索表名失败：{}", e))?;
+
+    let truncated = rows.len() > MAX_NAME_MATCHES;
+    let matches = rows
+        .into_iter()
+        .take(MAX_NAME_MATCHES)
+        .map(|(table, kind)| GlobalSearchTableMatch {
+            // 单文件库没有库名，database 列展示文件名（前端以此为分组标签）
+            database: String::new(),
+            table,
+            object_type: if kind == "view" { "view".to_string() } else { "table".to_string() },
+        })
+        .collect();
+    Ok((matches, truncated))
+}
+
+/// 搜索 SQLite 字段名：逐表 PRAGMA table_info 汇总
+async fn sqlite_search_column_names(
+    pool: &sqlx::SqlitePool,
+    mode: SearchMode,
+    keyword: &str,
+) -> Result<(Vec<GlobalSearchColumnMatch>, bool)> {
+    let table_sql = "SELECT name, type FROM sqlite_master \
+                     WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' \
+                     ORDER BY name"
+        .to_string();
+    let tables: Vec<(String, String)> = sqlx::query_as(&table_sql)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| anyhow!("搜索字段名失败：{}", e))?;
+
+    // 列名匹配走 Rust 侧 contains（sqlite_master 无跨表 LIKE 入口）
+    let mut all: Vec<GlobalSearchColumnMatch> = Vec::new();
+    let mut truncated = false;
+    for (table, kind) in tables {
+        let pragma_sql = format!("PRAGMA table_info({})", sqlite_quote_name(&table));
+        let columns: Vec<(String, String)> = sqlx::query(&pragma_sql)
+            .try_map(|row: sqlx::sqlite::SqliteRow| {
+                Ok((
+                    row.try_get::<String, _>("name")?,
+                    row.try_get::<String, _>("type")?,
+                ))
+            })
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+        for (column, data_type) in columns {
+            let hit = match mode {
+                SearchMode::Like => column.to_lowercase().contains(&keyword.to_lowercase()),
+                SearchMode::Regex => {
+                    // 无 REGEXP：与数据搜索一致的兜底语义
+                    column.to_lowercase().contains(&keyword.to_lowercase())
+                }
+            };
+            if hit {
+                if all.len() >= MAX_NAME_MATCHES {
+                    truncated = true;
+                    break;
+                }
+                all.push(GlobalSearchColumnMatch {
+                    database: String::new(),
+                    table: table.clone(),
+                    column,
+                    // 视图列没有独立类型声明，沿用表列的声明类型
+                    data_type: if data_type.is_empty() && kind == "view" {
+                        "view column".to_string()
+                    } else {
+                        data_type
+                    },
+                });
+            }
+        }
+        if truncated {
+            break;
+        }
+    }
+    Ok((all, truncated))
+}
+
+/// 逐表搜索 SQLite 数据内容，返回（命中表, 扫描表数, 是否截断, 警告）
+async fn sqlite_search_data_content(
+    pool: &sqlx::SqlitePool,
+    mode: SearchMode,
+    keyword: &str,
+    started: Instant,
+) -> Result<(Vec<GlobalSearchDataMatch>, usize, bool, Vec<String>)> {
+    // 只扫描基础表；视图可能聚合多表，代价不可控
+    let table_sql = "SELECT name FROM sqlite_master \
+                     WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' \
+                     ORDER BY name"
+        .to_string();
+    let mut table_rows: Vec<(String,)> = sqlx::query_as(&table_sql)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| anyhow!("搜索候选表失败：{}", e))?;
+
+    let mut truncated = table_rows.len() > MAX_DATA_TABLES;
+    table_rows.truncate(MAX_DATA_TABLES);
+
+    let mut notes: Vec<String> = Vec::new();
+    let mut matches: Vec<GlobalSearchDataMatch> = Vec::new();
+    let mut scanned = 0usize;
+    let pattern = bind_value(mode, keyword);
+
+    for (table,) in table_rows {
+        if started.elapsed() >= DATA_SEARCH_BUDGET {
+            truncated = true;
+            notes.push(format!(
+                "数据搜索已达到 {} 秒时间预算，仅扫描了 {} 张表",
+                DATA_SEARCH_BUDGET.as_secs(),
+                scanned
+            ));
+            break;
+        }
+
+        let pragma_sql = format!("PRAGMA table_info({})", sqlite_quote_name(&table));
+        let columns: Vec<(String, String)> = sqlx::query(&pragma_sql)
+            .try_map(|row: sqlx::sqlite::SqliteRow| {
+                Ok((
+                    row.try_get::<String, _>("name")?,
+                    row.try_get::<String, _>("type")?,
+                ))
+            })
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+        let searchable: Vec<String> = columns
+            .into_iter()
+            .filter(|(_, data_type)| sqlite_is_searchable_type(data_type))
+            .map(|(name, _)| name)
+            .collect();
+        if searchable.is_empty() {
+            continue;
+        }
+
+        scanned += 1;
+        match sqlite_count_matching_rows(pool, &table, &searchable, &pattern).await {
+            Ok(Some(count)) => matches.push(GlobalSearchDataMatch {
+                database: String::new(),
+                table: table.clone(),
+                matched_rows: count.min(MATCHED_ROWS_CAP) as u64,
+                count_capped: count >= MATCHED_ROWS_CAP,
+            }),
+            Ok(None) => {}
+            Err(reason) => notes.push(format!("{}：{}", table, reason)),
+        }
+    }
+
+    Ok((matches, scanned, truncated, notes))
+}
+
+/// 统计单张 SQLite 表命中行数（最多 `MATCHED_ROWS_CAP + 1` 行）。
+///
+/// 与 MySQL/PG 分支同语义：派生表 + LIMIT 提前停止；CAST(col AS TEXT) 让
+/// INTEGER/REAL 列也能按文本匹配。`Ok(None)` 表示没有命中。
+async fn sqlite_count_matching_rows(
+    pool: &sqlx::SqlitePool,
+    table: &str,
+    columns: &[String],
+    pattern: &str,
+) -> std::result::Result<Option<i64>, String> {
+    let conditions: Vec<String> = columns
+        .iter()
+        .map(|column| {
+            format!(
+                "CAST({} AS TEXT) LIKE ? ESCAPE '\\'",
+                sqlite_quote_name(column)
+            )
+        })
+        .collect();
+    let sql = format!(
+        "SELECT COUNT(*) FROM (SELECT 1 FROM {} WHERE {} LIMIT {}) AS _aurora_search",
+        sqlite_quote_name(table),
+        conditions.join(" OR "),
+        MATCHED_ROWS_CAP + 1
+    );
+
+    let mut query = sqlx::query_scalar::<_, i64>(&sql);
+    for _ in 0..columns.len() {
+        query = query.bind(pattern);
+    }
+
+    match tokio::time::timeout(PER_TABLE_TIMEOUT, query.fetch_one(pool)).await {
+        Ok(Ok(count)) if count > 0 => Ok(Some(count)),
+        Ok(Ok(_)) => Ok(None),
+        Ok(Err(e)) => Err(format!("查询失败：{}", e)),
+        Err(_) => Err(format!("查询超时（{} 秒）", PER_TABLE_TIMEOUT.as_secs())),
+    }
+}
+
 /// 搜索 PG 表名 / 视图名（只查用户 schema）
 async fn pg_search_table_names(
     pool: &PgPool,
@@ -1011,6 +1307,34 @@ mod tests {
             pg_statement_timeout_sql(Duration::from_millis(1500)),
             "SET LOCAL statement_timeout = '1500ms'"
         );
+    }
+
+    #[test]
+    fn sqlite_quote_name_escapes_double_quotes() {
+        assert_eq!(sqlite_quote_name("users"), "\"users\"");
+        assert_eq!(sqlite_quote_name("we\"ird"), "\"we\"\"ird\"");
+    }
+
+    #[test]
+    fn sqlite_match_expr_uses_bound_placeholder() {
+        assert_eq!(
+            sqlite_match_expr("name", SearchMode::Like),
+            "\"name\" LIKE ? ESCAPE '\\'"
+        );
+        // SQLite 无 REGEXP，正则模式退化为 LIKE（入口已加警告）
+        assert_eq!(
+            sqlite_match_expr("name", SearchMode::Regex),
+            "\"name\" LIKE ? ESCAPE '\\'"
+        );
+    }
+
+    #[test]
+    fn sqlite_searchable_type_skips_blob_and_untyped() {
+        assert!(sqlite_is_searchable_type("TEXT"));
+        assert!(sqlite_is_searchable_type("INTEGER"));
+        assert!(sqlite_is_searchable_type("numeric(10,2)"));
+        assert!(!sqlite_is_searchable_type("BLOB"));
+        assert!(!sqlite_is_searchable_type(""));
     }
 
     /// 本地 PostgreSQL 测试连接：未配置 AURORADB_TEST_PG_HOST 时返回 None 静默跳过；
@@ -1345,5 +1669,181 @@ mod tests {
                 &format!("DROP TABLE IF EXISTS {} CASCADE", pg_quote_name(&table)),
             )
             .await;
+    }
+
+    /// 本地 SQLite 测试连接：临时目录下的临时库文件，用后清理。
+    async fn sqlite_test_connection(
+        tag: &str,
+    ) -> (ConnectionManager, String, std::path::PathBuf, std::path::PathBuf) {
+        use auroradb_core::connection::driver::DriverKind;
+        use auroradb_core::connection::{
+            ConnectionConfig, ConnectionRequest, PoolConfig, SafetyMode, SslConfig,
+        };
+
+        let dir = std::env::temp_dir().join(format!(
+            "qa_sqlite_gsearch_{}_{}",
+            std::process::id(),
+            tag
+        ));
+        std::fs::create_dir_all(&dir).expect("创建临时目录失败");
+        let db_path = dir.join("qa.db");
+        // create_if_missing=false：连接要求文件已存在
+        std::fs::File::create(&db_path).expect("预建空库文件失败");
+
+        let manager = ConnectionManager::new();
+        let id = format!("qa-sqlite-gsearch-{}", tag);
+        manager
+            .connect(ConnectionRequest {
+                config: ConnectionConfig {
+                    id: id.clone(),
+                    name: id.clone(),
+                    driver: DriverKind::Sqlite,
+                    host: String::new(),
+                    port: 0,
+                    database: Some(db_path.to_string_lossy().to_string()),
+                    username: String::new(),
+                    password: String::new(),
+                    pool_config: PoolConfig::default(),
+                    ssl_config: SslConfig::default(),
+                    safety_mode: SafetyMode::Off,
+                },
+                ssh_config: None,
+            })
+            .await
+            .unwrap_or_else(|e| panic!("连接 SQLite 测试库失败：{}", e));
+        (manager, id, dir, db_path)
+    }
+
+    /// 真实 SQLite 上验证：表名 / 字段名 / 数据内容三类命中、正则模式退化
+    /// 为 LIKE（带警告）、BLOB 列不参与数据搜索、无命中为空。
+    #[tokio::test]
+    #[ignore = "SQLite 本地测试：执行 cargo test -- --ignored"]
+    async fn sqlite_global_search_finds_names_and_data() {
+        let (manager, connection_id, dir, db_path) = sqlite_test_connection("main").await;
+        let database = db_path.to_string_lossy().to_string();
+
+        exec_sql(
+            &manager,
+            &connection_id,
+            &database,
+            "CREATE TABLE qa_gs_items (id INTEGER PRIMARY KEY, item_name TEXT, payload BLOB)",
+        )
+        .await;
+        exec_sql(
+            &manager,
+            &connection_id,
+            &database,
+            "CREATE VIEW qa_gs_v_items AS SELECT id FROM qa_gs_items",
+        )
+        .await;
+        exec_sql(
+            &manager,
+            &connection_id,
+            &database,
+            "CREATE TABLE qa_gs_blobs (data BLOB)",
+        )
+        .await;
+        exec_sql(
+            &manager,
+            &connection_id,
+            &database,
+            "INSERT INTO qa_gs_items (item_name, payload) VALUES ('needlevalue', x'00ff'), ('other', x'aa')",
+        )
+        .await;
+        exec_sql(
+            &manager,
+            &connection_id,
+            &database,
+            "INSERT INTO qa_gs_blobs (data) VALUES (x'deadbeef')",
+        )
+        .await;
+
+        let request = |keyword: &str, search_data: bool| GlobalSearchRequest {
+            connection_id: connection_id.clone(),
+            database: Some(database.clone()),
+            keyword: keyword.to_string(),
+            mode: None,
+            search_tables: Some(true),
+            search_columns: Some(true),
+            search_data: Some(search_data),
+        };
+
+        // 表名 / 视图名命中（LIKE 对 ASCII 大小写不敏感）
+        let result = global_search(&manager, request("QA_GS", false))
+            .await
+            .expect("表名搜索应成功");
+        assert!(
+            result
+                .tables
+                .iter()
+                .any(|m| m.table == "qa_gs_items" && m.object_type == "table"),
+            "应命中表 qa_gs_items：{:?}",
+            result.tables
+        );
+        assert!(
+            result
+                .tables
+                .iter()
+                .any(|m| m.table == "qa_gs_v_items" && m.object_type == "view"),
+            "应命中视图 qa_gs_v_items：{:?}",
+            result.tables
+        );
+
+        // 字段名命中
+        let result = global_search(&manager, request("item_name", false))
+            .await
+            .expect("字段名搜索应成功");
+        assert!(
+            result
+                .columns
+                .iter()
+                .any(|m| m.table == "qa_gs_items" && m.column == "item_name"),
+            "应命中字段 item_name：{:?}",
+            result.columns
+        );
+
+        // 数据内容命中：BLOB 列被排除，TEXT 列命中
+        let result = global_search(&manager, request("needlevalue", true))
+            .await
+            .expect("数据搜索应成功");
+        let data_hit = result
+            .data
+            .iter()
+            .find(|m| m.table == "qa_gs_items")
+            .expect("数据搜索应命中 qa_gs_items");
+        assert_eq!(data_hit.matched_rows, 1, "needlevalue 应命中 1 行");
+        assert!(
+            !result.data.iter().any(|m| m.table == "qa_gs_blobs"),
+            "BLOB-only 表不应参与数据搜索：{:?}",
+            result.data
+        );
+
+        // 正则模式：SQLite 无 REGEXP，退化为 LIKE 并带警告
+        let mut regex_request = request("needlevalue", true);
+        regex_request.mode = Some("regex".to_string());
+        let result = global_search(&manager, regex_request)
+            .await
+            .expect("正则退化搜索应成功");
+        assert!(
+            result.data.iter().any(|m| m.table == "qa_gs_items"),
+            "正则退化后仍应命中：{:?}",
+            result.data
+        );
+        let warning = result.warning.unwrap_or_default();
+        assert!(warning.contains("正则"), "应警告正则模式退化：{}", warning);
+
+        // 无命中：三类结果均为空
+        let result = global_search(&manager, request("qa_gs_nomatch_xyz", true))
+            .await
+            .expect("无命中搜索应成功");
+        assert!(result.tables.is_empty(), "无命中时不应有表名结果");
+        assert!(result.columns.is_empty(), "无命中时不应有字段名结果");
+        assert!(result.data.is_empty(), "无命中时不应有数据结果");
+
+        let _ = manager.disconnect(&connection_id).await;
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+        let _ = std::fs::remove_dir(&dir);
     }
 }

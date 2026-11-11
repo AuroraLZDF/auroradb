@@ -4,12 +4,13 @@ import type { DriverKind } from '@/stores/savedConnections'
  * 按方言安全地引用标识符（表名 / 列名 / 库名 / 索引名 / 外键名等）。
  *
  * - MySQL 用反引号，标识符内的反引号翻倍：quoteIdentifier('a`b') === '`a``b`'
- * - PostgreSQL 用双引号，标识符内的双引号翻倍：quoteIdentifier('a"b', 'postgres') === '"a""b"'
+ * - PostgreSQL / SQLite 用双引号，标识符内的双引号翻倍：quoteIdentifier('a"b', 'postgres') === '"a""b"'
  *
- * PG 不接受反引号做标识符引用，混用会导致 DDL/DML 直接语法错误。
+ * PG 不接受反引号做标识符引用，混用会导致 DDL/DML 直接语法错误；
+ * SQLite 虽兼容反引号，但标准写法是双引号，与后端生成保持一致。
  */
 export function quoteIdentifier(identifier: string, driver: DriverKind = 'mysql'): string {
-  if (driver === 'postgres') {
+  if (driver === 'postgres' || driver === 'sqlite') {
     return '"' + identifier.replace(/"/g, '""') + '"'
   }
   return '`' + identifier.replace(/`/g, '``') + '`'

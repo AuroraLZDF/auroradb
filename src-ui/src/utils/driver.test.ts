@@ -73,7 +73,7 @@ describe('driver capabilities', () => {
     expect(DRIVER_CAPABILITIES.postgres.defaultPort).toBe(5432)
   })
 
-  it('SQLite MVP：文件模式、可编辑表数据、Pro 工具仅备份可用', () => {
+  it('SQLite：文件模式、可编辑表数据、Pro 工具（P5 已支持对比/搜索/ER 图）', () => {
     const sqlite = capabilitiesOf('sqlite')
     expect(sqlite.label).toBe('SQLite')
     expect(sqlite.defaultPort).toBeNull()
@@ -88,9 +88,9 @@ describe('driver capabilities', () => {
     expect(sqlite.tableQualification).toBe('database')
     expect(sqlite.proTools.backup).toBe(true)
     expect(sqlite.proTools.monitor).toBe(false)
-    expect(sqlite.proTools.schemaDiff).toBe(false)
-    expect(sqlite.proTools.globalSearch).toBe(false)
-    expect(sqlite.proTools.erDiagram).toBe(false)
+    expect(sqlite.proTools.schemaDiff).toBe(true)
+    expect(sqlite.proTools.globalSearch).toBe(true)
+    expect(sqlite.proTools.erDiagram).toBe(true)
     expect(sqlite.ddlDialect).toBe('mysql')
     expect(sqlite.backupDialect).toBe('sqlite')
     expect(sqlite.multiStatementDdl).toBe(true)

@@ -264,7 +264,7 @@ export function buildFieldDefinition(
   if (field.onUpdateCurrentTimestamp && isTimestampColumnType(field.type, driver)) {
     sql += ' ON UPDATE CURRENT_TIMESTAMP'
   }
-  if (field.isAutoIncrement) sql += ' AUTO_INCREMENT'
+  if (field.isAutoIncrement && driver !== 'sqlite') sql += ' AUTO_INCREMENT'
   if (includePrimaryKey && field.isPrimary) sql += ' PRIMARY KEY'
   if (field.comment) sql += ` COMMENT '${escapeSqlString(field.comment)}'`
   return sql
@@ -299,8 +299,8 @@ function pgForeignKeyClause(fk: DdlForeignKey, driver: DriverKind): string {
 }
 
 function mysqlForeignKeyClause(fk: DdlForeignKey, driver: DriverKind): string {
-  return `CONSTRAINT ${quoteIdentifier(fk.name)} FOREIGN KEY (${quoteIdentifier(fk.column)}) ` +
-    `REFERENCES ${quoteIdentifier(fk.refTable, driver)}(${quoteIdentifier(fk.refColumn)}) ` +
+  return `CONSTRAINT ${quoteIdentifier(fk.name, driver)} FOREIGN KEY (${quoteIdentifier(fk.column, driver)}) ` +
+    `REFERENCES ${quoteIdentifier(fk.refTable, driver)}(${quoteIdentifier(fk.refColumn, driver)}) ` +
     `ON DELETE ${fk.onDelete} ON UPDATE ${fk.onUpdate}`
 }
 
@@ -378,6 +378,31 @@ function buildPgCreateTableStatements(input: TableDdlInput, driver: DriverKind):
   return statements
 }
 
+/** SQLite 生成 CREATE TABLE（索引 / 外键内联；不支持 USING / COMMENT / UNSIGNED） */
+function buildSqliteCreateTableStatements(input: TableDdlInput, driver: DriverKind): string[] {
+  const fieldDefs = input.fields
+    .filter(field => !field.isDeleted)
+    .map(field => buildFieldDefinition(field, driver))
+    .join(',\n  ')
+
+  const indexDefs = input.indexes
+    .filter(index => !index.isDeleted)
+    .map(index => {
+      const unique = index.isUnique ? 'UNIQUE ' : ''
+      return `  ${unique}INDEX ${quoteIdentifier(index.name, driver)} (${index.columns.map(column => quoteIdentifier(column, driver)).join(', ')})`
+    })
+
+  const fkDefs = input.foreignKeys
+    .filter(fk => !fk.isDeleted)
+    .map(fk => `  ${mysqlForeignKeyClause(fk, driver)}`)
+
+  const allConstraints = [...indexDefs, ...fkDefs]
+  const constraints = allConstraints.length > 0 ? ',\n' + allConstraints.join(',\n') : ''
+  return [
+    `CREATE TABLE ${quoteIdentifier(input.tableName, driver)} (\n  ${fieldDefs}${constraints}\n)`
+  ]
+}
+
 /** MySQL 生成 CREATE TABLE（索引 / 外键内联，保持历史输出） */
 function buildMysqlCreateTableStatements(input: TableDdlInput, driver: DriverKind): string[] {
   const fieldDefs = input.fields
@@ -405,9 +430,9 @@ function buildMysqlCreateTableStatements(input: TableDdlInput, driver: DriverKin
 
 /** 新表：返回需要依次执行的语句列表 */
 export function buildCreateTableStatements(input: TableDdlInput, driver: DriverKind): string[] {
-  return capsOf(driver).ddlDialect === 'postgres'
-    ? buildPgCreateTableStatements(input, driver)
-    : buildMysqlCreateTableStatements(input, driver)
+  if (capsOf(driver).ddlDialect === 'postgres') return buildPgCreateTableStatements(input, driver)
+  if (driver === 'sqlite') return buildSqliteCreateTableStatements(input, driver)
+  return buildMysqlCreateTableStatements(input, driver)
 }
 
 /** 新表：完整 SQL 预览文本（多语句用 `;` 分隔） */
@@ -623,11 +648,54 @@ function buildPgAlterStatements(input: TableDdlInput, driver: DriverKind): strin
   return sqls
 }
 
+/** SQLite ALTER TABLE：仅 ADD / RENAME / DROP COLUMN（3.35+），不支持 MODIFY/CHANGE COLUMN 与列位置 */
+function buildSqliteAlterStatements(input: TableDdlInput, driver: DriverKind): string[] {
+  const sqls: string[] = []
+  const table = quoteIdentifier(input.tableName, driver)
+
+  input.fields.forEach(field => {
+    if (field.isNew && !field.isDeleted) {
+      sqls.push(`ALTER TABLE ${table} ADD COLUMN ${buildFieldDefinition(field, driver, false)}`)
+    } else if (field.isDeleted && !field.isNew) {
+      sqls.push(`ALTER TABLE ${table} DROP COLUMN ${quoteIdentifier(field.originalName ?? field.name, driver)}`)
+    } else if (field.isModified && !field.isNew) {
+      // SQLite 不支持 MODIFY/CHANGE COLUMN；支持 RENAME COLUMN（3.25+），类型/默认值修改会被后端拒绝
+      const renamed = !!field.originalName && field.originalName !== field.name
+      if (renamed) {
+        sqls.push(`ALTER TABLE ${table} RENAME COLUMN ${quoteIdentifier(field.originalName!, driver)} TO ${quoteIdentifier(field.name, driver)}`)
+      }
+    }
+  })
+
+  input.indexes.forEach(index => {
+    if (index.isNew && !index.isDeleted) {
+      const unique = index.isUnique ? 'UNIQUE ' : ''
+      sqls.push(`CREATE ${unique}INDEX ${quoteIdentifier(index.name, driver)} ON ${table} (${index.columns.map(column => quoteIdentifier(column, driver)).join(', ')})`)
+    } else if (index.isDeleted && !index.isNew) {
+      // SQLite 语法：DROP INDEX 不带 ON 表名
+      sqls.push(`DROP INDEX IF EXISTS ${quoteIdentifier(index.originalName ?? index.name, driver)}`)
+    } else if (index.isModified && !index.isNew) {
+      sqls.push(`DROP INDEX IF EXISTS ${quoteIdentifier(index.originalName ?? index.name, driver)}`)
+      const unique = index.isUnique ? 'UNIQUE ' : ''
+      sqls.push(`CREATE ${unique}INDEX ${quoteIdentifier(index.name, driver)} ON ${table} (${index.columns.map(column => quoteIdentifier(column, driver)).join(', ')})`)
+    }
+  })
+
+  // FK 变更：SQLite 的 ALTER TABLE 不支持 DROP FOREIGN KEY，首版跳过（新表时内联生效）
+  input.foreignKeys.forEach(fk => {
+    if (fk.isNew && !fk.isDeleted) {
+      sqls.push(`ALTER TABLE ${table} ADD ${mysqlForeignKeyClause(fk, driver)}`)
+    }
+  })
+
+  return sqls
+}
+
 /** 修改现有表：返回需要依次执行的语句列表 */
 export function buildAlterTableStatements(input: TableDdlInput, driver: DriverKind): string[] {
-  return capsOf(driver).ddlDialect === 'postgres'
-    ? buildPgAlterStatements(input, driver)
-    : buildMysqlAlterStatements(input, driver)
+  if (capsOf(driver).ddlDialect === 'postgres') return buildPgAlterStatements(input, driver)
+  if (driver === 'sqlite') return buildSqliteAlterStatements(input, driver)
+  return buildMysqlAlterStatements(input, driver)
 }
 
 /** 修改现有表：完整 SQL 预览文本（多语句用 `;` 分隔） */

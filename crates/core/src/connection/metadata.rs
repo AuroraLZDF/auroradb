@@ -2319,8 +2319,8 @@ impl ConnectionManager {
         let column_info: Vec<TableColumnInfo> = columns
             .iter()
             .map(|(name, data_type, notnull, default, pk, _cid)| {
-                let (length, decimals) =
-                    parse_column_type_precision(&data_type.to_lowercase());
+                // PRAGMA table_info 的 type 原文（如 NUMERIC(10,2)）就是完整类型串，
+                // 不再解析 precision —— 下游拼接 length/decimals 会产生 numeric(10,2)(10, 2)
                 TableColumnInfo {
                     name: name.clone(),
                     data_type: if data_type.is_empty() {
@@ -2328,8 +2328,8 @@ impl ConnectionManager {
                     } else {
                         data_type.to_lowercase()
                     },
-                    length,
-                    decimals,
+                    length: None,
+                    decimals: None,
                     is_nullable: *notnull == 0 && *pk == 0,
                     default_value: default.clone(),
                     is_auto_increment: false, // 无 WITHOUT ROWID/AUTOINCREMENT 探测需求，MVP 不标

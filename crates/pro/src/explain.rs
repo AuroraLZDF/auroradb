@@ -220,6 +220,89 @@ fn flatten_pg_top_level(root: &Value) -> Vec<ExplainNode> {
 
 // ===================== 执行层 =====================
 
+/// SQLite EXPLAIN QUERY PLAN 行 → 计划树。
+///
+/// 输出 4 列 (id, parent, notused, detail)：id 为行号（从 1 起）、parent 为
+/// 父行号（0 表示根）。detail 形如 "SCAN t" / "SEARCH t USING INDEX idx (x=?)" /
+/// "SEARCH t USING INTEGER PRIMARY KEY (rowid=?)"、"SCALAR SUBQUERY n"，尽力提取表名/索引（SQLite 不给
+/// 行数与 cost，留 None）。
+fn build_sqlite_plan_tree(rows: &[(i64, i64, String)]) -> Vec<ExplainNode> {
+    use std::collections::HashMap;
+
+    // 先建所有节点 + 父子关系表，再从根逐棵摘取（避免父节点先被消费）
+    let mut nodes: HashMap<i64, ExplainNode> = HashMap::new();
+    let mut children_of: HashMap<i64, Vec<i64>> = HashMap::new();
+    let mut root_ids: Vec<i64> = Vec::new();
+    for (id, parent, detail) in rows {
+        nodes.insert(*id, sqlite_detail_to_node(detail));
+        if *parent > 0 && nodes.contains_key(parent) {
+            children_of.entry(*parent).or_default().push(*id);
+        } else {
+            // parent=0 或父行缺失（不应发生）：降级为根
+            root_ids.push(*id);
+        }
+    }
+
+    fn take_subtree(
+        nodes: &mut HashMap<i64, ExplainNode>,
+        children_of: &HashMap<i64, Vec<i64>>,
+        id: i64,
+    ) -> Option<ExplainNode> {
+        let mut node = nodes.remove(&id)?;
+        if let Some(children) = children_of.get(&id) {
+            for child_id in children {
+                if let Some(child) = take_subtree(nodes, children_of, *child_id) {
+                    node.children.push(child);
+                }
+            }
+        }
+        Some(node)
+    }
+
+    root_ids
+        .iter()
+        .filter_map(|id| take_subtree(&mut nodes, &children_of, *id))
+        .collect()
+}
+
+/// 解析 SQLite 计划行文本："SCAN <table>"、"SEARCH <table> USING INDEX <idx> (…)"、
+/// "SCAN <table> USING COVERING INDEX <idx>"、"SCALAR SUBQUERY n"、
+/// "USE TEMP B-TREE FOR ORDER BY" 等。
+fn sqlite_detail_to_node(detail: &str) -> ExplainNode {
+    let detail = detail.trim();
+    let mut node = ExplainNode::new(detail);
+    let upper = detail.to_uppercase();
+
+    // 索引：USING 之后的描述。INDEX/COVERING INDEX 取具名索引；
+    // INTEGER PRIMARY KEY 表示 rowid 主键查找，保留描述文本。
+    if let Some(using_pos) = upper.find("USING ") {
+        let rest = detail[using_pos + "USING ".len()..].trim();
+        let rest = rest.split('(').next().unwrap_or(rest).trim();
+        let name = rest
+            .strip_prefix("COVERING INDEX ")
+            .or_else(|| rest.strip_prefix("INDEX "))
+            .unwrap_or(rest)
+            .trim();
+        if !name.is_empty() {
+            node.index = Some(name.to_string());
+        }
+    }
+
+    // 表名：SEARCH/SCAN 关键字后的第一个词（SCALAR SUBQUERY / TEMP B-TREE 无表名）
+    let first_word_end = detail.find(' ').unwrap_or(detail.len());
+    let keyword = &detail[..first_word_end];
+    if keyword.eq_ignore_ascii_case("SEARCH") || keyword.eq_ignore_ascii_case("SCAN") {
+        let after = detail[first_word_end..].trim_start();
+        if let Some(table_word) = after.split_whitespace().next() {
+            let table_word = table_word.trim();
+            if !table_word.is_empty() {
+                node.table = Some(table_word.to_string());
+            }
+        }
+    }
+    node
+}
+
 fn validate_explain_sql(sql: &str, driver: DriverKind) -> Result<()> {
     // 只允许单条语句：EXPLAIN 只作用于紧随其后的第一条语句，多语句会静默忽略其余部分
     let statements = auroradb_core::sql::split_sql_statements(sql);
@@ -310,9 +393,39 @@ pub async fn explain(
                 .map_err(|e| anyhow!("执行 EXPLAIN 失败：{}", auroradb_core::error::translate(&e)))?
                 .ok_or_else(|| anyhow!("EXPLAIN 未返回结果"))?
         }
-        // SQLite 为本地单文件库，EXPLAIN 计划展示暂不支持
-        AnyPool::Sqlite(_) => {
-            return Err(anyhow!("SQLite 本地文件连接暂不支持执行计划解释"));
+        // SQLite：EXPLAIN QUERY PLAN 输出 4 列 (id, parent, notused, detail)，
+        // 用 id/parent 在 Rust 侧重建树，detail 即人类可读计划行
+        AnyPool::Sqlite(sqlite_pool) => {
+            if !database.is_empty() {
+                // 单文件库 database 参数就是文件路径：只允许当前连接库
+                let conn_path = conn_database.as_deref().unwrap_or("");
+                if database != conn_path {
+                    return Err(anyhow!(
+                        "SQLite 连接只能解释当前库的语句：请传空字符串或连接本身的数据文件路径"
+                    ));
+                }
+            }
+            let mut phys = sqlite_pool.acquire().await.context("获取 SQLite 连接失败")?;
+            let explain_sql = format!("EXPLAIN QUERY PLAN {}", sql);
+            let rows: Vec<(i64, i64, String)> = sqlx::query_as(&explain_sql)
+                .fetch_all(&mut *phys)
+                .await
+                .map_err(|e| anyhow!("执行 EXPLAIN 失败：{}", auroradb_core::error::translate(&e)))?;
+            // 非树形结构序列化：原始 JSON 保留行数组，节点树由 parse 函数构建
+            let rows_json = serde_json::to_string(
+                &rows.iter().map(|(id, parent, detail)| serde_json::json!({
+                    "id": id, "parent": parent, "detail": detail,
+                })).collect::<Vec<_>>(),
+            )
+            .map_err(|e| anyhow!("序列化 EXPLAIN 行失败：{e}"))?;
+            return Ok(ExplainPlan {
+                driver,
+                sql: sql.to_string(),
+                nodes: build_sqlite_plan_tree(&rows),
+                warnings: vec![],
+                raw_json: rows_json,
+                execution_time_ms: start.elapsed().as_millis() as u64,
+            });
         }
     };
     let warnings: Vec<String> = vec![];
@@ -322,8 +435,9 @@ pub async fn explain(
 
     let nodes = match driver {
         DriverKind::MySql => flatten_mysql_top_level(&parsed),
-        // SQLite 无 JSON 格式的 EXPLAIN，入口已拒绝；此处不可达，仅为穷尽性保留
-        DriverKind::Postgres | DriverKind::Sqlite => flatten_pg_top_level(&parsed),
+        // SQLite 在上面已提前返回（EXPLAIN QUERY PLAN 非树形 JSON 输出）
+        DriverKind::Postgres => flatten_pg_top_level(&parsed),
+        DriverKind::Sqlite => flatten_pg_top_level(&parsed),
     };
 
     Ok(ExplainPlan {
@@ -334,4 +448,53 @@ pub async fn explain(
         raw_json,
         execution_time_ms: start.elapsed().as_millis() as u64,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sqlite_detail_parses_scan_and_search() {
+        let node = sqlite_detail_to_node("SCAN t2");
+        assert_eq!(node.operation, "SCAN t2");
+        assert_eq!(node.table.as_deref(), Some("t2"));
+        assert!(node.index.is_none());
+
+        let node = sqlite_detail_to_node("SEARCH t1 USING INTEGER PRIMARY KEY (rowid=?)");
+        assert_eq!(node.table.as_deref(), Some("t1"));
+        assert_eq!(node.index.as_deref(), Some("INTEGER PRIMARY KEY"));
+
+        let node = sqlite_detail_to_node("SEARCH t USING INDEX idx_email (email=?)");
+        assert_eq!(node.table.as_deref(), Some("t"));
+        assert_eq!(node.index.as_deref(), Some("idx_email"));
+
+        let node = sqlite_detail_to_node("SCAN t USING COVERING INDEX idx_email");
+        assert_eq!(node.table.as_deref(), Some("t"));
+        assert_eq!(node.index.as_deref(), Some("idx_email"));
+    }
+
+    #[test]
+    fn sqlite_detail_parses_non_table_rows() {
+        let node = sqlite_detail_to_node("SCALAR SUBQUERY 1");
+        assert!(node.table.is_none());
+
+        let node = sqlite_detail_to_node("USE TEMP B-TREE FOR ORDER BY");
+        assert!(node.table.is_none());
+        assert!(node.index.is_none());
+    }
+
+    #[test]
+    fn sqlite_plan_tree_builds_parent_child_relation() {
+        // 对应 JOIN 查询：SCAN t2（根）→ SEARCH t1（子）
+        let rows = vec![
+            (1i64, 0i64, "SCAN t2".to_string()),
+            (2, 1, "SEARCH t1 USING INTEGER PRIMARY KEY (rowid=?)".to_string()),
+        ];
+        let roots = build_sqlite_plan_tree(&rows);
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].operation, "SCAN t2");
+        assert_eq!(roots[0].children.len(), 1);
+        assert_eq!(roots[0].children[0].table.as_deref(), Some("t1"));
+    }
 }

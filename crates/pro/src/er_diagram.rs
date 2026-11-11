@@ -9,6 +9,7 @@ use auroradb_core::connection::driver::{AnyPool, DriverKind};
 use auroradb_core::connection::validation::validate_identifier;
 use auroradb_core::connection::ConnectionManager;
 use serde::Serialize;
+use sqlx::Row;
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::timeout;
@@ -61,9 +62,12 @@ pub async fn get_er_diagram_data(
     connection_id: &str,
     database: &str,
 ) -> Result<ErDiagramData> {
-    validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
-
     let snapshot = manager.connection_snapshot(connection_id).await?;
+    // SQLite 的「库」是文件路径（含 / 与 .），不能过标识符校验；其余驱动先校验
+    let is_sqlite = matches!(snapshot.pool, AnyPool::Sqlite(_));
+    if !is_sqlite {
+        validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
+    }
     let pool = snapshot.pool;
     let driver = pool.driver();
 
@@ -79,9 +83,9 @@ pub async fn get_er_diagram_data(
             let (tables, foreign_keys) = fetch_pg_er(pg_pool, &schema).await?;
             (tables, foreign_keys, schema)
         }
-        // SQLite 为本地单文件库，ER 图（跨表外键关系图）暂不支持
-        AnyPool::Sqlite(_) => {
-            return Err(anyhow!("SQLite 本地文件连接暂不支持 ER 图"));
+        AnyPool::Sqlite(sqlite_pool) => {
+            let (tables, foreign_keys) = fetch_sqlite_er(sqlite_pool).await?;
+            (tables, foreign_keys, database.to_string())
         }
     };
     Ok(ErDiagramData {
@@ -126,6 +130,149 @@ async fn resolve_pg_schema(pool: &sqlx::postgres::PgPool, database: &str) -> Res
     Ok(current
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "public".to_string()))
+}
+
+/// SQLite：表与列来自 sqlite_master + PRAGMA table_info，外键来自每表
+/// PRAGMA foreign_key_list（SQLite 无 information_schema 等价物）。
+async fn fetch_sqlite_er(
+    pool: &sqlx::SqlitePool,
+) -> Result<(Vec<ErTableNode>, Vec<ErForeignKey>)> {
+    // 1. 表清单（排除 sqlite_ 内部表；视图不进 ER 图，与 MySQL 分支口径一致）
+    let table_names: Vec<(String,)> = timeout(
+        ER_QUERY_TIMEOUT,
+        sqlx::query_as(
+            "SELECT name FROM sqlite_master
+             WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
+             ORDER BY name ASC",
+        )
+        .fetch_all(pool),
+    )
+    .await
+    .context("ER 图查询超时")??;
+
+    let mut table_map: HashMap<String, ErTableNode> = HashMap::new();
+    for (table_name,) in table_names {
+        table_map.insert(
+            table_name.clone(),
+            ErTableNode {
+                name: table_name,
+                columns: vec![],
+            },
+        );
+    }
+
+    let mut foreign_keys: Vec<ErForeignKey> = Vec::new();
+
+    // 2. 逐表补列与外键（PRAGMA 不支持绑定参数：表名来自 sqlite_master，
+    //    双引号包裹后字面量拼接）
+    for table in table_map.keys().cloned().collect::<Vec<_>>() {
+        let pragma_sql = format!("PRAGMA table_info({})", quote_sqlite_ident(&table));
+        let columns: Vec<(i64, String, String, i64, Option<String>)> = timeout(
+            ER_QUERY_TIMEOUT,
+            sqlx::query(&pragma_sql)
+                .try_map(|row: sqlx::sqlite::SqliteRow| {
+                    Ok((
+                        row.try_get::<i64, _>("pk")?,
+                        row.try_get::<String, _>("name")?,
+                        row.try_get::<String, _>("type")?,
+                        row.try_get::<i64, _>("notnull")?,
+                        row.try_get::<Option<String>, _>("dflt_value")?,
+                    ))
+                })
+                .fetch_all(pool),
+        )
+        .await
+        .context("ER 图查询超时")??;
+
+        // 唯一标记来自 index_list（PK 在 table_info 已知；AUTOINDEX 即唯一）
+        let index_list_sql = format!("PRAGMA index_list({})", quote_sqlite_ident(&table));
+        let index_list: Vec<(String, i64)> = sqlx::query(&index_list_sql)
+            .try_map(|row: sqlx::sqlite::SqliteRow| {
+                Ok((
+                    row.try_get::<String, _>("name")?,
+                    row.try_get::<i64, _>("unique")?,
+                ))
+            })
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+        let unique_columns: Vec<String> = {
+            let mut cols = Vec::new();
+            for (index_name, _unique) in index_list.iter().filter(|(_, u)| *u != 0) {
+                let info_sql =
+                    format!("PRAGMA index_info({})", quote_sqlite_ident(index_name));
+                let idx_cols: Vec<(String,)> = sqlx::query(&info_sql)
+                    .try_map(|row: sqlx::sqlite::SqliteRow| {
+                        Ok((row.try_get::<String, _>("name")?,))
+                    })
+                    .fetch_all(pool)
+                    .await
+                    .unwrap_or_default();
+                // 单列唯一索引才映射回列的 is_unique（多列组合唯一无法归到单列）
+                if idx_cols.len() == 1 {
+                    if let Some((col,)) = idx_cols.first() {
+                        if !col.is_empty() {
+                            cols.push(col.clone());
+                        }
+                    }
+                }
+            }
+            cols
+        };
+
+        if let Some(node) = table_map.get_mut(&table) {
+            for (pk, col, dtype, notnull, default_value) in columns {
+                let display_type = if dtype.is_empty() { "BLOB".to_string() } else { dtype.to_lowercase() };
+                node.columns.push(ErColumn {
+                    is_unique: unique_columns.iter().any(|c| c == &col),
+                    is_primary: pk > 0,
+                    nullable: notnull == 0 && pk == 0,
+                    name: col,
+                    data_type: display_type.clone(),
+                    column_type: display_type,
+                    default_value,
+                    comment: String::new(), // SQLite 列注释保存在建表 SQL 里，不拆解
+                });
+            }
+        }
+
+        let fk_sql = format!("PRAGMA foreign_key_list({})", quote_sqlite_ident(&table));
+        let fk_rows: Vec<(i64, String, String, Option<String>, String, String)> =
+            sqlx::query(&fk_sql)
+                .try_map(|row: sqlx::sqlite::SqliteRow| {
+                    Ok((
+                        row.try_get::<i64, _>("id")?,
+                        row.try_get::<String, _>("table")?,
+                        row.try_get::<String, _>("from")?,
+                        row.try_get::<Option<String>, _>("to")?,
+                        row.try_get::<String, _>("on_update")?,
+                        row.try_get::<String, _>("on_delete")?,
+                    ))
+                })
+                .fetch_all(pool)
+                .await
+                .unwrap_or_default();
+        for (id, ref_table, from, to, _on_update, _on_delete) in fk_rows {
+            let fallback = from.clone();
+            foreign_keys.push(ErForeignKey {
+                name: format!("fk_{}_{}_{}", table, from, id),
+                table: table.clone(),
+                column: from,
+                ref_table,
+                ref_column: to.unwrap_or(fallback),
+            });
+        }
+    }
+
+    let mut tables: Vec<ErTableNode> = table_map.into_values().collect();
+    tables.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok((tables, foreign_keys))
+}
+
+/// SQLite 标识符双引号包裹（内部引号翻倍）。名称来自 sqlite_master，
+/// 不是用户输入，因此不套 validate_identifier。
+fn quote_sqlite_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
 }
 
 async fn fetch_mysql_er(
