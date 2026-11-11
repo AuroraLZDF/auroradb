@@ -231,17 +231,20 @@ fn validate_explain_sql(sql: &str, driver: DriverKind) -> Result<()> {
         return Err(anyhow!("SQL 为空，无法执行解释计划"));
     }
     let upper = trimmed.to_uppercase();
-    // PG 不支持 REPLACE
+    // PG 不支持 REPLACE；SQLite 同样不支持 REPLACE…SELECT 之外的语句差别可接受，
+    // 与 PG 保持一致（SQLite 的 EXPLAIN QUERY PLAN 只支持 SELECT 类语句）
     let allowed: &[&str] = match driver {
         DriverKind::MySql => &["SELECT", "INSERT", "UPDATE", "DELETE", "REPLACE", "WITH"],
-        DriverKind::Postgres => &["SELECT", "INSERT", "UPDATE", "DELETE", "WITH"],
+        DriverKind::Postgres | DriverKind::Sqlite => {
+            &["SELECT", "INSERT", "UPDATE", "DELETE", "WITH"]
+        }
     };
     if !allowed.iter().any(|p| upper.starts_with(p)) {
         return Err(anyhow!(
             "无法解释该语句：只支持 SELECT / INSERT / UPDATE / DELETE / WITH{}",
             match driver {
                 DriverKind::MySql => " / REPLACE",
-                DriverKind::Postgres => "",
+                DriverKind::Postgres | DriverKind::Sqlite => "",
             }
         ));
     }
@@ -307,6 +310,10 @@ pub async fn explain(
                 .map_err(|e| anyhow!("执行 EXPLAIN 失败：{}", auroradb_core::error::translate(&e)))?
                 .ok_or_else(|| anyhow!("EXPLAIN 未返回结果"))?
         }
+        // SQLite 为本地单文件库，EXPLAIN 计划展示暂不支持
+        AnyPool::Sqlite(_) => {
+            return Err(anyhow!("SQLite 本地文件连接暂不支持执行计划解释"));
+        }
     };
     let warnings: Vec<String> = vec![];
 
@@ -315,7 +322,8 @@ pub async fn explain(
 
     let nodes = match driver {
         DriverKind::MySql => flatten_mysql_top_level(&parsed),
-        DriverKind::Postgres => flatten_pg_top_level(&parsed),
+        // SQLite 无 JSON 格式的 EXPLAIN，入口已拒绝；此处不可达，仅为穷尽性保留
+        DriverKind::Postgres | DriverKind::Sqlite => flatten_pg_top_level(&parsed),
     };
 
     Ok(ExplainPlan {

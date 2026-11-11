@@ -276,6 +276,7 @@ import {
   Loader2, XCircle, RotateCcw, Lightbulb, X, Scan, Download, Undo2,
 } from 'lucide-vue-next'
 import { invoke } from '@tauri-apps/api/core'
+import type { DriverKind } from '@/stores/savedConnections'
 import { useConnectionStore } from '@/stores/connection'
 import { globalToast } from '@/composables/useToast'
 import { t } from '@/i18n'
@@ -304,7 +305,7 @@ interface ErColumn {
 interface ErTableNode { name: string; columns: ErColumn[] }
 interface ErForeignKey { name: string; table: string; column: string; ref_table: string; ref_column: string }
 interface ErDiagramData {
-  driver: 'mysql' | 'postgres'
+  driver: DriverKind
   database: string
   tables: ErTableNode[]
   foreign_keys: ErForeignKey[]

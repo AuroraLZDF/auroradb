@@ -79,6 +79,10 @@ pub async fn get_er_diagram_data(
             let (tables, foreign_keys) = fetch_pg_er(pg_pool, &schema).await?;
             (tables, foreign_keys, schema)
         }
+        // SQLite 为本地单文件库，ER 图（跨表外键关系图）暂不支持
+        AnyPool::Sqlite(_) => {
+            return Err(anyhow!("SQLite 本地文件连接暂不支持 ER 图"));
+        }
     };
     Ok(ErDiagramData {
         driver,

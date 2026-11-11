@@ -71,6 +71,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import type { DriverKind } from '@/stores/savedConnections'
 import { t } from '@/i18n'
 import { quoteIdentifier, quoteQualifiedIdentifier } from '@/utils/sql'
 
@@ -93,7 +94,7 @@ const props = defineProps<{
   connectionId: string
   database: string
   table: string
-  driver: 'mysql' | 'postgres'
+  driver: DriverKind
 }>()
 
 const emit = defineEmits<{

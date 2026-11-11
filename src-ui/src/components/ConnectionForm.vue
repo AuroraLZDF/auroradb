@@ -45,43 +45,60 @@
             <input v-model="form.name" type="text" :placeholder="t('connectionForm.namePlaceholder')" />
           </div>
 
-          <div class="form-group col-8">
-            <label>{{ t('connectionForm.host') }}</label>
-            <input v-model="form.host" type="text" placeholder="localhost" />
-          </div>
-          <div class="form-group col-4">
-            <label>{{ t('connectionForm.port') }}</label>
-            <input v-model="form.port" type="number" :placeholder="String(defaultPort)" />
-          </div>
-
-          <div class="form-group col-6">
-            <label>{{ t('connectionForm.username') }}</label>
-            <input v-model="form.username" type="text" />
-          </div>
-          <div class="form-group col-6">
-            <label>{{ t('connectionForm.password') }}</label>
-            <div class="password-input-wrapper">
-              <input
-                v-model="form.password"
-                :type="showPassword ? 'text' : 'password'"
-                :placeholder="isEditMode ? t('connectionForm.passwordKeepPlaceholder') : t('connectionForm.passwordPlaceholder')"
-              />
-              <button
-                type="button"
-                class="btn-toggle-password"
-                @click="showPassword = !showPassword"
-                :title="showPassword ? t('connectionForm.hidePassword') : t('connectionForm.showPassword')"
-               :aria-label="showPassword ? t('connectionForm.hidePassword') : t('connectionForm.showPassword')">
-                <Eye v-if="showPassword" :size="16" />
-                <EyeOff v-else :size="16" />
-              </button>
+          <template v-if="form.driver === 'sqlite'">
+            <div class="form-group col-12">
+              <label>{{ t('connectionForm.sqliteFile') }}</label>
+              <div class="sqlite-file-row">
+                <input
+                  v-model="form.database"
+                  type="text"
+                  :placeholder="t('connectionForm.sqliteFilePlaceholder')"
+                />
+                <button type="button" class="btn-secondary" @click="pickSqliteFile">
+                  {{ t('connectionForm.sqliteBrowse') }}
+                </button>
+              </div>
             </div>
-          </div>
+          </template>
+          <template v-else>
+            <div class="form-group col-8">
+              <label>{{ t('connectionForm.host') }}</label>
+              <input v-model="form.host" type="text" placeholder="localhost" />
+            </div>
+            <div class="form-group col-4">
+              <label>{{ t('connectionForm.port') }}</label>
+              <input v-model="form.port" type="number" :placeholder="String(defaultPort)" />
+            </div>
 
-          <div class="form-group col-6">
-            <label>{{ t('common.database') }}</label>
-            <input v-model="form.database" type="text" :placeholder="t('common.optional')" />
-          </div>
+            <div class="form-group col-6">
+              <label>{{ t('connectionForm.username') }}</label>
+              <input v-model="form.username" type="text" />
+            </div>
+            <div class="form-group col-6">
+              <label>{{ t('connectionForm.password') }}</label>
+              <div class="password-input-wrapper">
+                <input
+                  v-model="form.password"
+                  :type="showPassword ? 'text' : 'password'"
+                  :placeholder="isEditMode ? t('connectionForm.passwordKeepPlaceholder') : t('connectionForm.passwordPlaceholder')"
+                />
+                <button
+                  type="button"
+                  class="btn-toggle-password"
+                  @click="showPassword = !showPassword"
+                  :title="showPassword ? t('connectionForm.hidePassword') : t('connectionForm.showPassword')"
+                 :aria-label="showPassword ? t('connectionForm.hidePassword') : t('connectionForm.showPassword')">
+                  <Eye v-if="showPassword" :size="16" />
+                  <EyeOff v-else :size="16" />
+                </button>
+              </div>
+            </div>
+
+            <div class="form-group col-6">
+              <label>{{ t('common.database') }}</label>
+              <input v-model="form.database" type="text" :placeholder="t('common.optional')" />
+            </div>
+          </template>
           <div class="form-group col-6">
             <label>{{ t('connectionForm.safetyMode') }}</label>
             <Select
@@ -122,6 +139,7 @@
         </div>
 
         <p v-if="form.driver === 'postgres'" class="form-hint">{{ t('connectionForm.postgresHint') }}</p>
+        <p v-if="form.driver === 'sqlite'" class="form-hint">{{ t('connectionForm.sqliteHint') }}</p>
         <p v-if="isEditMode" class="form-hint">{{ t('connectionForm.safetyModeHint') }}</p>
       </div>
 
@@ -291,8 +309,8 @@ const editHasSshSecret = ref(false)
 /** 当前 Tab：基础连接 / 高级设置（SSL、SSH） */
 const activeTab = ref<'basic' | 'advanced'>('basic')
 
-/** 各驱动的默认端口统一取自能力表：切换驱动时若端口仍是旧默认值则自动跟随 */
-const defaultPortOf = (driver: DriverKind): number => DRIVER_CAPABILITIES[driver].defaultPort
+/** 各驱动的默认端口统一取自能力表：切换驱动时若端口仍是旧默认值则自动跟随（SQLite 无端口） */
+const defaultPortOf = (driver: DriverKind): number | null => DRIVER_CAPABILITIES[driver].defaultPort
 
 /** 连接颜色标识预设色板 */
 const COLOR_PRESETS = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#a855f7', '#06b6d4', '#ec4899']
@@ -328,6 +346,7 @@ const defaultPort = computed(() => defaultPortOf(form.driver))
 const driverOptions = computed(() => [
   { label: t('connectionForm.driverMysql'), value: 'mysql' },
   { label: t('connectionForm.driverPostgres'), value: 'postgres' },
+  { label: t('connectionForm.driverSqlite'), value: 'sqlite' },
 ])
 
 const safetyModeOptions = computed(() => [
@@ -364,11 +383,25 @@ function selectTab(tab: 'basic' | 'advanced') {
 watch(
   () => form.driver,
   (driver, prev) => {
-    if (Number(form.port) === defaultPortOf(prev)) {
-      form.port = defaultPortOf(driver)
+    const prevPort = defaultPortOf(prev)
+    if (prevPort !== null && Number(form.port) === prevPort) {
+      form.port = defaultPortOf(driver) ?? 0
     }
   }
 )
+
+/** 通过系统文件对话框选择 SQLite 库文件 */
+async function pickSqliteFile() {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    const picked = await invoke<string>('pick_sqlite_file')
+    if (picked) {
+      form.database = picked
+    }
+  } catch {
+    // 用户取消或对话框不可用，保持手动输入路径
+  }
+}
 
 // 如果是编辑模式，加载现有连接数据
 onMounted(async () => {
@@ -425,7 +458,7 @@ onMounted(async () => {
 
 // 监听表单变化，检测重复
 watch(
-  () => ({ driver: form.driver, host: form.host, port: form.port, username: form.username, database: form.database }),
+  () => ({ driver: form.driver, host: form.host, port: Number(form.port), username: form.username, database: form.database }),
   (newConfig) => {
     const existing = savedStore.findExistingConnection?.(newConfig)
     if (existing) {
@@ -440,6 +473,11 @@ watch(
 /** 必填项校验：返回首个缺失项所在 Tab，便于切回并提示（隐藏 Tab 里的原生校验不可见） */
 function findMissingRequired(): { tab: 'basic' | 'advanced'; field: string } | null {
   if (!form.name.trim()) return { tab: 'basic', field: t('connectionForm.name') }
+  // SQLite 走文件路径（database 字段），host/port/凭据都无意义
+  if (form.driver === 'sqlite') {
+    if (!form.database.trim()) return { tab: 'basic', field: t('connectionForm.sqliteFile') }
+    return null
+  }
   if (!form.host.trim()) return { tab: 'basic', field: t('connectionForm.host') }
   if (!String(form.port).trim()) return { tab: 'basic', field: t('connectionForm.port') }
   if (!form.username.trim()) return { tab: 'basic', field: t('connectionForm.username') }
@@ -512,7 +550,7 @@ async function handleSubmit() {
     const existing = !isEditMode.value ? savedStore.findExistingConnection?.({
       driver: form.driver,
       host: form.host,
-      port: form.port,
+      port: Number(form.port),
       username: form.username,
       database: form.database
     }) : null
@@ -525,7 +563,7 @@ async function handleSubmit() {
         name: form.name,
         driver: form.driver,
         host: form.host,
-        port: form.port,
+        port: Number(form.port),
         database: form.database,
         username: form.username,
         password: savePassword.value && form.password ? form.password : undefined,
@@ -561,7 +599,7 @@ async function handleSubmit() {
         name: form.name,
         driver: form.driver,
         host: form.host,
-        port: form.port,
+        port: Number(form.port),
         database: form.database,
         username: form.username,
         password: form.password,
@@ -583,7 +621,7 @@ async function handleSubmit() {
         name: form.name,
         driver: form.driver,
         host: form.host,
-        port: form.port,
+        port: Number(form.port),
         database: form.database,
         username: form.username,
         password: savePassword.value ? form.password : undefined,

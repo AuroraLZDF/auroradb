@@ -14,10 +14,10 @@ export interface DriverCapabilities {
   label: string
   /** 控制台提示符前缀，例如 `mysql [db]>` / `postgres [db]>` */
   prompt: string
-  /** 标识符引用符：MySQL 反引号 / PostgreSQL 双引号 */
+  /** 标识符引用符：MySQL 反引号 / PostgreSQL 与 SQLite 双引号 */
   identifierQuote: '`' | '"'
-  /** 默认端口 */
-  defaultPort: number
+  /** 默认端口；SQLite 走本地文件，无端口概念 */
+  defaultPort: number | null
   /** 是否支持在前端编辑并保存表数据（驱动写路径未实现时置 false 即可禁用编辑） */
   editableTableData: boolean
   /** 日期/时间列是否支持 MySQL 风格的零值默认值（0000-00-00） */
@@ -28,7 +28,7 @@ export interface DriverCapabilities {
   nativeUseStatement: boolean
   /** 信息面板 DDL 是否交给 utils/sql.ts 的 formatSql 统一格式化 */
   formatDdl: boolean
-  /** 执行 SQL 前是否必须选择数据库（MySQL 必须；PG 可走默认 search_path） */
+  /** 执行 SQL 前是否必须选择数据库（MySQL 必须；PG 可走默认 search_path；SQLite 的 database 即文件路径） */
   requiresDatabase: boolean
   /** 表名限定方式：database=库名.表名（MySQL），schema=schema.表名（PG） */
   tableQualification: 'database' | 'schema'
@@ -42,8 +42,8 @@ export interface DriverCapabilities {
   }
   /** 监控指标语义：MySQL 的 InnoDB/COM_* 与 PG 的共享缓冲/行数统计展示名称不同 */
   monitorDialect: 'mysql' | 'postgres'
-  /** 备份/还原使用的客户端工具方言：mysqldump / pg_dump + psql */
-  backupDialect: 'mysql' | 'postgres'
+  /** 备份/还原使用的客户端工具方言：mysqldump / pg_dump + psql / SQLite 文件复制 */
+  backupDialect: 'mysql' | 'postgres' | 'sqlite'
   /** 设计器 DDL 方言：表设计器/库设计器生成语句时使用 */
   ddlDialect: 'mysql' | 'postgres'
   /** 一次 execute_sql 调用能否携带多条语句（MySQL 文本协议可以；PG 扩展协议只能单条） */
@@ -91,6 +91,12 @@ export const POSTGRES_DATA_TYPES: readonly string[] = [
 
 export const MYSQL_INDEX_TYPES: readonly string[] = ['BTREE', 'HASH', 'FULLTEXT']
 export const POSTGRES_INDEX_TYPES: readonly string[] = ['btree', 'hash', 'gin', 'gist', 'brin']
+
+/** SQLite 类型集（声明类型宽松，亲和性决定实际存储类别） */
+export const SQLITE_DATA_TYPES: readonly string[] = [
+  'INTEGER', 'TEXT', 'REAL', 'BLOB', 'NUMERIC', 'BOOLEAN', 'DATE', 'DATETIME'
+]
+export const SQLITE_INDEX_TYPES: readonly string[] = []
 
 export const DRIVER_CAPABILITIES: Record<DriverKind, DriverCapabilities> = {
   mysql: {
@@ -163,6 +169,47 @@ export const DRIVER_CAPABILITIES: Record<DriverKind, DriverCapabilities> = {
     supportsVirtualColumns: false,
     autoIncrementRequiresPrimaryKey: false,
     databaseDesignerMode: 'schema',
+    supportsDatabaseCharset: false,
+    supportsAllDatabaseSearch: false,
+  },
+  sqlite: {
+    label: 'SQLite',
+    prompt: 'sqlite',
+    identifierQuote: '"',
+    // SQLite 是本地文件数据库，没有端口
+    defaultPort: null,
+    // 后端 P4 已打通 SQLite 表数据写路径（主键定位）
+    editableTableData: true,
+    zeroDateDefaults: false,
+    // sqlite_master.sql 代替 SHOW CREATE TABLE
+    nativeShowCreateTable: false,
+    nativeUseStatement: false,
+    formatDdl: true,
+    // database 字段存库文件路径；连接时必填
+    requiresDatabase: true,
+    tableQualification: 'database',
+    proTools: {
+      schemaDiff: false,
+      monitor: false,
+      // 文件级备份（复制库文件）
+      backup: true,
+      globalSearch: false,
+      erDiagram: false,
+    },
+    monitorDialect: 'mysql',
+    backupDialect: 'sqlite',
+    // 表设计器暂复用 MySQL 方言生成 DDL（SQLite 语法兼容大部分 MySQL 语句）
+    ddlDialect: 'mysql',
+    multiStatementDdl: true,
+    supportsColumnPosition: false,
+    inlineColumnComments: false,
+    dataTypes: SQLITE_DATA_TYPES,
+    indexTypes: SQLITE_INDEX_TYPES,
+    supportsUnsigned: false,
+    supportsOnUpdateTimestamp: false,
+    supportsVirtualColumns: false,
+    autoIncrementRequiresPrimaryKey: true,
+    databaseDesignerMode: 'database',
     supportsDatabaseCharset: false,
     supportsAllDatabaseSearch: false,
   },

@@ -62,6 +62,8 @@ pub async fn get_process_list(
     match &snapshot.pool {
         AnyPool::MySql(pool) => mysql_process_list(pool).await,
         AnyPool::Postgres(pool) => postgres_process_list(pool).await,
+        // SQLite 为本地单文件库，无服务端进程/会话概念，监控暂不支持
+        AnyPool::Sqlite(_) => Err(anyhow!("SQLite 本地文件连接暂不支持会话监控")),
     }
 }
 
@@ -86,6 +88,8 @@ pub async fn kill_process(
             Ok(())
         }
         AnyPool::Postgres(pool) => postgres_kill_process(pool, process_id).await,
+        // SQLite 为本地单文件库，无服务端进程/会话概念
+        AnyPool::Sqlite(_) => Err(anyhow!("SQLite 本地文件连接暂不支持会话监控")),
     }
 }
 
@@ -98,6 +102,8 @@ pub async fn get_server_metrics(
     match &snapshot.pool {
         AnyPool::MySql(pool) => mysql_server_metrics(pool).await,
         AnyPool::Postgres(pool) => postgres_server_metrics(pool).await,
+        // SQLite 为本地单文件库，无服务端指标可采集
+        AnyPool::Sqlite(_) => Err(anyhow!("SQLite 本地文件连接暂不支持服务器监控")),
     }
 }
 

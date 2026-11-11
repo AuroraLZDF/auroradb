@@ -462,6 +462,220 @@ pub fn convert_pg_value(
     }
 }
 
+/// SQLite 列值类型分类
+///
+/// SQLite 的列类型是「声明亲和性」而非强类型：同一个 INTEGER 列里可能存 TEXT/BLOB。
+/// 因此这里只作为「格式提示」（如 DATETIME 提示按日期时间解析），实际读取按
+/// 多类型回退链进行，保证亲和性与存储类型不一致时仍能读出原始值。
+#[derive(Clone, Copy)]
+pub enum SqliteColumnKind {
+    Integer,
+    Real,
+    Numeric,
+    Boolean,
+    Datetime,
+    Date,
+    Time,
+    Blob,
+    Text,
+}
+
+/// 根据 SQLite 声明列类型分类。类型名取自 `SqliteTypeInfo::to_string()`
+/// （声明类型原文或运行时类型码：NULL/INTEGER/REAL/TEXT/BLOB）。
+pub fn classify_sqlite_column(data_type: &str) -> SqliteColumnKind {
+    let upper = data_type.to_uppercase();
+    if upper.contains("DATETIME") || upper.contains("TIMESTAMP") {
+        SqliteColumnKind::Datetime
+    } else if upper.contains("DATE") {
+        SqliteColumnKind::Date
+    } else if upper == "TIME" || upper.ends_with(" TIME") {
+        SqliteColumnKind::Time
+    } else if upper.contains("BOOL") {
+        SqliteColumnKind::Boolean
+    } else if upper.contains("INT") {
+        SqliteColumnKind::Integer
+    } else if upper.contains("REAL") || upper.contains("FLOA") || upper.contains("DOUB") {
+        SqliteColumnKind::Real
+    } else if upper.contains("NUMERIC") || upper.contains("DEC") {
+        SqliteColumnKind::Numeric
+    } else if upper.contains("BLOB") {
+        SqliteColumnKind::Blob
+    } else {
+        // TEXT 与未声明类型（表达式列的 NULL/空）都走文本+回退链
+        SqliteColumnKind::Text
+    }
+}
+
+/// 转换 SQLite 单元格值。
+///
+/// 与 MySQL/PG 版本一致：NULL 返回 `CellValue::Null`；按 kind 尝试类型化读取，
+/// 失败时沿「同语义类型 → 文本 → 原始字节」回退，禁止静默返回假 NULL。
+pub fn convert_sqlite_value(
+    row: &sqlx::sqlite::SqliteRow,
+    index: usize,
+    kind: SqliteColumnKind,
+) -> Result<CellValue> {
+    let (col_name, col_type) = row
+        .columns()
+        .get(index)
+        .map(|c| (c.name().to_string(), c.type_info().to_string()))
+        .unwrap_or_else(|| ("?".to_string(), String::new()));
+
+    let fail = |last_err: &dyn std::fmt::Display| -> anyhow::Error {
+        anyhow!(
+            "读取列 '{}'（{}）的值失败: {}",
+            col_name,
+            col_type,
+            last_err
+        )
+    };
+
+    // 空值快速路径：任何存储类型都先看 NULL
+    match row.try_get_raw(index) {
+        Ok(raw) if raw.is_null() => return Ok(CellValue::Null),
+        _ => {}
+    }
+
+    /// 读到原始字节时的统一出口：文本按 UTF-8，二进制转 Base64（与 BLOB 一致）
+    fn bytes_to_value(bytes: Vec<u8>) -> CellValue {
+        match std::str::from_utf8(&bytes) {
+            Ok(text) => CellValue::String(text.to_string()),
+            Err(_) => CellValue::Binary(STANDARD.encode(bytes)),
+        }
+    }
+
+    match kind {
+        SqliteColumnKind::Integer => {
+            if let Ok(Some(v)) = row.try_get::<Option<i64>, _>(index) {
+                return Ok(CellValue::Integer(v));
+            }
+            if let Ok(Some(v)) = row.try_get::<Option<f64>, _>(index) {
+                return Ok(CellValue::Float(v));
+            }
+            match row.try_get::<Option<String>, _>(index) {
+                Ok(Some(v)) => Ok(CellValue::String(v)),
+                Ok(None) => Ok(CellValue::Null),
+                Err(e) => match row.try_get::<Option<Vec<u8>>, _>(index) {
+                    Ok(Some(bytes)) => Ok(bytes_to_value(bytes)),
+                    Ok(None) => Ok(CellValue::Null),
+                    Err(_) => Err(fail(&e)),
+                },
+            }
+        }
+        SqliteColumnKind::Real => {
+            if let Ok(Some(v)) = row.try_get::<Option<f64>, _>(index) {
+                return Ok(CellValue::Float(v));
+            }
+            if let Ok(Some(v)) = row.try_get::<Option<i64>, _>(index) {
+                return Ok(CellValue::Integer(v));
+            }
+            match row.try_get::<Option<String>, _>(index) {
+                Ok(Some(v)) => Ok(CellValue::String(v)),
+                Ok(None) => Ok(CellValue::Null),
+                Err(e) => match row.try_get::<Option<Vec<u8>>, _>(index) {
+                    Ok(Some(bytes)) => Ok(bytes_to_value(bytes)),
+                    Ok(None) => Ok(CellValue::Null),
+                    Err(_) => Err(fail(&e)),
+                },
+            }
+        }
+        // NUMERIC 亲和性：存储可能是 INTEGER/REAL/TEXT，保留原文本避免精度丢失
+        SqliteColumnKind::Numeric => {
+            if let Ok(Some(v)) = row.try_get::<Option<i64>, _>(index) {
+                return Ok(CellValue::Integer(v));
+            }
+            if let Ok(Some(v)) = row.try_get::<Option<f64>, _>(index) {
+                return Ok(CellValue::Float(v));
+            }
+            match row.try_get::<Option<String>, _>(index) {
+                Ok(Some(v)) => Ok(CellValue::String(v)),
+                Ok(None) => Ok(CellValue::Null),
+                Err(e) => match row.try_get::<Option<Vec<u8>>, _>(index) {
+                    Ok(Some(bytes)) => Ok(bytes_to_value(bytes)),
+                    Ok(None) => Ok(CellValue::Null),
+                    Err(_) => Err(fail(&e)),
+                },
+            }
+        }
+        // SQLite 无独立布尔存储，BOOLEAN 列通常存 0/1
+        SqliteColumnKind::Boolean => {
+            if let Ok(Some(v)) = row.try_get::<Option<bool>, _>(index) {
+                return Ok(CellValue::Integer(if v { 1 } else { 0 }));
+            }
+            match row.try_get::<Option<i64>, _>(index) {
+                Ok(Some(v)) => Ok(CellValue::Integer(v)),
+                Ok(None) => Ok(CellValue::Null),
+                Err(e0) => match row.try_get::<Option<String>, _>(index) {
+                    Ok(Some(v)) => Ok(CellValue::String(v)),
+                    Ok(None) => Ok(CellValue::Null),
+                    Err(_) => Err(fail(&e0)),
+                },
+            }
+        }
+        // DATETIME/TIMESTAMP：TEXT（SQLite 格式表）/INTEGER（unix 秒）/REAL（儒略日）
+        // 都能被 chrono 解码；失败则原样返回文本
+        SqliteColumnKind::Datetime => {
+            match row.try_get::<Option<chrono::NaiveDateTime>, _>(index) {
+                Ok(Some(v)) => Ok(CellValue::DateTime(
+                    v.format("%Y-%m-%d %H:%M:%S%.f").to_string(),
+                )),
+                Ok(None) => Ok(CellValue::Null),
+                Err(e0) => match row.try_get::<Option<String>, _>(index) {
+                    Ok(Some(v)) => Ok(CellValue::DateTime(v)),
+                    Ok(None) => Ok(CellValue::Null),
+                    Err(_) => Err(fail(&e0)),
+                },
+            }
+        }
+        SqliteColumnKind::Date => match row.try_get::<Option<chrono::NaiveDate>, _>(index) {
+            Ok(Some(v)) => Ok(CellValue::DateTime(v.to_string())),
+            Ok(None) => Ok(CellValue::Null),
+            Err(e0) => match row.try_get::<Option<String>, _>(index) {
+                Ok(Some(v)) => Ok(CellValue::DateTime(v)),
+                Ok(None) => Ok(CellValue::Null),
+                Err(_) => Err(fail(&e0)),
+            },
+        },
+        SqliteColumnKind::Time => match row.try_get::<Option<chrono::NaiveTime>, _>(index) {
+            Ok(Some(v)) => Ok(CellValue::DateTime(v.to_string())),
+            Ok(None) => Ok(CellValue::Null),
+            Err(e0) => match row.try_get::<Option<String>, _>(index) {
+                Ok(Some(v)) => Ok(CellValue::DateTime(v)),
+                Ok(None) => Ok(CellValue::Null),
+                Err(_) => Err(fail(&e0)),
+            },
+        },
+        // BLOB 以 Base64 字符串返回，与 MySQL/PG 保持一致；TEXT 存储时读原文
+        SqliteColumnKind::Blob => match row.try_get::<Option<Vec<u8>>, _>(index) {
+            Ok(Some(bytes)) => Ok(bytes_to_value(bytes)),
+            Ok(None) => Ok(CellValue::Null),
+            Err(e0) => match row.try_get::<Option<String>, _>(index) {
+                Ok(Some(v)) => Ok(CellValue::String(v)),
+                Ok(None) => Ok(CellValue::Null),
+                Err(_) => Err(fail(&e0)),
+            },
+        },
+        // 默认（TEXT/未声明类型）：依次尝试 文本 → 整数 → 浮点 → 字节
+        SqliteColumnKind::Text => match row.try_get::<Option<String>, _>(index) {
+            Ok(Some(v)) => Ok(CellValue::String(v)),
+            Ok(None) => Ok(CellValue::Null),
+            Err(e0) => {
+                if let Ok(Some(v)) = row.try_get::<Option<i64>, _>(index) {
+                    return Ok(CellValue::Integer(v));
+                }
+                if let Ok(Some(v)) = row.try_get::<Option<f64>, _>(index) {
+                    return Ok(CellValue::Float(v));
+                }
+                match row.try_get::<Option<Vec<u8>>, _>(index) {
+                    Ok(Some(bytes)) => Ok(bytes_to_value(bytes)),
+                    Ok(None) => Ok(CellValue::Null),
+                    Err(_) => Err(fail(&e0)),
+                }
+            }
+        },
+    }
+}
+
 /// 引用值（按驱动选择字符串转义规则）
 ///
 /// MySQL 与 PG 的字符串字面量规则不同：MySQL 用反斜杠转义，PG 标准字符串只翻倍单引号。
@@ -469,9 +683,10 @@ pub fn convert_pg_value(
 pub(super) fn quote_value(value: &serde_json::Value, driver: DriverKind) -> Result<String> {
     match value {
         serde_json::Value::String(s) => {
+            // SQLite 标准字符串字面量同样只翻倍单引号（反斜杠不是转义符）
             let escaped = match driver {
                 DriverKind::MySql => escape_string(s),
-                DriverKind::Postgres => escape_string_pg(s),
+                DriverKind::Postgres | DriverKind::Sqlite => escape_string_pg(s),
             };
             Ok(format!("'{}'", escaped))
         }

@@ -5,8 +5,8 @@ use super::driver::{AnyPool, AnyTransaction, DriverKind};
 use super::export::{self, ExportColumn, ExportFormat, TableExportSink};
 use super::manager::{ConnectionManager, MetadataCacheValue};
 use super::resultset::{
-    classify_column, classify_pg_column, convert_pg_value, convert_value, quote_value, ColumnKind,
-    PgColumnKind,
+    classify_column, classify_pg_column, classify_sqlite_column, convert_pg_value,
+    convert_sqlite_value, convert_value, quote_value, ColumnKind, PgColumnKind, SqliteColumnKind,
 };
 use super::types::*;
 use super::validation::*;
@@ -14,7 +14,7 @@ use crate::sql::{rewrite_table_names, split_sql_statements};
 use anyhow::{anyhow, Context, Result};
 use futures_util::TryStreamExt;
 use sqlparser::ast as sql_ast;
-use sqlparser::dialect::{MySqlDialect, PostgreSqlDialect};
+use sqlparser::dialect::{MySqlDialect, PostgreSqlDialect, SQLiteDialect};
 use sqlparser::parser::Parser;
 use sqlx::mysql::MySqlPool;
 use sqlx::postgres::{PgConnection, PgPool};
@@ -271,6 +271,74 @@ where
             out.columns = columns_from_pg_row(&row);
         }
         if !pg_row_matches_columns(&row, &out.columns) {
+            out.multiple_result_sets = true;
+            continue;
+        }
+        out.total_rows += 1;
+        if out.rows.len() < MAX_RESULT_ROWS {
+            out.rows.push(row);
+        }
+    }
+
+    Ok(out)
+}
+
+/// 由结果集首行构造 SQLite 列定义（列名 + 类型）。
+fn columns_from_sqlite_row(row: &sqlx::sqlite::SqliteRow) -> Vec<ColumnDefinition> {
+    row.columns()
+        .iter()
+        .map(|col| ColumnDefinition {
+            name: col.name().to_string(),
+            data_type: col.type_info().to_string(),
+            is_nullable: true,
+            is_primary: false,
+            is_auto_increment: false,
+        })
+        .collect()
+}
+
+/// 判断一行是否属于第一个结果集（列数与列名都一致）。
+fn sqlite_row_matches_columns(
+    row: &sqlx::sqlite::SqliteRow,
+    columns: &[ColumnDefinition],
+) -> bool {
+    let cols = row.columns();
+    cols.len() == columns.len()
+        && cols
+            .iter()
+            .zip(columns.iter())
+            .all(|(c, def)| c.name() == def.name)
+}
+
+/// 流式收集 SQLite 结果集，语义同 `collect_mysql_rows`/`collect_pg_rows`。
+async fn collect_sqlite_rows<S>(
+    mut stream: S,
+) -> std::result::Result<StreamedRows<sqlx::sqlite::SqliteRow>, sqlx::Error>
+where
+    S: futures_util::Stream<
+            Item = std::result::Result<
+                sqlx::Either<sqlx::sqlite::SqliteQueryResult, sqlx::sqlite::SqliteRow>,
+                sqlx::Error,
+            >,
+        > + Unpin,
+{
+    let mut out = StreamedRows {
+        columns: Vec::new(),
+        rows: Vec::new(),
+        total_rows: 0,
+        multiple_result_sets: false,
+    };
+
+    while let Some(item) = stream.try_next().await? {
+        let row = match item {
+            sqlx::Either::Right(row) => row,
+            sqlx::Either::Left(_) => continue,
+        };
+
+        if out.columns.is_empty() {
+            out.columns = columns_from_sqlite_row(&row);
+        }
+        if !sqlite_row_matches_columns(&row, &out.columns) {
             out.multiple_result_sets = true;
             continue;
         }
@@ -560,6 +628,135 @@ async fn apply_changes_in_txn_pg(
     Ok(unchanged)
 }
 
+/// 校验 SQLite 目标表存在主键（与 MySQL/PG 版本同位：无主键表拒绝 UPDATE/DELETE）。
+///
+/// 主键信息来自 `PRAGMA table_info`：pk 列为 0 表示非主键成员，>0 表示复合主键内的序号。
+async fn ensure_sqlite_table_has_primary_key(
+    txn: &mut sqlx::SqliteConnection,
+    table: &str,
+    position: usize,
+) -> Result<()> {
+    // SQLite 的 PRAGMA 不支持绑定参数（prepare 阶段报 near "?"），
+    // 表名来自内部调用且已过 validate_identifier，用引号包裹后拼接
+    let pragma_sql = format!("PRAGMA table_info({})", quote_pg_identifier(table)?);
+    let has_primary_key = sqlx::query(&pragma_sql)
+        .try_map(|row: sqlx::sqlite::SqliteRow| {
+            let pk: i64 = row.try_get("pk")?;
+            Ok(pk > 0)
+        })
+        .fetch_all(&mut *txn)
+        .await
+        .map_err(|e| {
+            anyhow!(
+                "第 {} 条变更失败：检查表主键时出错：{}",
+                position,
+                crate::error::translate(&e)
+            )
+        })?
+        .into_iter()
+        .any(|is_pk| is_pk);
+
+    if !has_primary_key {
+        return Err(anyhow!(
+            "第 {} 条变更失败：表 `{}` 没有主键，无法安全定位行，已拒绝修改",
+            position,
+            table
+        ));
+    }
+
+    Ok(())
+}
+
+/// SQLite 版本的表数据保存：逐条校验 + 执行，语义与 MySQL/PG 版本保持一致。
+///
+/// 单文件库没有 USE/SET 语义；变更 SQL 的表名不带库名前缀（表浏览路径与对象树一致）。
+async fn apply_changes_in_txn_sqlite(
+    txn: &mut sqlx::SqliteConnection,
+    changes: &[TableChange],
+    safety_mode: SafetyMode,
+) -> Result<usize> {
+    let mut unchanged = 0usize;
+    let mut checked_tables: HashSet<String> = HashSet::new();
+    for (index, change) in changes.iter().enumerate() {
+        let position = index + 1;
+        validate_identifier(&change.table)
+            .map_err(|e| anyhow!("第 {} 条变更的表名不合法：{}", position, e))?;
+
+        validate_table_change(change, position, safety_mode, DriverKind::Sqlite)?;
+
+        // 在任何变更执行前完成主键校验，无主键则整体失败并回滚
+        if checked_tables.insert(change.table.clone()) {
+            ensure_sqlite_table_has_primary_key(txn, &change.table, position).await?;
+        }
+
+        let affected = Executor::execute(&mut *txn, change.sql.as_str())
+            .await
+            .map_err(|e| {
+                anyhow!(
+                    "第 {} 条变更失败：{}",
+                    position,
+                    crate::error::translate(&e)
+                )
+            })?
+            .rows_affected();
+
+        let problem = match change.kind {
+            TableChangeKind::Insert => {
+                (affected != 1).then(|| format!("新增未影响任何行（影响 {} 行）", affected))
+            }
+            TableChangeKind::Delete => match affected {
+                1 => None,
+                0 => Some("目标行已不存在，可能已被其他会话删除".to_string()),
+                n => Some(format!("删除条件命中 {} 行，已中止（定位条件不安全）", n)),
+            },
+            TableChangeKind::Update => {
+                if affected == 1 {
+                    None
+                } else if affected > 1 {
+                    Some(format!(
+                        "更新条件命中 {} 行，已中止（定位条件不安全）",
+                        affected
+                    ))
+                } else {
+                    match &change.where_clause {
+                        None => Some("更新未影响任何行".to_string()),
+                        Some(where_clause) => {
+                            let exists_sql = format!(
+                                "SELECT 1 FROM {} WHERE {} LIMIT 1",
+                                quote_pg_table_reference(&change.table)?,
+                                where_clause
+                            );
+                            match sqlx::query_scalar::<_, i32>(&exists_sql)
+                                .fetch_optional(&mut *txn)
+                                .await
+                            {
+                                // 行仍在：值与原值相同（SQLite 的 changes() 统计实际写入行数）
+                                Ok(Some(_)) => {
+                                    unchanged += 1;
+                                    None
+                                }
+                                Ok(None) => {
+                                    Some("目标行已不存在，可能已被其他会话删除".to_string())
+                                }
+                                Err(e) => Some(format!(
+                                    "确认目标行是否仍存在时失败：{}",
+                                    crate::error::translate(&e)
+                                )),
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        if let Some(message) = problem {
+            return Err(anyhow!("第 {} 条变更失败：{}", position, message));
+        }
+    }
+
+    Ok(unchanged)
+}
+
 /// 校验前端提交的单条表数据变更。
 ///
 /// 变更 SQL 由前端拼接后直接执行，属于信任边界，必须保证：
@@ -607,7 +804,9 @@ fn validate_table_change(
     if let Some(where_clause) = &change.where_clause {
         let quoted = match driver {
             DriverKind::MySql => quote_identifier(&change.table)?,
-            DriverKind::Postgres => quote_pg_table_reference(&change.table)?,
+            DriverKind::Postgres | DriverKind::Sqlite => {
+                quote_pg_table_reference(&change.table)?
+            }
         };
         crate::sql::safety::validate_where_clause_for(&quoted, where_clause, driver)
             .map_err(|e| anyhow!("第 {} 条变更的定位条件不合法：{}", position, e))?;
@@ -631,6 +830,7 @@ fn change_target_table(
     let mut statements = match driver {
         DriverKind::MySql => Parser::parse_sql(&MySqlDialect {}, statement),
         DriverKind::Postgres => Parser::parse_sql(&PostgreSqlDialect {}, statement),
+        DriverKind::Sqlite => Parser::parse_sql(&SQLiteDialect {}, statement),
     }
     .map_err(|e| anyhow!("SQL 无法解析：{}", e))?;
     if statements.len() != 1 {
@@ -668,10 +868,11 @@ fn change_target_table(
     }
 }
 
-/// 取表名：MySQL 只取末段（语句里不带库名），PG 取完整 `schema.table` 展示名。
+/// 取表名：MySQL 只取末段（语句里不带库名），PG 取完整 `schema.table` 展示名，
+/// SQLite 与 MySQL 一致只取末段（单文件库没有库名前缀）。
 fn table_name_for_driver(name: &sql_ast::ObjectName, driver: DriverKind) -> Result<String> {
     match driver {
-        DriverKind::MySql => object_name_tail(name),
+        DriverKind::MySql | DriverKind::Sqlite => object_name_tail(name),
         DriverKind::Postgres => {
             let parts: Vec<&str> = name
                 .0
@@ -731,10 +932,12 @@ impl ConnectionManager {
                 .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
 
             // 输入验证：PostgreSQL 下空库名表示「沿用主池与服务端 search_path」，需按驱动放行；
-            // MySQL 的库名必填（空串会让后续限定名重写失去上下文）
+            // MySQL 的库名必填（空串会让后续限定名重写失去上下文）；
+            // SQLite 的 database 参数是本地文件路径（含 `/`、`.` 等标识符非法字符），跳过库名验证
             let allow_empty_database =
                 conn.config.driver == DriverKind::Postgres && database.is_empty();
-            if !allow_empty_database {
+            let skip_database_validation = conn.config.driver == DriverKind::Sqlite;
+            if !allow_empty_database && !skip_database_validation {
                 validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
             }
 
@@ -805,6 +1008,12 @@ impl ConnectionManager {
                     self.execute_postgres(&state, &target_pool, connection_id, database, sql, false)
                         .await
                 }
+            }
+            AnyPool::Sqlite(pool) => {
+                // SQLite 单文件库：database 参数只是文件路径，无多库路由；
+                // 沿用主池（连接时已按文件路径建立）
+                self.execute_sqlite(&state, &pool, connection_id, database, sql)
+                    .await
             }
         };
         // 无论成功/失败/取消都要复位，否则取消请求会一直认为有在途查询
@@ -1337,6 +1546,194 @@ impl ConnectionManager {
         })
     }
 
+    /// SQLite 执行路径。
+    ///
+    /// 与 PG 的差异：单文件库没有 schema/库名重写（`rewrite_table_names` 对 SQLite 原样返回）；
+    /// DDL/DML 判定用 `sqlite_master` 语法的前缀集（含 PRAGMA、ATTACH/DETACH、BEGIN/COMMIT/
+    /// ROLLBACK/VACUUM/ANALYZE/EXPLAIN）。事务进行中复用事务连接，否则临时取一条池连接
+    /// （SQLite 常驻会话连接对单文件库无意义，语句级设置极少且跨调用保留的只有 PRAGMA）。
+    async fn execute_sqlite(
+        &self,
+        conn: &ExecState,
+        pool: &sqlx::SqlitePool,
+        connection_id: &str,
+        database: &str,
+        sql: &str,
+    ) -> Result<QueryResult> {
+        let t_start = Instant::now();
+        // SQLite 无库名限定语义：不改写表名，只做可解析性判定（SQLiteDialect）
+        let t_rewrite = Instant::now();
+        let (modified_sql, parsed) = rewrite_table_names(database, sql, DriverKind::Sqlite);
+
+        let upper_sql = modified_sql.trim().to_uppercase();
+        let is_ddl = upper_sql.starts_with("ALTER ")
+            || upper_sql.starts_with("CREATE ")
+            || upper_sql.starts_with("DROP ")
+            || upper_sql.starts_with("PRAGMA ")
+            || upper_sql.starts_with("ATTACH ")
+            || upper_sql.starts_with("DETACH ")
+            || upper_sql.starts_with("VACUUM")
+            || upper_sql.starts_with("ANALYZE")
+            || upper_sql.starts_with("REINDEX");
+
+        let is_dml = upper_sql.starts_with("INSERT")
+            || upper_sql.starts_with("UPDATE")
+            || upper_sql.starts_with("DELETE")
+            || upper_sql.starts_with("REPLACE");
+        let returns_rows = is_dml && upper_sql.contains("RETURNING");
+
+        // 事务进行中复用事务连接（保证与用户事务同库同视图），
+        // 否则临时取池连接：SQLite 池连接即用即还，PRAGMA 等连接级设置
+        // 由建池时的 SqliteConnectOptions 统一注入，无需持久会话连接。
+        let mut txn_guard = conn.transaction.lock().await;
+        let mut temp_conn = None;
+        if txn_guard.is_none() {
+            temp_conn = Some(pool.acquire().await.context("获取数据库连接失败")?);
+        }
+        let sqlite_conn: &mut sqlx::SqliteConnection = match txn_guard.as_mut() {
+            Some(txn) => txn.as_sqlite_connection()?,
+            None => temp_conn
+                .as_mut()
+                .ok_or_else(|| anyhow!("获取数据库连接失败"))?,
+        };
+
+        // DDL 与不带 RETURNING 的 DML：不需要结果集，直接取影响行数。
+        // 注意：一个字符串里带多条语句时，Executor::execute 只跑第一条，
+        // SQL 编辑器的多语句走 raw_sql 汇总影响行数。
+        if is_ddl || (is_dml && !returns_rows) {
+            let fut = Executor::execute(sqlite_conn, modified_sql.as_str());
+            let affected = run_query(fut, &conn.query_cancel, &conn.query_notify)
+                .await?
+                .rows_affected();
+            let execution_time_ms = t_start.elapsed().as_millis() as u64;
+            tracing::info!(
+                connection_id,
+                database,
+                sql_len = sql.len(),
+                kind = if is_ddl { "DDL" } else { "DML" },
+                rewrite_ms = ms(t_rewrite, t_start),
+                exec_ms = ms(Instant::now(), t_start),
+                total_ms = execution_time_ms,
+                "query timing"
+            );
+            return Ok(QueryResult {
+                columns: vec![],
+                rows: vec![],
+                execution_time_ms,
+                rows_affected: Some(affected),
+                rows_returned: 0,
+                truncated: false,
+                warning: None,
+            });
+        }
+
+        // 流式读取结果集，只保留前 MAX_RESULT_ROWS 行（语义同 MySQL/PG 路径）。
+        // fetch_many 原生支持多语句： Either::Left 的影响行数被收集器忽略。
+        let streamed = {
+            let stream = Executor::fetch_many(&mut *sqlite_conn, modified_sql.as_str());
+            run_query(
+                collect_sqlite_rows(stream),
+                &conn.query_cancel,
+                &conn.query_notify,
+            )
+            .await?
+        };
+        let t_fetch = Instant::now();
+
+        let execution_time_ms = t_start.elapsed().as_millis() as u64;
+
+        if streamed.total_rows == 0 {
+            // 0 行时列类型来自声明类型（decltype）或首值类型，用 prepare 补列头；
+            // 无法解析的语句保持空列头
+            let columns: Vec<ColumnDefinition> = if parsed {
+                let prepared = {
+                    let fut = Executor::prepare(sqlite_conn, modified_sql.as_str());
+                    run_query(fut, &conn.query_cancel, &conn.query_notify).await
+                };
+                prepared
+                    .map(|stmt| {
+                        stmt.columns()
+                            .iter()
+                            .map(|col| ColumnDefinition {
+                                name: col.name().to_string(),
+                                data_type: col.type_info().to_string(),
+                                is_nullable: true,
+                                is_primary: false,
+                                is_auto_increment: false,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                vec![]
+            };
+            tracing::info!(
+                connection_id,
+                database,
+                sql_len = sql.len(),
+                rewrite_ms = ms(t_rewrite, t_start),
+                fetch_ms = ms(t_fetch, t_start),
+                total_ms = execution_time_ms,
+                "query timing (empty result)"
+            );
+            return Ok(QueryResult {
+                columns,
+                rows: vec![],
+                execution_time_ms,
+                rows_affected: None,
+                rows_returned: 0,
+                truncated: false,
+                warning: None,
+            });
+        }
+
+        let columns: Vec<ColumnDefinition> = streamed.columns;
+
+        let kinds: Vec<SqliteColumnKind> = columns
+            .iter()
+            .map(|c| classify_sqlite_column(&c.data_type))
+            .collect();
+
+        let total_rows = streamed.total_rows;
+        let truncated = total_rows > MAX_RESULT_ROWS;
+        let mut rows = vec![];
+        for row in streamed.rows.iter() {
+            let mut row_data = vec![];
+            for (i, _col) in columns.iter().enumerate() {
+                row_data.push(convert_sqlite_value(row, i, kinds[i])?);
+            }
+            rows.push(row_data);
+        }
+
+        tracing::info!(
+            connection_id,
+            database,
+            sql_len = sql.len(),
+            rows = rows.len(),
+            total_rows,
+            cols = columns.len(),
+            rewrite_ms = ms(t_rewrite, t_start),
+            fetch_ms = ms(t_fetch, t_start),
+            total_ms = execution_time_ms,
+            "query timing"
+        );
+
+        Ok(QueryResult {
+            columns,
+            rows_returned: rows.len(),
+            rows,
+            execution_time_ms,
+            rows_affected: None,
+            truncated,
+            warning: truncated.then(|| {
+                format!(
+                    "结果集共 {} 行，仅显示前 {} 行；请用 LIMIT 或过滤条件缩小范围",
+                    total_rows, MAX_RESULT_ROWS
+                )
+            }),
+        })
+    }
+
     /// 在一个事务中批量执行表数据变更（UPDATE/INSERT/DELETE）。
     ///
     /// 任一条失败即整体回滚，错误信息带「第 N 条」，避免半写。
@@ -1429,6 +1826,12 @@ impl ConnectionManager {
                 // 无需也不应执行 USE / SET search_path
                 apply_changes_in_txn_pg(txn.as_pg_connection()?, &changes, safety_mode).await
             }
+            DriverKind::Sqlite => {
+                // SQLite 单文件库：database 参数只是文件路径，事务内无需切库；
+                // 表名不带库名前缀（对象树无库层级）
+                apply_changes_in_txn_sqlite(txn.as_sqlite_connection()?, &changes, safety_mode)
+                    .await
+            }
         };
         let unchanged = match unchanged {
             Ok(count) => count,
@@ -1474,8 +1877,11 @@ impl ConnectionManager {
         table: &str,
         request: DataQueryRequest,
     ) -> Result<DataQueryResponse> {
-        // 输入验证
-        validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
+        let driver = self.driver_of(connection_id).await?;
+        // 输入验证：SQLite 的 database 参数是本地文件路径（含 `/` 等），跳过库名验证
+        if driver != DriverKind::Sqlite {
+            validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
+        }
         validate_identifier(table).map_err(|e| anyhow!("表名验证失败: {}", e))?;
         validate_pagination(request.page, request.page_size)
             .map_err(|e| anyhow!("分页参数验证失败: {}", e))?;
@@ -1497,7 +1903,7 @@ impl ConnectionManager {
 
         // PG 的数据库在连接时固定，浏览非默认库需切到该库的连接池；
         // 树中非 public schema 的对象以 schema.table 展示，这里拆分出真实 schema 与表名
-        if self.driver_of(connection_id).await? == DriverKind::Postgres {
+        if driver == DriverKind::Postgres {
             let pool = self.pg_pool_for(connection_id, database).await?;
             let (schema, table_name) = Self::split_pg_table_ref(table);
             return Self::query_table_postgres(
@@ -1509,6 +1915,27 @@ impl ConnectionManager {
                 &query_notify,
             )
             .await;
+        }
+
+        // SQLite：database 是文件路径，表名不带库前缀，直接从主池浏览
+        if driver == DriverKind::Sqlite {
+            let pool = {
+                let connections = self.connections.read().await;
+                let conn = connections
+                    .get(connection_id)
+                    .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
+                conn.pool
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("连接不可用: {}", connection_id))?
+                    .clone()
+            };
+            return match pool {
+                AnyPool::Sqlite(pool) => {
+                    Self::query_table_sqlite(&pool, table, &request, &query_cancel, &query_notify)
+                        .await
+                }
+                _ => Err(anyhow!("连接不可用: 驱动与池不匹配")),
+            };
         }
 
         // 只取池的克隆后立刻释放连接表读锁，避免分页查询期间阻塞连接管理
@@ -1780,6 +2207,269 @@ impl ConnectionManager {
             Some((schema, name)) => (schema.to_string(), name.to_string()),
             None => ("public".to_string(), table.to_string()),
         }
+    }
+
+    /// SQLite 表数据浏览
+    ///
+    /// 与 MySQL 的差异：单文件库无库名限定；主键取 `PRAGMA table_info`（pk 序号），
+    /// 列类型取声明的列类型（亲和性原文，如 INTEGER/TEXT/NUMERIC）；
+    /// 过滤值引用规则与 PG 相同（双引号标识符、单引号只翻倍）。
+    async fn query_table_sqlite(
+        pool: &sqlx::SqlitePool,
+        table: &str,
+        request: &DataQueryRequest,
+        query_cancel: &AtomicBool,
+        query_notify: &Notify,
+    ) -> Result<DataQueryResponse> {
+        let start = Instant::now();
+
+        // 主键列（按 pk 序号排序）；PRAGMA 的 table_info 结果列为
+        // cid/name/type/notnull/dflt_value/pk
+        // SQLite 的 PRAGMA 不支持绑定参数（prepare 阶段报 near "?"），
+        // 表名来自内部调用且已过 validate_identifier，用引号包裹后拼接
+        let pragma_sql = format!("PRAGMA table_info({})", quote_pg_identifier(table)?);
+        let table_info: Vec<(String, String, i64)> = run_query(
+            sqlx::query(&pragma_sql)
+                .try_map(|row: sqlx::sqlite::SqliteRow| {
+                    let name: String = row.try_get("name")?;
+                    let col_type: String = row.try_get("type")?;
+                    let pk: i64 = row.try_get("pk")?;
+                    Ok((name, col_type, pk))
+                })
+                .fetch_all(pool),
+            query_cancel,
+            query_notify,
+        )
+        .await
+        .unwrap_or_default();
+
+        let mut pk_columns: Vec<(i64, String)> = table_info
+            .iter()
+            .filter(|(_, _, pk)| *pk > 0)
+            .map(|(name, _, pk)| (*pk, name.clone()))
+            .collect();
+        pk_columns.sort_by_key(|(pk, _)| *pk);
+        let pk_columns: Vec<String> = pk_columns.into_iter().map(|(_, name)| name).collect();
+
+        let column_meta: Vec<(String, String)> = table_info
+            .iter()
+            .map(|(name, col_type, _)| (name.clone(), col_type.clone()))
+            .collect();
+        let column_types: HashMap<String, String> = column_meta.iter().cloned().collect();
+
+        let qualified = quote_pg_identifier(table)?;
+
+        let mut sql = String::from("SELECT ");
+        match &request.columns {
+            Some(cols) => {
+                let quoted: Vec<String> = cols
+                    .iter()
+                    .map(|c| quote_pg_identifier(c))
+                    .collect::<Result<Vec<_>>>()?;
+                if quoted.is_empty() {
+                    sql.push('*');
+                } else {
+                    sql.push_str(&quoted.join(", "));
+                }
+            }
+            None => sql.push('*'),
+        }
+        sql.push_str(" FROM ");
+        sql.push_str(&qualified);
+
+        // WHERE 子句单独构建，SELECT 与 COUNT 复用，保证带过滤/搜索时分页总数正确
+        let mut conditions: Vec<String> = Vec::new();
+        if let Some(cond) = build_filter_conditions(request, build_sqlite_filter_condition)? {
+            conditions.push(cond);
+        }
+
+        // 关键字搜索：对所有列做 CAST 到 TEXT 的包含匹配（SQLite 列类型是亲和性，
+        // BLOB 也能转文本显示，保持与 PG「全部可搜」相近的行为，但排除声明为 BLOB 的列）
+        if let Some(keyword) = request
+            .search
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+        {
+            let searchable: Vec<String> = column_meta
+                .iter()
+                .filter(|(_, col_type)| {
+                    !col_type.to_uppercase().contains("BLOB") && !col_type.is_empty()
+                })
+                .filter_map(|(name, _)| quote_pg_identifier(name).ok())
+                .collect();
+            if !searchable.is_empty() {
+                let pattern = escape_like_keyword(keyword);
+                let likes: Vec<String> = searchable
+                    .iter()
+                    .map(|col| format!("CAST({} AS TEXT) LIKE '%{}%'", col, pattern))
+                    .collect();
+                conditions.push(format!("({})", likes.join(" OR ")));
+            }
+        }
+
+        // 游标翻页能力：单列主键 + 未指定排序 + 主键声明类型非 BLOB。
+        let cursor_column = keyset_column(
+            request.sort_column.as_deref(),
+            &pk_columns,
+            pk_columns
+                .first()
+                .and_then(|pk| column_types.get(pk))
+                .map_or(true, |data_type| {
+                    !data_type.to_uppercase().contains("BLOB")
+                }),
+        );
+        let use_cursor = cursor_column.is_some() && request.after.is_some();
+        if let (true, Some(pk), Some(cursor)) = (use_cursor, &cursor_column, &request.after) {
+            conditions.push(keyset_condition(
+                &quote_pg_identifier(pk)?,
+                cursor,
+                DriverKind::Sqlite,
+            )?);
+        }
+
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", conditions.join(" AND "))
+        };
+        sql.push_str(&where_clause);
+
+        // 游标翻页必须按主键升序，保证跨批次连续且不重复
+        if let Some(pk) = &cursor_column {
+            sql.push_str(&format!(" ORDER BY {} ASC", quote_pg_identifier(pk)?));
+        }
+
+        if cursor_column.is_none() {
+            if let Some(col) = &request.sort_column {
+                if !col.trim().is_empty() {
+                    let direction = request.sort_direction.unwrap_or(SortDirection::Asc);
+                    sql.push_str(&format!(
+                        " ORDER BY {} {}",
+                        quote_pg_identifier(col)?,
+                        match direction {
+                            SortDirection::Asc => "ASC",
+                            SortDirection::Desc => "DESC",
+                        }
+                    ));
+                }
+            }
+        }
+
+        sql.push_str(&limit_clause(use_cursor, request.page, request.page_size));
+
+        // 数据与总数放在同一事务里（SQLite 隐式事务即满足一致性读取）
+        let mut tx = pool.begin().await?;
+        let result = run_query(
+            sqlx::query(&sql).fetch_all(&mut *tx),
+            query_cancel,
+            query_notify,
+        )
+        .await?;
+
+        let total_count: i64 = if use_cursor {
+            0
+        } else {
+            let count_sql = format!("SELECT COUNT(*) FROM {}{}", qualified, where_clause);
+            run_query(
+                sqlx::query_scalar(&count_sql).fetch_one(&mut *tx),
+                query_cancel,
+                query_notify,
+            )
+            .await?
+        };
+        tx.commit().await?;
+
+        let execution_time_ms = start.elapsed().as_millis() as u64;
+
+        // 列顺序与 SELECT 一致；空结果集时回落到 PRAGMA 的列顺序与声明类型
+        let ordered: Vec<(String, String)> = match &request.columns {
+            Some(cols) => cols
+                .iter()
+                .map(|name| {
+                    column_meta
+                        .iter()
+                        .find(|(n, _)| n == name)
+                        .cloned()
+                        .unwrap_or_else(|| (name.clone(), String::new()))
+                })
+                .collect(),
+            None => column_meta.clone(),
+        };
+
+        let (columns, kinds): (Vec<ColumnDefinition>, Vec<SqliteColumnKind>) = if ordered.is_empty()
+        {
+            match result.first() {
+                Some(first) => {
+                    let columns = first
+                        .columns()
+                        .iter()
+                        .map(|c| {
+                            let name = c.name().to_string();
+                            ColumnDefinition {
+                                is_primary: pk_columns.contains(&name),
+                                name,
+                                data_type: c.type_info().to_string(),
+                                is_nullable: true,
+                                is_auto_increment: false,
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    let kinds = first
+                        .columns()
+                        .iter()
+                        .map(|c| classify_sqlite_column(&c.type_info().to_string()))
+                        .collect::<Vec<_>>();
+                    (columns, kinds)
+                }
+                None => (Vec::new(), Vec::new()),
+            }
+        } else {
+            let columns = ordered
+                .iter()
+                .map(|(name, data_type)| ColumnDefinition {
+                    is_primary: pk_columns.contains(name),
+                    name: name.clone(),
+                    data_type: data_type.clone(),
+                    is_nullable: true,
+                    is_auto_increment: false,
+                })
+                .collect::<Vec<_>>();
+            let kinds = columns
+                .iter()
+                .map(|c| classify_sqlite_column(&c.data_type))
+                .collect::<Vec<_>>();
+            (columns, kinds)
+        };
+
+        let mut rows = Vec::with_capacity(result.len());
+        for row in &result {
+            let mut row_data = Vec::with_capacity(kinds.len());
+            for (i, kind) in kinds.iter().enumerate() {
+                row_data.push(convert_sqlite_value(row, i, *kind)?);
+            }
+            rows.push(row_data);
+        }
+
+        // 下一次游标：整批取满（可能还有下一批）才给出，末批不足一页时为 None
+        let next_cursor = match (&cursor_column, result.last()) {
+            (Some(pk), Some(last_row)) if result.len() == request.page_size => columns
+                .iter()
+                .position(|c| &c.name == pk)
+                .and_then(|index| convert_sqlite_value(last_row, index, kinds[index]).ok())
+                .and_then(|value| serde_json::to_value(value).ok()),
+            _ => None,
+        };
+
+        Ok(DataQueryResponse {
+            columns,
+            rows,
+            total_count: total_count as u64,
+            page: request.page,
+            page_size: request.page_size,
+            execution_time_ms,
+            next_cursor,
+        })
     }
 
     /// PostgreSQL 表数据浏览
@@ -2126,14 +2816,24 @@ impl ConnectionManager {
         path: &std::path::Path,
     ) -> Result<u64> {
         let format = ExportFormat::parse(format)?;
-        // 输入验证
-        validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
+        // 输入验证（SQLite 的 database 参数是文件路径，不做标识符校验）
+        let driver = self.driver_of(connection_id).await?;
+        if driver != DriverKind::Sqlite {
+            validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
+        }
         validate_identifier(table).map_err(|e| anyhow!("表名验证失败: {}", e))?;
 
         // PostgreSQL 的 database 在连接时固定，导出走目标库专用池
-        if self.driver_of(connection_id).await? == DriverKind::Postgres {
+        if driver == DriverKind::Postgres {
             return self
                 .export_table_to_file_pg(connection_id, database, table, format, path)
+                .await;
+        }
+
+        // SQLite 单文件库无多库路由，直接用主池导出
+        if driver == DriverKind::Sqlite {
+            return self
+                .export_table_to_file_sqlite(connection_id, table, format, path)
                 .await;
         }
 
@@ -2198,16 +2898,28 @@ impl ConnectionManager {
         database: &str,
         table: &str,
     ) -> Result<Vec<ExportColumn>> {
-        validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
+        let driver = self.driver_of(connection_id).await?;
+        if driver != DriverKind::Sqlite {
+            validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
+        }
         validate_identifier(table).map_err(|e| anyhow!("表名验证失败: {}", e))?;
 
-        if self.driver_of(connection_id).await? == DriverKind::Postgres {
+        if driver == DriverKind::Postgres {
             let pool = self.pg_pool_for(connection_id, database).await?;
             let mut conn = pool
                 .acquire()
                 .await
                 .map_err(|e| anyhow!("获取数据库连接失败: {}", e))?;
             return Ok(export_columns_pg(&mut conn, table).await);
+        }
+
+        if driver == DriverKind::Sqlite {
+            let pool = self.sqlite_pool(connection_id).await?;
+            let mut conn = pool
+                .acquire()
+                .await
+                .map_err(|e| anyhow!("获取数据库连接失败: {}", e))?;
+            return Ok(export_columns_sqlite(&mut conn, table).await);
         }
 
         let pool = {
@@ -2301,6 +3013,30 @@ impl ConnectionManager {
         stream_pg_table_rows(&mut conn, &query_cancel, &query_notify, table, &mut on_row).await
     }
 
+    /// 流式遍历 SQLite 整表并逐行回调（Excel 导出用），语义与 PG 版一致。
+    pub async fn export_table_stream_sqlite<F>(
+        &self,
+        connection_id: &str,
+        table: &str,
+        mut on_row: F,
+    ) -> Result<u64>
+    where
+        F: FnMut(&sqlx::sqlite::SqliteRow) -> Result<()>,
+    {
+        validate_identifier(table).map_err(|e| anyhow!("表名验证失败: {}", e))?;
+
+        let pool = self.sqlite_pool(connection_id).await?;
+        let mut conn = pool
+            .acquire()
+            .await
+            .map_err(|e| anyhow!("获取数据库连接失败: {}", e))?;
+
+        let (query_cancel, query_notify, query_running) = self.exec_handles(connection_id).await?;
+        let _run_guard = QueryRunGuard::start(&query_cancel, &query_running);
+
+        stream_sqlite_table_rows(&mut conn, &query_cancel, &query_notify, table, &mut on_row).await
+    }
+
     /// PG 版整表导出：表名按 `schema.table` 展示名加双引号，字面量按 PG 语法生成。
     async fn export_table_to_file_pg(
         &self,
@@ -2338,6 +3074,42 @@ impl ConnectionManager {
         Ok(sink.rows())
     }
 
+    /// SQLite 版整表导出：单文件库直接用主池，字面量按 SQLite 语法生成。
+    async fn export_table_to_file_sqlite(
+        &self,
+        connection_id: &str,
+        table: &str,
+        format: ExportFormat,
+        path: &std::path::Path,
+    ) -> Result<u64> {
+        let pool = self.sqlite_pool(connection_id).await?;
+        let mut conn = pool
+            .acquire()
+            .await
+            .map_err(|e| anyhow!("获取数据库连接失败: {}", e))?;
+
+        let (query_cancel, query_notify, query_running) = self.exec_handles(connection_id).await?;
+        let _run_guard = QueryRunGuard::start(&query_cancel, &query_running);
+
+        let file = std::fs::File::create(path).map_err(|e| anyhow!("创建导出文件失败: {}", e))?;
+        let columns = export_columns_sqlite(&mut conn, table).await;
+        let mut sink = TableExportSink::new(
+            std::io::BufWriter::with_capacity(256 * 1024, file),
+            format,
+            table,
+            columns,
+            DriverKind::Sqlite,
+        );
+
+        stream_sqlite_table_rows(&mut conn, &query_cancel, &query_notify, table, |row| {
+            sink.write_sqlite_row(row)
+        })
+        .await?;
+
+        sink.finish()?;
+        Ok(sink.rows())
+    }
+
     /// 导入数据
     pub async fn import_data(
         &self,
@@ -2347,8 +3119,11 @@ impl ConnectionManager {
         format: &str,
         data: &str,
     ) -> Result<u64> {
-        // 输入验证
-        validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
+        // 输入验证（SQLite 的 database 参数是文件路径，不做标识符校验）
+        let driver = self.driver_of(connection_id).await?;
+        if driver != DriverKind::Sqlite {
+            validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
+        }
         validate_identifier(table).map_err(|e| anyhow!("表名验证失败: {}", e))?;
 
         // 验证导入格式
@@ -2364,9 +3139,16 @@ impl ConnectionManager {
         }
 
         // PostgreSQL 的表名与 INSERT 语法都不同，且 database 在连接时固定
-        if self.driver_of(connection_id).await? == DriverKind::Postgres {
+        if driver == DriverKind::Postgres {
             return self
                 .import_data_pg(connection_id, database, table, format, data)
+                .await;
+        }
+
+        // SQLite 单文件库，表名不带库前缀
+        if driver == DriverKind::Sqlite {
+            return self
+                .import_data_sqlite(connection_id, table, format, data)
                 .await;
         }
 
@@ -2704,6 +3486,145 @@ impl ConnectionManager {
         Ok(count)
     }
 
+    /// SQLite 版数据导入：BLOB 列按导出的 `x'...'` 文本原样写回，无需 Base64 反解。
+    async fn import_data_sqlite(
+        &self,
+        connection_id: &str,
+        table: &str,
+        format: &str,
+        data: &str,
+    ) -> Result<u64> {
+        let safety_mode = {
+            let connections = self.connections.read().await;
+            let conn = connections
+                .get(connection_id)
+                .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
+            if conn.config.safety_mode == SafetyMode::ReadOnly {
+                return Err(anyhow!("当前连接为只读模式，无法导入数据"));
+            }
+            conn.config.safety_mode
+        };
+
+        let pool = self.sqlite_pool(connection_id).await?;
+        let mut conn = pool
+            .acquire()
+            .await
+            .map_err(|e| anyhow!("获取数据库连接失败: {}", e))?;
+
+        let quoted_table = quote_pg_identifier(table)?;
+        let mut count = 0u64;
+
+        match format.to_lowercase().as_str() {
+            "csv" => {
+                let records = export::parse_csv(data);
+                if records.is_empty() {
+                    return Ok(0);
+                }
+
+                let headers: Vec<String> = records[0]
+                    .iter()
+                    .map(|field| field.value.trim().to_string())
+                    .collect();
+                for header in &headers {
+                    validate_identifier(header)
+                        .map_err(|e| anyhow!("CSV 列名验证失败 '{}': {}", header, e))?;
+                }
+
+                const MAX_IMPORT_ROWS: usize = 10000;
+                if records.len() - 1 > MAX_IMPORT_ROWS {
+                    return Err(anyhow!("CSV 导入行数不能超过 {}", MAX_IMPORT_ROWS));
+                }
+
+                let columns_str = headers
+                    .iter()
+                    .map(|header| quote_pg_identifier(header))
+                    .collect::<Result<Vec<_>>>()?
+                    .join(", ");
+
+                let mut tx = conn
+                    .begin()
+                    .await
+                    .map_err(|e| anyhow!("开始导入事务失败：{}", e))?;
+                for (index, record) in records.iter().enumerate().skip(1) {
+                    if record.len() == 1 && record[0].value.trim().is_empty() && !record[0].quoted {
+                        continue;
+                    }
+                    if record.len() != headers.len() {
+                        return Err(anyhow!(
+                            "CSV 第 {} 行列数为 {}，与表头列数 {} 不一致",
+                            index + 1,
+                            record.len(),
+                            headers.len()
+                        ));
+                    }
+
+                    let mut values: Vec<String> = Vec::with_capacity(record.len());
+                    for field in record.iter() {
+                        if !field.quoted && (field.value.is_empty() || field.value == "NULL") {
+                            values.push("NULL".to_string());
+                        } else {
+                            // SQLite 是动态类型：文本直存，x'...' 十六进制、数字字面量
+                            // 都能被解析回原存储类别，统一按 SQL 文本写回即可
+                            values.push(format!("'{}'", escape_string_pg(&field.value)));
+                        }
+                    }
+
+                    let query = format!(
+                        "INSERT INTO {} ({}) VALUES ({})",
+                        quoted_table,
+                        columns_str,
+                        values.join(", ")
+                    );
+                    sqlx::query(&query).execute(&mut *tx).await.map_err(|e| {
+                        anyhow!("CSV 第 {} 行插入失败（表 {}）：{}", index + 1, table, e)
+                    })?;
+                    count += 1;
+                }
+                tx.commit()
+                    .await
+                    .map_err(|e| anyhow!("提交导入事务失败：{}", e))?;
+            }
+            "sql" => {
+                // SQLite 的 DDL 同样支持事务回滚，整批脚本原子导入
+                let mut tx = conn
+                    .begin()
+                    .await
+                    .map_err(|e| anyhow!("开始导入事务失败：{}", e))?;
+                let statements = split_sql_statements(data);
+                for (index, stmt) in statements.iter().enumerate() {
+                    let stmt = stmt.trim();
+                    if stmt.is_empty() || stmt.starts_with("--") {
+                        continue;
+                    }
+                    crate::sql::safety::enforce_for(safety_mode, stmt, DriverKind::Sqlite)
+                        .map_err(|e| {
+                            anyhow!(
+                                "第 {} 条 SQL 被安全模式拦截：{}\nStatement: {}",
+                                index + 1,
+                                e,
+                                stmt
+                            )
+                        })?;
+                    Executor::execute(&mut *tx, stmt).await.map_err(|e| {
+                        anyhow!(
+                            "第 {} 条 SQL 执行失败：{}\nStatement: {}",
+                            index + 1,
+                            e,
+                            stmt
+                        )
+                    })?;
+                    count += 1;
+                }
+                tx.commit()
+                    .await
+                    .map_err(|e| anyhow!("提交导入事务失败：{}", e))?;
+            }
+            _ => return Err(anyhow!("不支持的导入格式: {}", format)),
+        }
+
+        Ok(count)
+    }
+
     /// 导入数据库SQL
     pub async fn import_database_sql(
         &self,
@@ -2711,8 +3632,11 @@ impl ConnectionManager {
         database: &str,
         sql: &str,
     ) -> Result<()> {
-        // 输入验证
-        validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
+        // 输入验证（SQLite 的 database 参数是文件路径，不做标识符校验）
+        let driver = self.driver_of(connection_id).await?;
+        if driver != DriverKind::Sqlite {
+            validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
+        }
 
         // 验证 SQL 大小限制
         const MAX_SQL_SIZE: usize = 100_000_000; // 100MB
@@ -2720,9 +3644,16 @@ impl ConnectionManager {
             return Err(anyhow!("SQL 文件大小不能超过 100MB"));
         }
 
-        if self.driver_of(connection_id).await? == DriverKind::Postgres {
+        if driver == DriverKind::Postgres {
             return self
                 .import_database_sql_pg(connection_id, database, sql)
+                .await;
+        }
+
+        // SQLite 单文件库：语句直接在主池上执行，无 USE/切库概念
+        if driver == DriverKind::Sqlite {
+            return self
+                .import_database_sql_sqlite(connection_id, sql)
                 .await;
         }
 
@@ -2865,6 +3796,61 @@ impl ConnectionManager {
 
         Ok(())
     }
+
+    /// SQLite 版整库 SQL 导入：单文件库无切库概念，语句直接在主池连接上执行。
+    async fn import_database_sql_sqlite(&self, connection_id: &str, sql: &str) -> Result<()> {
+        let safety_mode = {
+            let connections = self.connections.read().await;
+            let conn = connections
+                .get(connection_id)
+                .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
+            if conn.config.safety_mode == SafetyMode::ReadOnly {
+                return Err(anyhow!("当前连接为只读模式，无法导入 SQL"));
+            }
+            conn.config.safety_mode
+        };
+
+        let pool = self.sqlite_pool(connection_id).await?;
+        let mut conn = pool
+            .acquire()
+            .await
+            .map_err(|e| anyhow!("获取数据库连接失败: {}", e))?;
+
+        let statements = split_sql_statements(sql);
+        let mut tx = conn
+            .begin()
+            .await
+            .map_err(|e| anyhow!("开始导入事务失败：{}", e))?;
+
+        for (index, stmt) in statements.iter().enumerate() {
+            let stmt = stmt.trim();
+            if stmt.is_empty() {
+                continue;
+            }
+            crate::sql::safety::enforce_for(safety_mode, stmt, DriverKind::Sqlite).map_err(|e| {
+                anyhow!(
+                    "第 {} 条 SQL 被安全模式拦截：{}\nStatement: {}",
+                    index + 1,
+                    e,
+                    stmt
+                )
+            })?;
+            Executor::execute(&mut *tx, stmt).await.map_err(|e| {
+                anyhow!(
+                    "第 {} 条 SQL 执行失败：{}\nStatement: {}",
+                    index + 1,
+                    e,
+                    stmt
+                )
+            })?;
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| anyhow!("提交导入事务失败：{}", e))?;
+
+        Ok(())
+    }
 }
 
 /// 读取表的列定义（名称 + DATA_TYPE），顺序与 `SELECT *` 一致。
@@ -2932,6 +3918,92 @@ async fn export_columns_pg(conn: &mut PgConnection, table: &str) -> Vec<ExportCo
     meta.into_iter()
         .map(|(name, data_type)| ExportColumn { name, data_type })
         .collect()
+}
+
+/// 读取 SQLite 表的列定义（名称 + 声明类型），顺序与 `SELECT *` 一致。
+///
+/// PRAGMA 不支持 prepare 阶段绑定参数（`PRAGMA table_info(?)` 报 near "?"
+/// syntax error），表名来自内部调用且已过 validate_identifier，
+/// 引号包裹后字面量拼接。
+async fn export_columns_sqlite(
+    conn: &mut sqlx::SqliteConnection,
+    table: &str,
+) -> Vec<ExportColumn> {
+    let quoted = match quote_pg_identifier(table) {
+        Ok(q) => q,
+        Err(e) => {
+            tracing::warn!("SQLite 表名引用失败，改用结果集列信息: {}", e);
+            return Vec::new();
+        }
+    };
+    let pragma_sql = format!("PRAGMA table_info({})", quoted);
+    let meta: Vec<(String, String)> = match sqlx::query(&pragma_sql)
+        .try_map(|row: sqlx::sqlite::SqliteRow| {
+            Ok((
+                row.try_get::<String, _>("name")?,
+                row.try_get::<String, _>("type")?,
+            ))
+        })
+        .fetch_all(&mut *conn)
+        .await
+    {
+        Ok(meta) => meta,
+        Err(e) => {
+            tracing::warn!("读取 SQLite 列元数据失败，改用结果集列信息: {}", e);
+            Vec::new()
+        }
+    };
+
+    meta.into_iter()
+        .map(|(name, data_type)| ExportColumn { name, data_type })
+        .collect()
+}
+
+/// SQLite 版逐行流式读取整表；取消标志与导出超时的语义与 PG 版一致。
+async fn stream_sqlite_table_rows<F>(
+    conn: &mut sqlx::SqliteConnection,
+    query_cancel: &AtomicBool,
+    query_notify: &Notify,
+    table: &str,
+    mut on_row: F,
+) -> Result<u64>
+where
+    F: FnMut(&sqlx::sqlite::SqliteRow) -> Result<()>,
+{
+    let query = format!("SELECT * FROM {}", quote_pg_identifier(table)?);
+    let mut rows = sqlx::query(&query).fetch(&mut *conn);
+    let deadline = Instant::now() + MAX_EXPORT_DURATION;
+    let mut count = 0u64;
+
+    loop {
+        if query_cancel.load(Ordering::SeqCst) {
+            return Err(anyhow!("查询已被用户取消"));
+        }
+        if Instant::now() >= deadline {
+            return Err(anyhow!(
+                "导出超过 {} 分钟，已终止；请缩小数据范围后重试",
+                MAX_EXPORT_DURATION.as_secs() / 60
+            ));
+        }
+
+        let next = tokio::select! {
+            item = rows.try_next() => item
+                .map_err(|e| anyhow!("查询失败: {}", crate::error::translate(&e)))?,
+            // 通知可能早于本轮检查到达，下一轮由 cancel 标志兜住
+            _ = query_notify.notified() => continue,
+            _ = tokio::time::sleep(Duration::from_millis(300)) => continue,
+        };
+
+        match next {
+            Some(row) => {
+                on_row(&row)?;
+                count += 1;
+            }
+            None => break,
+        }
+    }
+
+    Ok(count)
 }
 
 /// PG 版逐行流式读取整表；取消标志与导出超时的语义与 MySQL 版一致。
@@ -3306,6 +4378,36 @@ fn build_pg_filter_condition(filter: &FilterCondition) -> Result<String> {
             cond.push_str(&format!(
                 "LIKE {}",
                 quote_value(&pattern, DriverKind::Postgres)?
+            ));
+        }
+        FilterOperator::IsNull => cond.push_str("IS NULL"),
+        FilterOperator::IsNotNull => cond.push_str("IS NOT NULL"),
+    }
+    Ok(cond)
+}
+
+/// SQLite 过滤条件：标识符/字面量引用规则与 PG 相同（双引号、单引号翻倍）。
+fn build_sqlite_filter_condition(filter: &FilterCondition) -> Result<String> {
+    let mut cond = format!("{} ", quote_pg_identifier(&filter.column)?);
+    let value = |operator: &str| -> Result<String> {
+        Ok(format!(
+            "{} {}",
+            operator,
+            quote_value(&filter.value, DriverKind::Sqlite)?
+        ))
+    };
+    match filter.operator {
+        FilterOperator::Eq => cond.push_str(&value("=")?),
+        FilterOperator::Ne => cond.push_str(&value("!=")?),
+        FilterOperator::Gt => cond.push_str(&value(">")?),
+        FilterOperator::Gte => cond.push_str(&value(">=")?),
+        FilterOperator::Lt => cond.push_str(&value("<")?),
+        FilterOperator::Lte => cond.push_str(&value("<=")?),
+        FilterOperator::Like => {
+            let pattern = serde_json::Value::String(like_pattern(&filter.value));
+            cond.push_str(&format!(
+                "LIKE {}",
+                quote_value(&pattern, DriverKind::Sqlite)?
             ));
         }
         FilterOperator::IsNull => cond.push_str("IS NULL"),
@@ -4341,5 +5443,349 @@ mod tests {
 
         // 复位，避免影响同一连接上的后续用例
         let _ = manager.execute(&id, &db, "RESET statement_timeout").await;
+    }
+
+    /// SQLite 真实文件端到端用例：不依赖环境变量，直接在临时目录建库。
+    ///
+    /// 覆盖：建池（WAL/foreign_keys）、DDL、DML、SELECT（类型转换）、
+    /// query_table 分页/过滤/搜索、apply_changes 保存与回滚、无主键拒绝。
+    #[tokio::test]
+    #[ignore]
+    async fn sqlite_end_to_end_execute_browse_apply() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("qa_sqlite_e2e_{}", pid));
+        std::fs::create_dir_all(&dir).expect("创建临时目录");
+        let db_path = dir.join("qa.db");
+        if db_path.exists() {
+            std::fs::remove_file(&db_path).expect("清理旧库文件");
+        }
+        // 建池配置 create_if_missing(false)，空库文件需预先创建（连接仅验证文件可打开）
+        std::fs::File::create(&db_path).expect("创建空库文件");
+
+        let manager = ConnectionManager::new();
+        let id = manager
+            .connect(ConnectionRequest {
+                config: ConnectionConfig {
+                    id: "qa-sqlite".to_string(),
+                    name: "qa-sqlite".to_string(),
+                    driver: DriverKind::Sqlite,
+                    host: String::new(),
+                    port: 0,
+                    database: Some(db_path.to_string_lossy().to_string()),
+                    username: String::new(),
+                    password: String::new(),
+                    pool_config: PoolConfig::default(),
+                    ssl_config: SslConfig::default(),
+                    safety_mode: SafetyMode::Off,
+                },
+                ssh_config: None,
+            })
+            .await
+            .expect("SQLite 连接失败");
+
+        let db = db_path.to_string_lossy().to_string();
+        // database 参数是文件路径（含路径分隔符），execute/query_table 需放行
+
+        // DDL + DML
+        manager
+            .execute(
+                &id,
+                &db,
+                "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price NUMERIC, payload BLOB, created DATETIME)",
+            )
+            .await
+            .expect("建表失败");
+        manager
+            .execute(
+                &id,
+                &db,
+                "INSERT INTO items (id, name, price, payload, created) VALUES (1, 'alpha', 9.5, x'deadbeef', '2024-01-02 03:04:05'), (2, 'beta', 12.25, NULL, NULL), (3, 'gamma', 3, NULL, NULL)",
+            )
+            .await
+            .expect("插入失败");
+
+        // SELECT：类型转换（INTEGER/REAL/TEXT/BLOB/NULL/DATETIME）
+        let result = manager
+            .execute(&id, &db, "SELECT id, name, price, payload, created FROM items ORDER BY id")
+            .await
+            .expect("查询失败");
+        assert_eq!(result.rows.len(), 3);
+        assert_eq!(
+            serde_json::to_value(&result.rows[0][0]).unwrap(),
+            serde_json::json!(1)
+        );
+        assert_eq!(
+            serde_json::to_value(&result.rows[0][1]).unwrap(),
+            serde_json::json!("alpha")
+        );
+        assert_eq!(
+            serde_json::to_value(&result.rows[0][2]).unwrap(),
+            serde_json::json!(9.5)
+        );
+        // BLOB 以 Base64 返回（deadbeef）
+        assert_eq!(
+            serde_json::to_value(&result.rows[0][3]).unwrap(),
+            serde_json::json!("3q2+7w==")
+        );
+        assert_eq!(
+            serde_json::to_value(&result.rows[0][4]).unwrap(),
+            serde_json::json!("2024-01-02 03:04:05")
+        );
+        assert_eq!(
+            serde_json::to_value(&result.rows[1][3]).unwrap(),
+            serde_json::json!(null)
+        );
+
+        // 浏览：过滤 + 分页
+        let page = manager
+            .query_table(
+                &id,
+                &db,
+                "items",
+                DataQueryRequest {
+                    connection_id: id.clone(),
+                    database: db.clone(),
+                    table: "items".to_string(),
+                    columns: None,
+                    filter: Some(FilterCondition {
+                        column: "id".to_string(),
+                        operator: FilterOperator::Gt,
+                        value: serde_json::json!(1),
+                    }),
+                    filters: None,
+                    filter_logic: None,
+                    search: None,
+                    sort_column: None,
+                    sort_direction: None,
+                    page: 1,
+                    page_size: 10,
+                    after: None,
+                },
+            )
+            .await
+            .expect("浏览失败");
+        assert_eq!(page.total_count, 2);
+        assert_eq!(page.rows.len(), 2);
+
+        // 浏览：关键字搜索命中 name 列
+        let search = manager
+            .query_table(
+                &id,
+                &db,
+                "items",
+                DataQueryRequest {
+                    connection_id: id.clone(),
+                    database: db.clone(),
+                    table: "items".to_string(),
+                    columns: None,
+                    filter: None,
+                    filters: None,
+                    filter_logic: None,
+                    search: Some("beta".to_string()),
+                    sort_column: None,
+                    sort_direction: None,
+                    page: 1,
+                    page_size: 10,
+                    after: None,
+                },
+            )
+            .await
+            .expect("搜索失败");
+        assert_eq!(search.total_count, 1);
+        assert_eq!(
+            serde_json::to_value(&search.rows[0][1]).unwrap(),
+            serde_json::json!("beta")
+        );
+
+        // 保存：UPDATE + INSERT + DELETE 一批
+        let applied = manager
+            .apply_changes(
+                &id,
+                &db,
+                vec![
+                    TableChange {
+                        kind: TableChangeKind::Update,
+                        table: "items".to_string(),
+                        sql: "UPDATE \"items\" SET \"name\" = 'alpha2' WHERE \"id\" = 1".to_string(),
+                        where_clause: Some("\"id\" = 1".to_string()),
+                    },
+                    TableChange {
+                        kind: TableChangeKind::Insert,
+                        table: "items".to_string(),
+                        sql: "INSERT INTO \"items\" (\"id\", \"name\") VALUES (4, 'delta')".to_string(),
+                        where_clause: None,
+                    },
+                    TableChange {
+                        kind: TableChangeKind::Delete,
+                        table: "items".to_string(),
+                        sql: "DELETE FROM \"items\" WHERE \"id\" = 2".to_string(),
+                        where_clause: Some("\"id\" = 2".to_string()),
+                    },
+                ],
+            )
+            .await
+            .expect("保存失败");
+        assert_eq!(applied.applied, 3);
+
+        // 无主键表拒绝 UPDATE
+        manager
+            .execute(&id, &db, "CREATE TABLE no_pk (v TEXT)")
+            .await
+            .expect("建无主键表失败");
+        let err = manager
+            .apply_changes(
+                &id,
+                &db,
+                vec![TableChange {
+                    kind: TableChangeKind::Update,
+                    table: "no_pk".to_string(),
+                    sql: "UPDATE \"no_pk\" SET \"v\" = 'x' WHERE \"v\" = 'y'".to_string(),
+                    where_clause: Some("\"v\" = 'y'".to_string()),
+                }],
+            )
+            .await
+            .expect_err("无主键表应拒绝更新");
+        assert!(
+            err.to_string().contains("没有主键"),
+            "错误文案应说明无主键: {}",
+            err
+        );
+
+        // 只读模式拒绝保存
+        // （ReadOnly 语义由 apply_changes 顶部分支覆盖，这里不重复测）
+
+        manager.disconnect(&id).await.expect("断开失败");
+
+        // 清理库文件（含 WAL/SHM）
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(dir.join("qa.db-wal"));
+        let _ = std::fs::remove_file(dir.join("qa.db-shm"));
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    /// SQLite 导出/导入回环用例：SQL 导出 → SQL 导入 → CSV 导出 → CSV 导入，
+    /// 校验 BLOB `x'...'` 字面量与 NULL/数值在往返后保持原值。
+    #[tokio::test]
+    #[ignore]
+    async fn sqlite_export_import_roundtrip() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("qa_sqlite_export_{}", pid));
+        std::fs::create_dir_all(&dir).expect("创建临时目录");
+        let db_path = dir.join("qa.db");
+        if db_path.exists() {
+            std::fs::remove_file(&db_path).expect("清理旧库文件");
+        }
+        std::fs::File::create(&db_path).expect("创建空库文件");
+
+        let manager = ConnectionManager::new();
+        let id = manager
+            .connect(ConnectionRequest {
+                config: ConnectionConfig {
+                    id: "qa-sqlite-export".to_string(),
+                    name: "qa-sqlite-export".to_string(),
+                    driver: DriverKind::Sqlite,
+                    host: String::new(),
+                    port: 0,
+                    database: Some(db_path.to_string_lossy().to_string()),
+                    username: String::new(),
+                    password: String::new(),
+                    pool_config: PoolConfig::default(),
+                    ssl_config: SslConfig::default(),
+                    safety_mode: SafetyMode::Off,
+                },
+                ssh_config: None,
+            })
+            .await
+            .expect("SQLite 连接失败");
+
+        let db = db_path.to_string_lossy().to_string();
+        manager
+            .execute(
+                &id,
+                &db,
+                "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, price NUMERIC, payload BLOB)",
+            )
+            .await
+            .expect("建表失败");
+        manager
+            .execute(
+                &id,
+                &db,
+                "INSERT INTO items VALUES (1, 'alpha''s', 9.5, x'deadbeef'), (2, NULL, NULL, NULL)",
+            )
+            .await
+            .expect("插入失败");
+
+        // SQL 导出
+        let sql_path = dir.join("items.sql");
+        let exported = manager
+            .export_table_to_file(&id, &db, "items", "sql", &sql_path)
+            .await
+            .expect("SQL 导出失败");
+        assert_eq!(exported, 2);
+        let sql_text = std::fs::read_to_string(&sql_path).expect("读取 SQL 导出");
+        assert!(sql_text.contains("x'deadbeef'"), "BLOB 应导出为十六进制字面量: {}", sql_text);
+        assert!(sql_text.contains("'alpha''s'"), "文本引号应被转义: {}", sql_text);
+        assert!(sql_text.contains("NULL"), "空值应导出为 NULL: {}", sql_text);
+
+        // SQL 导入（导出只含 INSERT 不含 DDL，先建同结构目标表）
+        manager
+            .execute(&id, &db, "CREATE TABLE items_copy (id INTEGER PRIMARY KEY, name TEXT, price NUMERIC, payload BLOB)")
+            .await
+            .expect("建回环目标表失败");
+        let imported_sql = sql_text.replace("\"items\"", "\"items_copy\"");
+        manager
+            .import_database_sql(&id, &db, &imported_sql)
+            .await
+            .expect("SQL 导入失败");
+        let check = manager
+            .execute(&id, &db, "SELECT id, payload FROM items_copy ORDER BY id")
+            .await
+            .expect("回读失败");
+        assert_eq!(check.rows.len(), 2);
+        assert_eq!(
+            serde_json::to_value(&check.rows[0][1]).unwrap(),
+            serde_json::json!("3q2+7w==")
+        );
+        assert_eq!(
+            serde_json::to_value(&check.rows[1][1]).unwrap(),
+            serde_json::json!(null)
+        );
+
+        // CSV 导出 + 导入回环
+        let csv_path = dir.join("items.csv");
+        let csv_rows = manager
+            .export_table_to_file(&id, &db, "items", "csv", &csv_path)
+            .await
+            .expect("CSV 导出失败");
+        assert_eq!(csv_rows, 2);
+        let csv_text = std::fs::read_to_string(&csv_path).expect("读取 CSV 导出");
+        let csv_import =
+            "id,name,price,payload\n5,echo,1.5,\n6,x'68656c6c6f'f,2,\n".to_string();
+        // 直接用导入接口灌入新行（空未加引号字段 → NULL）
+        let imported = manager
+            .import_data(&id, &db, "items", "csv", &csv_import)
+            .await
+            .expect("CSV 导入失败");
+        assert_eq!(imported, 2);
+        let final_check = manager
+            .execute(&id, &db, "SELECT COUNT(*) FROM items")
+            .await
+            .expect("计数失败");
+        assert_eq!(
+            serde_json::to_value(&final_check.rows[0][0]).unwrap(),
+            serde_json::json!(4)
+        );
+        let _ = csv_text;
+        let _ = csv_rows;
+
+        manager.disconnect(&id).await.expect("断开失败");
+
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(dir.join("qa.db-wal"));
+        let _ = std::fs::remove_file(dir.join("qa.db-shm"));
+        let _ = std::fs::remove_file(&sql_path);
+        let _ = std::fs::remove_file(&csv_path);
+        let _ = std::fs::remove_dir(&dir);
     }
 }

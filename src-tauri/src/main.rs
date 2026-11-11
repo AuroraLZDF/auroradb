@@ -150,6 +150,7 @@ fn main() {
             commands::file::save_binary_file_to_dialog,
             commands::file::read_file_from_dialog,
             commands::file::pick_file_path,
+            commands::file::pick_sqlite_file,
             commands::file::export_to_excel,
             commands::file::export_table_to_excel,
             commands::update::get_update_install_kind,

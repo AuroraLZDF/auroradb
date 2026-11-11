@@ -10,7 +10,8 @@ use crate::commands::connection::ConnectionManagerState;
 use auroradb_core::connection::export::{ExportColumn, ExportFormat};
 use auroradb_core::connection::driver::DriverKind;
 use auroradb_core::connection::resultset::{
-    classify_column, classify_pg_column, convert_pg_value, convert_value, ColumnKind, PgColumnKind,
+    classify_column, classify_pg_column, classify_sqlite_column, convert_pg_value,
+    convert_sqlite_value, convert_value, ColumnKind, PgColumnKind, SqliteColumnKind,
 };
 use auroradb_core::connection::CellValue;
 
@@ -182,6 +183,17 @@ pub async fn export_table_to_excel(
         )
         .await;
     }
+    if driver == DriverKind::Sqlite {
+        return export_table_to_excel_sqlite(
+            window,
+            &manager,
+            &connection_id,
+            &database,
+            &table,
+            &filename,
+        )
+        .await;
+    }
 
     // 常量内存模式必须按行顺序写，表头要先于数据行；列元数据同时用于类型转换
     let mut columns = manager
@@ -318,6 +330,92 @@ async fn export_table_to_excel_pg(
                 let mut cells = Vec::with_capacity(kinds.len());
                 for (index, kind) in kinds.iter().enumerate() {
                     cells.push(convert_pg_value(row, index, *kind)?);
+                }
+                if samples.len() < WIDTH_SAMPLE_ROWS {
+                    samples.push(cells.clone());
+                }
+                for (col_idx, cell) in cells.iter().enumerate() {
+                    write_excel_cell(worksheet, row_num, col_idx as u16, cell)
+                        .map_err(|e| anyhow::anyhow!("写入数据失败: {}", e))?;
+                }
+                row_num += 1;
+                Ok(())
+            })
+            .await
+            .map_err(|e| auroradb_core::error::user_message(&e))?;
+
+        // 常量内存模式允许在数据写完后设置列宽
+        for (col_idx, col) in columns.iter().enumerate() {
+            let width = excel_column_width(col_idx, col, &samples);
+            worksheet
+                .set_column_width(col_idx as u16, width as f64)
+                .map_err(|e| format!("设置列宽失败: {}", e))?;
+        }
+    }
+
+    // 用户传入的文件名只允许纯文件名，避免路径穿越
+    let safe_name = sanitize_file_name(filename, &format!("{}.xlsx", table));
+    save_workbook_with_dialog(window, workbook, &safe_name).await
+}
+
+/// 导出 SQLite 表数据为 Excel 文件（行转换走 `convert_sqlite_value`）
+async fn export_table_to_excel_sqlite(
+    window: tauri::Window,
+    manager: &auroradb_core::connection::ConnectionManager,
+    connection_id: &str,
+    _database: &str,
+    table: &str,
+    filename: &str,
+) -> Result<String, String> {
+    /// 列宽只采样前若干行，避免为了估算宽度把整表留在内存里
+    const WIDTH_SAMPLE_ROWS: usize = 200;
+
+    // 常量内存模式必须按行顺序写，表头要先于数据行；列元数据同时用于类型转换
+    let mut columns = manager
+        .table_export_columns(connection_id, _database, table)
+        .await
+        .map_err(|e| auroradb_core::error::user_message(&e))?;
+    let mut kinds: Vec<SqliteColumnKind> = columns
+        .iter()
+        .map(|col| classify_sqlite_column(&col.data_type))
+        .collect();
+    let mut header_written = !columns.is_empty();
+    let mut samples: Vec<Vec<CellValue>> = Vec::new();
+    let header_format = rust_xlsxwriter::Format::new().set_bold();
+    let mut row_num: u32 = 1;
+
+    let mut workbook = Workbook::new();
+    {
+        let worksheet = workbook.add_worksheet_with_constant_memory();
+
+        if header_written {
+            write_excel_header(worksheet, &columns, &header_format)?;
+        }
+
+        manager
+            .export_table_stream_sqlite(connection_id, table, |row| {
+                // 元数据查询失败时退回结果集自带的列信息（此时才写表头）
+                if !header_written {
+                    columns = row
+                        .columns()
+                        .iter()
+                        .map(|col| ExportColumn {
+                            name: col.name().to_string(),
+                            data_type: col.type_info().to_string(),
+                        })
+                        .collect();
+                    kinds = columns
+                        .iter()
+                        .map(|col| classify_sqlite_column(&col.data_type))
+                        .collect();
+                    write_excel_header(worksheet, &columns, &header_format)
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    header_written = true;
+                }
+
+                let mut cells = Vec::with_capacity(kinds.len());
+                for (index, kind) in kinds.iter().enumerate() {
+                    cells.push(convert_sqlite_value(row, index, *kind)?);
                 }
                 if samples.len() < WIDTH_SAMPLE_ROWS {
                     samples.push(cells.clone());
@@ -752,6 +850,26 @@ pub async fn pick_file_path(window: tauri::Window, format: String) -> Result<Str
         .file()
         .set_title("选择要导入的文件")
         .add_filter(filter_name, &extensions)
+        .add_filter("所有文件", &["*"])
+        .pick_file(move |path| {
+            let _ = tx.send(path);
+        });
+
+    match rx.await {
+        Ok(Some(path)) => Ok(path.to_string()),
+        Ok(None) => Err("用户取消了选择操作".to_string()),
+        Err(_) => Err("对话框操作被取消".to_string()),
+    }
+}
+
+/// 选择 SQLite 数据库文件（新建/编辑 SQLite 连接时使用）
+#[tauri::command]
+pub async fn pick_sqlite_file(window: tauri::Window) -> Result<String, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<Option<FilePath>>();
+    window.dialog()
+        .file()
+        .set_title("选择 SQLite 数据库文件")
+        .add_filter("SQLite 数据库", &["db", "sqlite", "sqlite3", "db3"])
         .add_filter("所有文件", &["*"])
         .pick_file(move |path| {
             let _ = tx.send(path);

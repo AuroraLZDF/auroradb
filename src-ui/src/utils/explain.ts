@@ -1,3 +1,4 @@
+import type { DriverKind } from '@/stores/savedConnections'
 /** 执行计划节点，与后端 `explain_sql` 返回结构一致 */
 export interface ExplainNode {
   operation: string
@@ -11,7 +12,7 @@ export interface ExplainNode {
 }
 
 export interface ExplainPlan {
-  driver: 'mysql' | 'postgres'
+  driver: DriverKind
   sql: string
   nodes: ExplainNode[]
   warnings: string[]

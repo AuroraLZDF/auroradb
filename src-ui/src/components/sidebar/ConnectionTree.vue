@@ -161,6 +161,7 @@ import StatusDot from '@/components/icons/StatusDot.vue'
 import DatabaseTree from './DatabaseTree.vue'
 import { t } from '@/i18n'
 import { useSavedConnectionsStore } from '@/stores/savedConnections'
+import type { DriverKind } from '@/stores/savedConnections'
 import type { ConnectionStatus } from '@/stores/connection'
 import type { SavedConnection } from '@/stores/savedConnections'
 import type { DatabaseObject } from '@/stores/dataBrowser'
@@ -276,7 +277,7 @@ const emit = defineEmits<{
 }>()
 
 /** 驱动信息来自已保存配置或活跃连接状态，旧数据按 mysql 处理 */
-function driverOf(item: TreeItem): 'mysql' | 'postgres' {
+function driverOf(item: TreeItem): DriverKind {
   return item.saved?.driver ?? item.active?.driver ?? 'mysql'
 }
 

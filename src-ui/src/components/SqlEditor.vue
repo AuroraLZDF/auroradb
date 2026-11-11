@@ -281,6 +281,7 @@ import { t } from '@/i18n'
 import { findDangerousStatements, formatSql, quoteIdentifier } from '@/utils/sql'
 import { formatSqlValue } from '@/utils/tableChanges'
 import { invoke } from '@tauri-apps/api/core'
+import type { DriverKind } from '@/stores/savedConnections'
 import { useVirtualRows } from '@/composables/useVirtualRows'
 import { globalToast } from '@/composables/useToast'
 import { confirmDanger } from '@/composables/useConfirm'
@@ -674,7 +675,7 @@ function extractSqlParams(text: string): string[] {
 }
 
 /** 把用户输入按「数字/布尔/NULL 原样、其它按字符串转义」转成 SQL 字面量 */
-function sqlParamLiteral(raw: string, driver: 'mysql' | 'postgres'): string {
+function sqlParamLiteral(raw: string, driver: DriverKind): string {
   const value = raw.trim()
   if (value === '') return "''"
   if (/^null$/i.test(value)) return 'NULL'

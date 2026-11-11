@@ -16,12 +16,17 @@ pub fn rewrite_table_names(database: &str, sql: &str, driver: DriverKind) -> (St
         CreateTableLikeKind, Ident, ObjectName, ObjectNamePart, ObjectType, Statement, VisitMut,
         VisitorMut,
     };
-    use sqlparser::dialect::{MySqlDialect, PostgreSqlDialect};
+    use sqlparser::dialect::{MySqlDialect, PostgreSqlDialect, SQLiteDialect};
     use sqlparser::parser::Parser;
     use std::ops::ControlFlow;
 
     if !driver.supports_db_prefix_rewrite() {
-        let parsed = Parser::parse_sql(&PostgreSqlDialect {}, sql).is_ok();
+        // 非重写驱动只解析取「可解析」标志：PG 用 PG 方言，SQLite 用 SQLite 方言
+        // （SQLite 语法更接近 MySQL，用 PG 方言会把合法语句误判为不可解析）
+        let parsed = match driver {
+            DriverKind::Postgres => Parser::parse_sql(&PostgreSqlDialect {}, sql).is_ok(),
+            _ => Parser::parse_sql(&SQLiteDialect {}, sql).is_ok(),
+        };
         return (sql.to_string(), parsed);
     }
 

@@ -8,7 +8,7 @@
 
 use anyhow::{anyhow, Result};
 use sqlparser::ast::{Query, SetExpr, Statement};
-use sqlparser::dialect::{MySqlDialect, PostgreSqlDialect};
+use sqlparser::dialect::{MySqlDialect, PostgreSqlDialect, SQLiteDialect};
 use sqlparser::parser::Parser;
 
 use crate::connection::driver::DriverKind;
@@ -91,6 +91,7 @@ fn parse_statements(
     match driver {
         DriverKind::MySql => Parser::parse_sql(&MySqlDialect {}, sql),
         DriverKind::Postgres => Parser::parse_sql(&PostgreSqlDialect {}, sql),
+        DriverKind::Sqlite => Parser::parse_sql(&SQLiteDialect {}, sql),
     }
 }
 
@@ -194,7 +195,7 @@ fn has_destructive_statement(sql: &str, driver: DriverKind) -> bool {
     const PG_DESTRUCTIVE_KEYWORDS: &[&str] = &["TRUNCATE", "DROP", "CALL"];
     let keywords = match driver {
         DriverKind::MySql => MYSQL_DESTRUCTIVE_KEYWORDS,
-        DriverKind::Postgres => PG_DESTRUCTIVE_KEYWORDS,
+        DriverKind::Postgres | DriverKind::Sqlite => PG_DESTRUCTIVE_KEYWORDS,
     };
 
     crate::sql::split_sql_statements(sql)

@@ -8,6 +8,7 @@ use super::types::*;
 use super::validation::*;
 use anyhow::{anyhow, Result};
 use sqlx::postgres::PgPool;
+use sqlx::Row;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -436,6 +437,9 @@ impl ConnectionManager {
         if self.driver_of(connection_id).await? == DriverKind::Postgres {
             return self.get_postgres_object_tree(connection_id, database).await;
         }
+        if self.driver_of(connection_id).await? == DriverKind::Sqlite {
+            return self.get_sqlite_object_tree(connection_id, database).await;
+        }
 
         let connections = self.connections.read().await;
 
@@ -823,6 +827,12 @@ impl ConnectionManager {
                 )
                 .await;
         }
+        if self.driver_of(connection_id).await? == DriverKind::Sqlite {
+            // SQLite 单文件库：database 参数是文件路径，不能过 validate_identifier
+            return self
+                .get_sqlite_object_definition(connection_id, name, object_type)
+                .await;
+        }
 
         validate_identifier(name)?;
         let connections = self.connections.read().await;
@@ -954,6 +964,11 @@ impl ConnectionManager {
         if self.driver_of(connection_id).await? == DriverKind::Postgres {
             return self
                 .get_postgres_schema_snapshot(connection_id, database)
+                .await;
+        }
+        if self.driver_of(connection_id).await? == DriverKind::Sqlite {
+            return self
+                .get_sqlite_schema_snapshot(connection_id, database)
                 .await;
         }
 
@@ -1213,6 +1228,12 @@ impl ConnectionManager {
         table: &str,
     ) -> Result<TableStructure> {
         // 输入验证
+        // SQLite 的 database 是文件路径（含 / 与 .），表名校验保留在 SQLite 分支内
+        if self.driver_of(connection_id).await? == DriverKind::Sqlite {
+            return self
+                .get_sqlite_table_structure(connection_id, database, table)
+                .await;
+        }
         validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
         validate_identifier(table).map_err(|e| anyhow!("表名验证失败: {}", e))?;
 
@@ -1694,8 +1715,9 @@ impl ConnectionManager {
 
     /// 查询引用了指定列的外键（子表 → 当前表），供结果集「查引用它的行」导航使用。
     ///
-    /// 返回项的语义与 [`TableForeignKeyInfo`] 一致：`column` 是子表中的外键列，
-    /// `ref_table` / `ref_column` 是当前（被引用的）表与列。
+    /// 返回项的语义（与 MySQL/PG 分支实现一致）：
+    /// `column` 是子表（引用方）中的外键列，`ref_table` 是子表名，
+    /// `ref_column` 是被引用（当前表）的列。
     pub async fn get_referencing_foreign_keys(
         &self,
         connection_id: &str,
@@ -1703,6 +1725,14 @@ impl ConnectionManager {
         table: &str,
         column: &str,
     ) -> Result<Vec<TableForeignKeyInfo>> {
+        // SQLite 的 database 是文件路径；表/列名校验在 SQLite 分支内做
+        if self.driver_of(connection_id).await? == DriverKind::Sqlite {
+            validate_identifier(table)?;
+            validate_identifier(column)?;
+            return self
+                .get_sqlite_referencing_foreign_keys(connection_id, table, column)
+                .await;
+        }
         validate_identifier(database).map_err(|e| anyhow!("数据库名验证失败: {}", e))?;
         validate_identifier(table).map_err(|e| anyhow!("表名验证失败: {}", e))?;
         validate_identifier(column).map_err(|e| anyhow!("列名验证失败: {}", e))?;
@@ -1825,6 +1855,11 @@ impl ConnectionManager {
         if self.driver_of(connection_id).await? == DriverKind::Postgres {
             return self
                 .get_postgres_database_info(connection_id, database)
+                .await;
+        }
+        if self.driver_of(connection_id).await? == DriverKind::Sqlite {
+            return self
+                .get_sqlite_database_info(connection_id, database)
                 .await;
         }
 
@@ -1965,6 +2000,636 @@ impl ConnectionManager {
             total_size,
             create_time: None, // PostgreSQL 无数据库创建时间属性
         })
+    }
+
+    /// SQLite 对象树
+    ///
+    /// 单文件库没有库/schema 层级：database 参数（文件路径）只作缓存区分，
+    /// 树内容直接来自 `sqlite_master`（排除 sqlite_ 开头的内部对象）。
+    /// SQLite 无存储过程/函数/事件，触发器保留在树中。
+    async fn get_sqlite_object_tree(
+        &self,
+        connection_id: &str,
+        database: Option<&str>,
+    ) -> Result<Vec<DatabaseObject>> {
+        let cache_key = match database {
+            Some(db) => format!("tree:sqlite:db:{}", db),
+            None => "tree:sqlite:root".to_string(),
+        };
+        let cached = {
+            let connections = self.connections.read().await;
+            let conn = connections
+                .get(connection_id)
+                .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
+            let cached = conn.metadata_cache.lock().await.get(&cache_key).and_then(
+                |(at, value)| match value {
+                    MetadataCacheValue::ObjectTree(objects)
+                        if at.elapsed() < METADATA_CACHE_TTL =>
+                    {
+                        Some(objects.clone())
+                    }
+                    _ => None,
+                },
+            );
+            cached
+        };
+        if let Some(objects) = cached {
+            return Ok(objects);
+        }
+
+        let pool = self.sqlite_pool(connection_id).await?;
+        let mut objects = vec![];
+
+        // 表在前、视图在后，与 MySQL/PG 树的展示顺序一致
+        let tables: Vec<(String,)> = with_metadata_timeout(sqlx::query_as(
+            "SELECT name FROM sqlite_master
+             WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
+             ORDER BY name ASC",
+        )
+        .fetch_all(&pool))
+        .await?;
+        for (table_name,) in tables {
+            objects.push(DatabaseObject {
+                id: table_name.clone(),
+                name: table_name,
+                object_type: ObjectType::Table,
+                schema: None,
+                children: None,
+                auto_increment: None,
+                updated_at: None,
+                size_bytes: None,
+            });
+        }
+
+        let views: Vec<(String,)> = with_metadata_timeout(sqlx::query_as(
+            "SELECT name FROM sqlite_master
+             WHERE type = 'view' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
+             ORDER BY name ASC",
+        )
+        .fetch_all(&pool))
+        .await?;
+        for (view_name,) in views {
+            objects.push(DatabaseObject {
+                id: view_name.clone(),
+                name: view_name,
+                object_type: ObjectType::View,
+                schema: None,
+                children: None,
+                auto_increment: None,
+                updated_at: None,
+                size_bytes: None,
+            });
+        }
+
+        // 触发器（缺权限或为空时降级为空列表，与 MySQL 分支一致）
+        let triggers: Vec<(String,)> = sqlx::query_as(
+            "SELECT name FROM sqlite_master
+             WHERE type = 'trigger' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
+             ORDER BY name ASC",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default();
+        for (trigger_name,) in triggers {
+            objects.push(DatabaseObject {
+                id: format!("trigger:{}", trigger_name),
+                name: trigger_name,
+                object_type: ObjectType::Trigger,
+                schema: None,
+                children: None,
+                auto_increment: None,
+                updated_at: None,
+                size_bytes: None,
+            });
+        }
+
+        {
+            let connections = self.connections.read().await;
+            if let Some(conn) = connections.get(connection_id) {
+                conn.metadata_cache.lock().await.insert(
+                    cache_key,
+                    (
+                        Instant::now(),
+                        MetadataCacheValue::ObjectTree(objects.clone()),
+                    ),
+                );
+            }
+        }
+
+        Ok(objects)
+    }
+
+    /// SQLite 对象定义：表/视图/触发器的原始 SQL 均存于 sqlite_master.sql
+    async fn get_sqlite_object_definition(
+        &self,
+        connection_id: &str,
+        name: &str,
+        object_type: ObjectType,
+    ) -> Result<String> {
+        validate_identifier(name)?;
+        let pool = self.sqlite_pool(connection_id).await?;
+
+        let master_type = match object_type {
+            ObjectType::Table => "table",
+            ObjectType::View => "view",
+            ObjectType::Trigger => "trigger",
+            ObjectType::Procedure | ObjectType::Function | ObjectType::Event => {
+                return Err(anyhow!("SQLite 不支持该对象类型"));
+            }
+            _ => return Err(anyhow!("不支持的对象类型")),
+        };
+
+        let definition: Option<String> = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master WHERE type = ? AND name = ?",
+        )
+        .bind(master_type)
+        .bind(name)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| anyhow!("读取 SQLite 对象定义失败: {}", e))?;
+
+        definition.ok_or_else(|| anyhow!("对象不存在: {}", name))
+    }
+
+    /// SQLite schema 快照：sqlite_master + 每表 PRAGMA table_info（元数据面小，可接受）
+    async fn get_sqlite_schema_snapshot(
+        &self,
+        connection_id: &str,
+        database: &str,
+    ) -> Result<SchemaSnapshot> {
+        let cache_key = format!("snapshot:db:{}", database);
+        let cached = {
+            let connections = self.connections.read().await;
+            let conn = connections
+                .get(connection_id)
+                .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
+            let cached = conn.metadata_cache.lock().await.get(&cache_key).and_then(
+                |(at, value)| match value {
+                    MetadataCacheValue::SchemaSnapshot(snapshot)
+                        if at.elapsed() < METADATA_CACHE_TTL =>
+                    {
+                        Some(snapshot.clone())
+                    }
+                    _ => None,
+                },
+            );
+            cached
+        };
+        if let Some(snapshot) = cached {
+            return Ok(snapshot);
+        }
+
+        let pool = self.sqlite_pool(connection_id).await?;
+
+        let mut tables: Vec<SchemaTableInfo> = Vec::new();
+        let masters: Vec<(String, String)> = with_metadata_timeout(sqlx::query_as(
+            "SELECT name, type FROM sqlite_master
+             WHERE type IN ('table', 'view')
+               AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
+             ORDER BY (type = 'table') DESC, name ASC",
+        )
+        .fetch_all(&pool))
+        .await?;
+
+        for (name, master_type) in masters {
+            // PRAGMA 不支持绑定参数：名称来自 sqlite_master，内部调用已可信
+            let pragma_sql = format!("PRAGMA table_info({})", quote_pg_identifier(&name)?);
+            let columns: Vec<(String, String, i64, i64)> = with_metadata_timeout(
+                sqlx::query(&pragma_sql)
+                    .try_map(|row: sqlx::sqlite::SqliteRow| {
+                        Ok((
+                            row.try_get::<String, _>("name")?,
+                            row.try_get::<String, _>("type")?,
+                            row.try_get::<i64, _>("notnull")?,
+                            row.try_get::<i64, _>("pk")?,
+                        ))
+                    })
+                    .fetch_all(&pool),
+            )
+            .await
+            .unwrap_or_default();
+
+            let columns = columns
+                .into_iter()
+                .map(
+                    |(column_name, data_type, _notnull, _pk)| SchemaColumnInfo {
+                        name: column_name,
+                        data_type: if data_type.is_empty() {
+                            // 表达式视图列可能没有声明类型
+                            "BLOB".to_string()
+                        } else {
+                            data_type.to_lowercase()
+                        },
+                    },
+                )
+                .collect();
+
+            tables.push(SchemaTableInfo {
+                name,
+                object_type: if master_type == "view" {
+                    ObjectType::View
+                } else {
+                    ObjectType::Table
+                },
+                columns,
+                foreign_keys: Vec::new(),
+            });
+        }
+
+        let snapshot = SchemaSnapshot {
+            database: database.to_string(),
+            tables,
+        };
+        {
+            let connections = self.connections.read().await;
+            if let Some(conn) = connections.get(connection_id) {
+                conn.metadata_cache.lock().await.insert(
+                    cache_key,
+                    (
+                        Instant::now(),
+                        MetadataCacheValue::SchemaSnapshot(snapshot.clone()),
+                    ),
+                );
+            }
+        }
+        Ok(snapshot)
+    }
+
+    /// SQLite 表结构：列来自 PRAGMA table_info，索引来自 index_list+index_info，
+    /// 外键来自 foreign_key_list，DDL 原文来自 sqlite_master.sql
+    async fn get_sqlite_table_structure(
+        &self,
+        connection_id: &str,
+        database: &str,
+        table: &str,
+    ) -> Result<TableStructure> {
+        validate_identifier(table)?;
+        let cache_key = format!("table:{}:{}", database, table);
+        let cached = {
+            let connections = self.connections.read().await;
+            let conn = connections
+                .get(connection_id)
+                .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
+            let cached_value = match conn.metadata_cache.lock().await.get(&cache_key) {
+                Some((at, MetadataCacheValue::TableStructure(structure)))
+                    if at.elapsed() < METADATA_CACHE_TTL =>
+                {
+                    Some((**structure).clone())
+                }
+                _ => None,
+            };
+            cached_value
+        };
+        if let Some(structure) = cached {
+            return Ok(structure);
+        }
+
+        let pool = self.sqlite_pool(connection_id).await?;
+
+        let master: Option<(String,)> = sqlx::query_as(
+            "SELECT type FROM sqlite_master WHERE name = ? AND type IN ('table', 'view')",
+        )
+        .bind(table)
+        .fetch_optional(&pool)
+        .await?;
+        let is_view = matches!(&master, Some((kind,)) if kind == "view");
+        if master.is_none() {
+            return Err(anyhow!("表不存在: {}", table));
+        }
+
+        // 列信息（PRAGMA 不支持绑定参数：table 已过 validate_identifier）
+        let pragma_sql = format!("PRAGMA table_info({})", quote_pg_identifier(table)?);
+        let columns: Vec<(String, String, i64, Option<String>, i64, i64)> =
+            with_metadata_timeout(
+                sqlx::query(&pragma_sql)
+                    .try_map(|row: sqlx::sqlite::SqliteRow| {
+                        Ok((
+                            row.try_get::<String, _>("name")?,
+                            row.try_get::<String, _>("type")?,
+                            row.try_get::<i64, _>("notnull")?,
+                            row.try_get::<Option<String>, _>("dflt_value")?,
+                            row.try_get::<i64, _>("pk")?,
+                            row.try_get::<i64, _>("cid")?,
+                        ))
+                    })
+                    .fetch_all(&pool),
+            )
+            .await?;
+
+        let column_info: Vec<TableColumnInfo> = columns
+            .iter()
+            .map(|(name, data_type, notnull, default, pk, _cid)| {
+                let (length, decimals) =
+                    parse_column_type_precision(&data_type.to_lowercase());
+                TableColumnInfo {
+                    name: name.clone(),
+                    data_type: if data_type.is_empty() {
+                        "BLOB".to_string()
+                    } else {
+                        data_type.to_lowercase()
+                    },
+                    length,
+                    decimals,
+                    is_nullable: *notnull == 0 && *pk == 0,
+                    default_value: default.clone(),
+                    is_auto_increment: false, // 无 WITHOUT ROWID/AUTOINCREMENT 探测需求，MVP 不标
+                    is_primary: *pk > 0,
+                    unsigned: false,
+                    on_update_current_timestamp: false,
+                    comment: None,
+                }
+            })
+            .collect();
+
+        // 索引（视图没有索引；sqlite_autoindex_* 是主键/唯一约束的实现索引，统一展示）
+        let mut index_map: HashMap<String, (bool, Vec<String>)> = HashMap::new();
+        if !is_view {
+            let index_list_sql =
+                format!("PRAGMA index_list({})", quote_pg_identifier(table)?);
+            let index_list: Vec<(String, i64)> = with_metadata_timeout(
+                sqlx::query(&index_list_sql)
+                    .try_map(|row: sqlx::sqlite::SqliteRow| {
+                        Ok((
+                            row.try_get::<String, _>("name")?,
+                            row.try_get::<i64, _>("unique")?,
+                        ))
+                    })
+                    .fetch_all(&pool),
+            )
+            .await
+            .unwrap_or_default();
+
+            for (index_name, unique) in index_list {
+                let idx_info_sql =
+                    format!("PRAGMA index_info({})", quote_pg_identifier(&index_name)?);
+                let idx_cols: Vec<(String,)> = sqlx::query(&idx_info_sql)
+                    .try_map(|row: sqlx::sqlite::SqliteRow| {
+                        Ok((row.try_get::<String, _>("name")?,))
+                    })
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap_or_default();
+                let cols: Vec<String> = idx_cols
+                    .into_iter()
+                    .map(|(c,)| c)
+                    .filter(|c| !c.is_empty())
+                    .collect();
+                if cols.is_empty() {
+                    continue; // 表达式索引列（sqlite 无法以普通列名表达）跳过
+                }
+                index_map
+                    .entry(index_name)
+                    .or_insert_with(|| (unique != 0, Vec::new()))
+                    .1 = cols;
+            }
+        }
+
+        let indexes: Vec<TableIndexInfo> = index_map
+            .into_iter()
+            .map(|(name, (unique, cols))| {
+                let is_autoindex = name.starts_with("sqlite_autoindex_");
+                TableIndexInfo {
+                    name,
+                    r#type: if is_autoindex {
+                        "AUTOINDEX".to_string()
+                    } else {
+                        "INDEX".to_string()
+                    },
+                    columns: cols,
+                    is_unique: unique || is_autoindex,
+                }
+            })
+            .collect();
+
+        // 外键（PRAGMA foreign_key_list：id/seq/table/from/to/on_update/on_delete）
+        type PgFkRow = (i64, i64, String, String, Option<String>, String, String);
+        type FkEntry = (String, Vec<(String, Option<String>)>, String, String);
+        let mut fk_map: HashMap<i64, FkEntry> = HashMap::new();
+        if !is_view {
+            let fk_sql = format!("PRAGMA foreign_key_list({})", quote_pg_identifier(table)?);
+            let fk_rows: Vec<PgFkRow> =
+                with_metadata_timeout(
+                    sqlx::query(&fk_sql)
+                        .try_map(|row: sqlx::sqlite::SqliteRow| {
+                            Ok((
+                                row.try_get::<i64, _>("id")?,
+                                row.try_get::<i64, _>("seq")?,
+                                row.try_get::<String, _>("table")?,
+                                row.try_get::<String, _>("from")?,
+                                row.try_get::<Option<String>, _>("to")?,
+                                row.try_get::<String, _>("on_update")?,
+                                row.try_get::<String, _>("on_delete")?,
+                            ))
+                        })
+                        .fetch_all(&pool),
+                )
+                .await
+                .unwrap_or_default();
+
+            for (id, _seq, ref_table, from, to, on_update, on_delete) in fk_rows {
+                fk_map
+                    .entry(id)
+                    .or_insert_with(|| (ref_table, Vec::new(), on_update, on_delete))
+                    .1
+                    .push((from, to));
+            }
+        }
+
+        let foreign_keys: Vec<TableForeignKeyInfo> = fk_map
+            .into_iter()
+            .map(|(_id, (ref_table, cols, on_update, on_delete))| {
+                // 多列外键拆成逐列条目（与 MySQL 分支的粒度一致）
+                cols.into_iter()
+                    .map(|(from, to)| {
+                        let fallback_from = from.clone();
+                        TableForeignKeyInfo {
+                            name: format!("{}_{}", table, ref_table),
+                            column: from,
+                            ref_table: ref_table.clone(),
+                            ref_column: to.unwrap_or(fallback_from),
+                            on_delete: on_delete.clone(),
+                            on_update: on_update.clone(),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<Vec<_>>>()
+            .into_iter()
+            .flatten()
+            .collect();
+
+        // DDL 原文 / 行数 / 空间
+        let create_statement: Option<String> = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master WHERE name = ? AND type IN ('table', 'view')",
+        )
+        .bind(table)
+        .fetch_optional(&pool)
+        .await?;
+
+        let row_count: Option<u64> = if is_view {
+            None
+        } else {
+            let count_sql = format!(
+                "SELECT COUNT(*) FROM {}",
+                quote_pg_table_reference(table)?
+            );
+            sqlx::query_scalar::<_, i64>(&count_sql)
+                .fetch_one(&pool)
+                .await
+                .ok()
+                .and_then(|n| u64::try_from(n).ok())
+        };
+
+        // page_count*page_size 是整个文件的大小（单文件库无法按表拆分，挂到表上仅供展示）
+        let total_size: Option<u64> = if is_view {
+            None
+        } else {
+            let page_count: i64 =
+                sqlx::query_scalar("PRAGMA page_count").fetch_one(&pool).await.unwrap_or(0);
+            let page_size: i64 =
+                sqlx::query_scalar("PRAGMA page_size").fetch_one(&pool).await.unwrap_or(0);
+            u64::try_from(page_count.saturating_mul(page_size)).ok()
+        };
+
+        let structure = TableStructure {
+            columns: column_info,
+            indexes,
+            foreign_keys,
+            create_statement: create_statement.unwrap_or_default(),
+            engine: None, // SQLite 无存储引擎概念
+            charset: Some("UTF-8".to_string()), // SQLite 文本恒为 UTF-8
+            collation: None,
+            row_count,
+            data_size: total_size,
+            index_size: None,
+            create_time: None,
+            update_time: None,
+        };
+
+        {
+            let connections = self.connections.read().await;
+            if let Some(conn) = connections.get(connection_id) {
+                conn.metadata_cache.lock().await.insert(
+                    cache_key,
+                    (
+                        Instant::now(),
+                        MetadataCacheValue::TableStructure(Box::new(structure.clone())),
+                    ),
+                );
+            }
+        }
+        Ok(structure)
+    }
+
+    /// SQLite 引用外键：全表扫 sqlite_master 的建表 SQL 不可靠，改查每张表的
+    /// PRAGMA foreign_key_list（表数量有限，元数据面小）
+    async fn get_sqlite_referencing_foreign_keys(
+        &self,
+        connection_id: &str,
+        table: &str,
+        column: &str,
+    ) -> Result<Vec<TableForeignKeyInfo>> {
+        let pool = self.sqlite_pool(connection_id).await?;
+
+        let tables: Vec<(String,)> = with_metadata_timeout(sqlx::query_as(
+            "SELECT name FROM sqlite_master
+             WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
+             ORDER BY name ASC",
+        )
+        .fetch_all(&pool))
+        .await?;
+
+        let mut result = Vec::new();
+        for (child_table,) in tables {
+            if child_table == table {
+                continue;
+            }
+            let fk_sql =
+                format!("PRAGMA foreign_key_list({})", quote_pg_identifier(&child_table)?);
+            let fk_rows: Vec<(String, String, Option<String>)> = with_metadata_timeout(
+                sqlx::query(&fk_sql)
+                    .try_map(|row: sqlx::sqlite::SqliteRow| {
+                        Ok((
+                            row.try_get::<String, _>("table")?,
+                            row.try_get::<String, _>("from")?,
+                            row.try_get::<Option<String>, _>("to")?,
+                        ))
+                    })
+                    .fetch_all(&pool),
+            )
+            .await
+            .unwrap_or_default();
+
+            for (ref_table, from, to) in fk_rows {
+                if ref_table != table {
+                    continue;
+                }
+                // 目标列不匹配（未指定 to 的复合外键）保守放行，交由前端展示
+                let parent_col = to.unwrap_or_else(|| column.to_string());
+                if !parent_col.eq_ignore_ascii_case(column) {
+                    continue;
+                }
+                // 语义与 MySQL 分支一致：column=子表（引用方）列，ref_table=子表名
+                // （沿用既有分支对 ref_table 的「引用方表」约定），ref_column=被引用列
+                result.push(TableForeignKeyInfo {
+                    name: format!("{}_{}", child_table, ref_table),
+                    column: from,
+                    ref_table: child_table.clone(),
+                    ref_column: parent_col,
+                    on_delete: "NO ACTION".to_string(),
+                    on_update: "NO ACTION".to_string(),
+                });
+            }
+        }
+        Ok(result)
+    }
+
+    /// SQLite 数据库信息：page_count*page_size=文件大小，表数来自 sqlite_master
+    async fn get_sqlite_database_info(
+        &self,
+        connection_id: &str,
+        database: &str,
+    ) -> Result<DatabaseInfo> {
+        let pool = self.sqlite_pool(connection_id).await?;
+
+        let table_count: i64 = with_metadata_timeout(sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'",
+        )
+        .fetch_one(&pool))
+        .await
+        .unwrap_or(0);
+
+        let page_count: i64 =
+            sqlx::query_scalar("PRAGMA page_count").fetch_one(&pool).await.unwrap_or(0);
+        let page_size: i64 =
+            sqlx::query_scalar("PRAGMA page_size").fetch_one(&pool).await.unwrap_or(0);
+        let total_size = u64::try_from(page_count.saturating_mul(page_size)).ok();
+
+        Ok(DatabaseInfo {
+            name: database.to_string(),
+            charset: Some("UTF-8".to_string()),
+            collation: Some("BINARY".to_string()),
+            table_count: u64::try_from(table_count).unwrap_or(0),
+            data_size: None, // 单文件库无按表/按用途拆分，仅给总大小
+            index_size: None,
+            total_size,
+            create_time: None,
+        })
+    }
+
+    /// SQLite 连接池（单文件库只有一个主池）
+    pub async fn sqlite_pool(&self, connection_id: &str) -> Result<sqlx::SqlitePool> {
+        let connections = self.connections.read().await;
+        let conn = connections
+            .get(connection_id)
+            .ok_or_else(|| anyhow!("连接不存在: {}", connection_id))?;
+        let pool = conn
+            .pool
+            .as_ref()
+            .ok_or_else(|| anyhow!("连接尚未建立"))?
+            .as_sqlite("读取元数据")?;
+        Ok(pool.clone())
     }
 }
 
@@ -2606,5 +3271,120 @@ mod tests {
             .execute(&id, &db, &format!("DROP SCHEMA IF EXISTS {schema} CASCADE"))
             .await
             .unwrap();
+    }
+
+    /// SQLite 真实文件测试夹具：临时目录建空库文件（create_if_missing=false）
+    async fn sqlite_test_connection(tag: &str) -> (ConnectionManager, String, std::path::PathBuf, std::path::PathBuf) {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("qa_sqlite_meta_{}_{}", pid, tag));
+        std::fs::create_dir_all(&dir).expect("创建临时目录");
+        let db_path = dir.join("qa.db");
+        let _ = std::fs::remove_file(&db_path);
+        std::fs::File::create(&db_path).expect("创建空库文件");
+
+        let manager = ConnectionManager::new();
+        let id = manager
+            .connect(ConnectionRequest {
+                config: ConnectionConfig {
+                    id: "qa-sqlite-meta".to_string(),
+                    name: "qa-sqlite-meta".to_string(),
+                    driver: DriverKind::Sqlite,
+                    host: String::new(),
+                    port: 0,
+                    database: Some(db_path.to_string_lossy().to_string()),
+                    username: String::new(),
+                    password: String::new(),
+                    pool_config: PoolConfig::default(),
+                    ssl_config: SslConfig::default(),
+                    safety_mode: SafetyMode::Off,
+                },
+                ssh_config: None,
+            })
+            .await
+            .expect("SQLite 连接失败");
+        (manager, id, db_path.clone(), dir)
+    }
+
+    fn cleanup_sqlite(dir: &std::path::Path, db_path: &std::path::Path) {
+        let _ = std::fs::remove_file(db_path);
+        let _ = std::fs::remove_file(dir.join("qa.db-wal"));
+        let _ = std::fs::remove_file(dir.join("qa.db-shm"));
+        let _ = std::fs::remove_dir(dir);
+    }
+
+    #[tokio::test]
+    #[ignore = "SQLite 真实文件端到端：cargo test -- --ignored"]
+    async fn sqlite_metadata_tree_structure_and_info() {
+        let (manager, id, db_path, dir) = sqlite_test_connection("tree").await;
+        let db = db_path.to_string_lossy().to_string();
+
+        manager.execute(&id, &db, "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price NUMERIC(10,2), payload BLOB, created DATETIME)").await.expect("建表失败");
+        manager.execute(&id, &db, "CREATE TABLE orders (id INTEGER PRIMARY KEY, item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE, qty INTEGER DEFAULT 1)").await.expect("建订单表失败");
+        manager.execute(&id, &db, "CREATE VIEW v_items AS SELECT id, name FROM items").await.expect("建视图失败");
+        manager.execute(&id, &db, "CREATE TRIGGER trg_items AFTER INSERT ON items BEGIN SELECT 1; END").await.expect("建触发器失败");
+        manager.execute(&id, &db, "INSERT INTO items (id, name, price, payload, created) VALUES (1, 'a', 1.5, NULL, NULL), (2, 'b', NULL, NULL, NULL)").await.expect("插数据失败");
+
+        // 对象树：表/视图/触发器
+        let tree = manager.get_object_tree(&id, Some(&db)).await.expect("对象树失败");
+        assert!(tree.iter().any(|o| o.name == "items" && o.object_type == ObjectType::Table), "对象树缺 items 表");
+        assert!(tree.iter().any(|o| o.name == "v_items" && o.object_type == ObjectType::View), "对象树缺 v_items 视图");
+        assert!(tree.iter().any(|o| o.name == "trg_items" && o.object_type == ObjectType::Trigger), "对象树缺触发器");
+
+        // 表结构：列类型/主键/默认值/外键/DDL/行数
+        let structure = manager.get_table_structure(&id, &db, "orders").await.expect("表结构失败");
+        assert_eq!(structure.columns.len(), 3);
+        assert!(structure.columns[0].is_primary, "orders.id 应为主键");
+        assert!(!structure.columns[1].is_nullable, "item_id NOT NULL");
+        assert_eq!(structure.columns[2].default_value.as_deref(), Some("1"), "qty 默认 1");
+        assert_eq!(structure.foreign_keys.len(), 1, "orders 应有 1 条外键");
+        assert_eq!(structure.foreign_keys[0].ref_table, "items");
+        assert_eq!(structure.foreign_keys[0].on_delete, "CASCADE");
+        assert!(structure.create_statement.contains("CREATE TABLE"), "DDL 应来自 sqlite_master.sql");
+        assert_eq!(structure.row_count, Some(0), "空表行数 0");
+        assert_eq!(structure.charset.as_deref(), Some("UTF-8"));
+
+        // 库信息：page_count*page_size + 表计数
+        let info = manager.get_database_info(&id, &db).await.expect("库信息失败");
+        assert_eq!(info.table_count, 2, "表数应为 2（不含视图）");
+        assert!(info.total_size.unwrap_or(0) > 0, "库大小应大于 0");
+
+        // 快照：表+视图，列类型小写
+        let snapshot = manager.get_schema_snapshot(&id, &db).await.expect("快照失败");
+        assert_eq!(snapshot.tables.len(), 3);
+        let snap_items = snapshot.tables.iter().find(|t| t.name == "items").expect("快照缺 items");
+        assert_eq!(snap_items.columns[0].data_type, "integer");
+
+        // 对象定义：表 DDL 与触发器 SQL
+        let ddl = manager.get_object_definition(&id, &db, None, "items", ObjectType::Table).await.expect("表定义失败");
+        assert!(ddl.contains("CREATE TABLE items"));
+        let trg = manager.get_object_definition(&id, &db, None, "trg_items", ObjectType::Trigger).await.expect("触发器定义失败");
+        assert!(trg.contains("trg_items"));
+
+        // 引用外键：items 被 orders 引用
+        let refs = manager.get_referencing_foreign_keys(&id, &db, "items", "id").await.expect("引用外键失败");
+        assert_eq!(refs.len(), 1, "items.id 应被 orders 引用");
+        // ref_table 与 MySQL/PG 分支一致 = 引用方（子）表名
+        assert_eq!(refs[0].ref_table, "orders");
+        assert_eq!(refs[0].column, "item_id", "column 是子表引用列");
+        assert_eq!(refs[0].ref_column, "id", "ref_column 是被引用列");
+
+        manager.disconnect(&id).await.expect("断开失败");
+        cleanup_sqlite(&dir, &db_path);
+    }
+
+    #[tokio::test]
+    #[ignore = "SQLite 真实文件端到端：cargo test -- --ignored"]
+    async fn sqlite_metadata_rejects_missing_object_and_bad_type() {
+        let (manager, id, db_path, dir) = sqlite_test_connection("neg").await;
+        let db = db_path.to_string_lossy().to_string();
+
+        let err = manager.get_object_definition(&id, &db, None, "no_such", ObjectType::Table).await.expect_err("不存在的对象应报错");
+        assert!(err.to_string().contains("对象不存在"), "实际: {}", err);
+
+        let err = manager.get_object_definition(&id, &db, None, "x", ObjectType::Procedure).await.expect_err("Procedure 应拒绝");
+        assert!(err.to_string().contains("不支持"), "实际: {}", err);
+
+        manager.disconnect(&id).await.expect("断开失败");
+        cleanup_sqlite(&dir, &db_path);
     }
 }

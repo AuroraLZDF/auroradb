@@ -10,8 +10,9 @@
 
 use super::driver::DriverKind;
 use super::resultset::{
-    classify_column, classify_pg_column, convert_pg_value, convert_value, format_sql_value,
-    ColumnKind, PgColumnKind,
+    classify_column, classify_pg_column, classify_sqlite_column, convert_pg_value,
+    convert_sqlite_value, convert_value, format_sql_value, ColumnKind, PgColumnKind,
+    SqliteColumnKind,
 };
 use super::types::CellValue;
 use super::validation::{escape_string_pg, quote_pg_identifier, quote_pg_table_reference};
@@ -89,6 +90,7 @@ pub struct TableExportSink<W: Write> {
     columns: Vec<ExportColumn>,
     kinds: Vec<ColumnKind>,
     pg_kinds: Vec<PgColumnKind>,
+    sqlite_kinds: Vec<SqliteColumnKind>,
     rows: u64,
     started: bool,
 }
@@ -111,6 +113,10 @@ impl<W: Write> TableExportSink<W> {
             .iter()
             .map(|col| classify_pg_column(&col.data_type))
             .collect();
+        let sqlite_kinds = columns
+            .iter()
+            .map(|col| classify_sqlite_column(&col.data_type))
+            .collect();
         Self {
             writer,
             format,
@@ -119,6 +125,7 @@ impl<W: Write> TableExportSink<W> {
             columns,
             kinds,
             pg_kinds,
+            sqlite_kinds,
             rows: 0,
             started: false,
         }
@@ -213,6 +220,55 @@ impl<W: Write> TableExportSink<W> {
         let mut cells = Vec::with_capacity(self.pg_kinds.len());
         for (index, kind) in self.pg_kinds.iter().enumerate() {
             cells.push(convert_pg_value(row, index, *kind)?);
+        }
+        self.write_cells(&cells)
+    }
+
+    /// 写出一行 SQLite 结果集
+    ///
+    /// 与 PG 版对称：SQL 导出用 `INSERT INTO "table" ("c1") VALUES (…)` 语法，
+    /// 字面量按 SQLite 存储类别生成（文本 '' 转义、BLOB x'…'、数值裸写）。
+    pub fn write_sqlite_row(&mut self, row: &sqlx::sqlite::SqliteRow) -> Result<()> {
+        debug_assert_eq!(self.driver, DriverKind::Sqlite);
+        if self.columns.is_empty() {
+            self.columns = row
+                .columns()
+                .iter()
+                .map(|col| ExportColumn {
+                    name: col.name().to_string(),
+                    data_type: col.type_info().to_string(),
+                })
+                .collect();
+            self.sqlite_kinds = self
+                .columns
+                .iter()
+                .map(|col| classify_sqlite_column(&col.data_type))
+                .collect();
+        }
+
+        // SQL 导出按原始行的类型生成字面量，不能走类型化单元格（会丢失数值/日期字面量形式）
+        if self.format == ExportFormat::Sql {
+            self.start()?;
+            let mut columns = Vec::with_capacity(self.columns.len());
+            let mut values = Vec::with_capacity(self.columns.len());
+            for col in &self.columns {
+                columns.push(quote_pg_identifier(&col.name)?);
+                values.push(format_sqlite_sql_value(row, &col.name, &col.data_type)?);
+            }
+            writeln!(
+                self.writer,
+                "INSERT INTO {} ({}) VALUES ({});",
+                quote_pg_identifier(&self.table)?,
+                columns.join(", "),
+                values.join(", ")
+            )?;
+            self.rows += 1;
+            return Ok(());
+        }
+
+        let mut cells = Vec::with_capacity(self.sqlite_kinds.len());
+        for (index, kind) in self.sqlite_kinds.iter().enumerate() {
+            cells.push(convert_sqlite_value(row, index, *kind)?);
         }
         self.write_cells(&cells)
     }
@@ -426,9 +482,113 @@ fn format_pg_sql_value(row: &PgRow, column_name: &str, data_type: &str) -> Resul
     }
 }
 
+/// 按声明列类型生成 SQLite SQL 字面量。
+///
+/// SQLite 是动态类型：声明类型只决定亲和性，实际存储类别以值为准，
+/// 因此每类先按首选类型解码，失败时逐级回退到 `try_get_raw` 的原始字节。
+fn format_sqlite_sql_value(
+    row: &sqlx::sqlite::SqliteRow,
+    column_name: &str,
+    data_type: &str,
+) -> Result<String> {
+    let kind = classify_sqlite_column(data_type);
+    let decode_error = |e: sqlx::Error| {
+        anyhow!(
+            "列 \"{}\"（{}）的值无法解码，已停止导出以避免写入错误的 NULL：{}",
+            column_name,
+            data_type,
+            e
+        )
+    };
+    // 存储类别兜底：i64/f64/Vec<u8>/String 覆盖 SQLite 全部存储类别
+    // （INTEGER/REAL/BLOB/TEXT/NULL）。先看声明的解码结果是不是 TEXT/BLOB
+    // 类别，不是就用另一半；SqliteValueRef 无公开原始字节访问，靠类型化
+    // try_get 的成功/失败区分存储类别。
+    let raw_fallback = |row: &sqlx::sqlite::SqliteRow,
+                        column_name: &str,
+                        _data_type: &str,
+                        e: sqlx::Error| -> Result<String> {
+        if let Ok(raw) = row.try_get_raw(column_name) {
+            if raw.is_null() {
+                return Ok("NULL".to_string());
+            }
+        }
+        if let Ok(Some(bytes)) = row.try_get::<Option<Vec<u8>>, _>(column_name) {
+            let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+            return Ok(format!("x'{}'", hex));
+        }
+        if let Ok(Some(text)) = row.try_get::<Option<String>, _>(column_name) {
+            return Ok(format!("'{}'", escape_string_pg(&text)));
+        }
+        Err(decode_error(e))
+    };
+
+    match kind {
+        SqliteColumnKind::Integer => match row.try_get::<Option<i64>, _>(column_name) {
+            Ok(Some(v)) => Ok(v.to_string()),
+            Ok(None) => Ok("NULL".to_string()),
+            Err(e) => raw_fallback(row, column_name, data_type, e),
+        },
+        SqliteColumnKind::Real => match row.try_get::<Option<f64>, _>(column_name) {
+            Ok(Some(v)) => Ok(float_literal(v)),
+            Ok(None) => Ok("NULL".to_string()),
+            Err(e) => raw_fallback(row, column_name, data_type, e),
+        },
+        // NUMERIC 亲和性列按值的实际存储类别回存（INTEGER/REAL/TEXT 都可能出现），
+        // 逐类尝试解码，保留原始字面量，避免 f64 往返精度丢失。
+        SqliteColumnKind::Numeric => {
+            if let Ok(v) = row.try_get::<Option<i64>, _>(column_name) {
+                return Ok(v.map(|v| v.to_string()).unwrap_or_else(|| "NULL".into()));
+            }
+            if let Ok(Some(v)) = row.try_get::<Option<f64>, _>(column_name) {
+                return Ok(float_literal(v));
+            }
+            match row.try_get::<Option<String>, _>(column_name) {
+                Ok(Some(v)) => Ok(v),
+                Ok(None) => Ok("NULL".to_string()),
+                Err(e) => raw_fallback(row, column_name, data_type, e),
+            }
+        }
+        SqliteColumnKind::Boolean => match row.try_get::<Option<bool>, _>(column_name) {
+            Ok(Some(v)) => Ok(if v { "TRUE" } else { "FALSE" }.to_string()),
+            Ok(None) => Ok("NULL".to_string()),
+            Err(e) => raw_fallback(row, column_name, data_type, e),
+        },
+        SqliteColumnKind::Datetime => {
+            match row.try_get::<Option<chrono::NaiveDateTime>, _>(column_name) {
+                Ok(Some(v)) => Ok(format!("'{}'", v.format("%Y-%m-%d %H:%M:%S%.f"))),
+                Ok(None) => Ok("NULL".to_string()),
+                Err(e) => raw_fallback(row, column_name, data_type, e),
+            }
+        }
+        SqliteColumnKind::Date => match row.try_get::<Option<chrono::NaiveDate>, _>(column_name) {
+            Ok(Some(v)) => Ok(format!("'{}'", v.format("%Y-%m-%d"))),
+            Ok(None) => Ok("NULL".to_string()),
+            Err(e) => raw_fallback(row, column_name, data_type, e),
+        },
+        SqliteColumnKind::Time => match row.try_get::<Option<chrono::NaiveTime>, _>(column_name) {
+            Ok(Some(v)) => Ok(format!("'{}'", v.format("%H:%M:%S%.f"))),
+            Ok(None) => Ok("NULL".to_string()),
+            Err(e) => raw_fallback(row, column_name, data_type, e),
+        },
+        SqliteColumnKind::Blob => match row.try_get::<Option<Vec<u8>>, _>(column_name) {
+            Ok(Some(v)) => {
+                let hex: String = v.iter().map(|b| format!("{:02x}", b)).collect();
+                Ok(format!("x'{}'", hex))
+            }
+            Ok(None) => Ok("NULL".to_string()),
+            Err(e) => raw_fallback(row, column_name, data_type, e),
+        },
+        SqliteColumnKind::Text => match row.try_get::<Option<String>, _>(column_name) {
+            Ok(Some(v)) => Ok(format!("'{}'", escape_string_pg(&v))),
+            Ok(None) => Ok("NULL".to_string()),
+            Err(e) => raw_fallback(row, column_name, data_type, e),
+        },
+    }
+}
+
 /// 浮点字面量：NaN/Infinity 需要带引号才能被 PG 解析。
-fn float_literal(v: f64) -> String {
-    if v.is_nan() {
+fn float_literal(v: f64) -> String {    if v.is_nan() {
         "'NaN'".to_string()
     } else if v.is_infinite() {
         if v.is_sign_positive() {

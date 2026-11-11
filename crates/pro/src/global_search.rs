@@ -177,6 +177,10 @@ pub async fn global_search(
                 .await;
         }
         AnyPool::MySql(mysql_pool) => mysql_pool,
+        // SQLite 为本地单文件库，全局搜索暂不支持
+        AnyPool::Sqlite(_) => {
+            return Err(anyhow!("SQLite 本地文件连接暂不支持全局搜索"));
+        }
     };
 
     let mut notes: Vec<String> = Vec::new();

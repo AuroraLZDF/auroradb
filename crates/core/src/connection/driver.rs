@@ -7,7 +7,8 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::mysql::{MySqlConnection, MySqlPool};
 use sqlx::postgres::{PgConnection, PgPool};
-use sqlx::{MySql, Postgres};
+use sqlx::sqlite::{SqliteConnection, SqlitePool};
+use sqlx::{MySql, Postgres, Sqlite};
 
 /// 数据库驱动类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -18,6 +19,8 @@ pub enum DriverKind {
     MySql,
     /// PostgreSQL
     Postgres,
+    /// SQLite（本地单文件库）
+    Sqlite,
 }
 
 impl DriverKind {
@@ -26,6 +29,7 @@ impl DriverKind {
         match self {
             Self::MySql => "MySQL",
             Self::Postgres => "PostgreSQL",
+            Self::Sqlite => "SQLite",
         }
     }
 }
@@ -35,6 +39,7 @@ impl DriverKind {
 pub enum AnyPool {
     MySql(MySqlPool),
     Postgres(PgPool),
+    Sqlite(SqlitePool),
 }
 
 impl AnyPool {
@@ -42,6 +47,7 @@ impl AnyPool {
         match self {
             Self::MySql(_) => DriverKind::MySql,
             Self::Postgres(_) => DriverKind::Postgres,
+            Self::Sqlite(_) => DriverKind::Sqlite,
         }
     }
 
@@ -50,6 +56,7 @@ impl AnyPool {
         match self {
             Self::MySql(pool) => pool.close().await,
             Self::Postgres(pool) => pool.close().await,
+            Self::Sqlite(pool) => pool.close().await,
         }
     }
 
@@ -62,6 +69,9 @@ impl AnyPool {
             Self::Postgres(pool) => {
                 let _: i32 = sqlx::query_scalar("SELECT 1").fetch_one(pool).await?;
             }
+            Self::Sqlite(pool) => {
+                let _: i32 = sqlx::query_scalar("SELECT 1").fetch_one(pool).await?;
+            }
         }
         Ok(())
     }
@@ -71,6 +81,7 @@ impl AnyPool {
         match self {
             Self::MySql(pool) => pool.begin().await.map(AnyTransaction::MySql),
             Self::Postgres(pool) => pool.begin().await.map(AnyTransaction::Postgres),
+            Self::Sqlite(pool) => pool.begin().await.map(AnyTransaction::Sqlite),
         }
     }
 
@@ -78,8 +89,20 @@ impl AnyPool {
     pub fn as_mysql(&self, feature: &str) -> Result<&MySqlPool> {
         match self {
             Self::MySql(pool) => Ok(pool),
-            Self::Postgres(_) => Err(anyhow!(
+            Self::Postgres(_) | Self::Sqlite(_) => Err(anyhow!(
                 "「{}」尚未支持 {}，将在后续批次提供",
+                feature,
+                self.driver().display_name()
+            )),
+        }
+    }
+
+    /// 取 SQLite 池
+    pub fn as_sqlite(&self, feature: &str) -> Result<&sqlx::SqlitePool> {
+        match self {
+            Self::Sqlite(pool) => Ok(pool),
+            Self::MySql(_) | Self::Postgres(_) => Err(anyhow!(
+                "「{}」仅支持 SQLite 连接，当前驱动为 {}",
                 feature,
                 self.driver().display_name()
             )),
@@ -91,6 +114,7 @@ impl AnyPool {
 pub enum AnyTransaction {
     MySql(sqlx::Transaction<'static, MySql>),
     Postgres(sqlx::Transaction<'static, Postgres>),
+    Sqlite(sqlx::Transaction<'static, Sqlite>),
 }
 
 impl AnyTransaction {
@@ -98,6 +122,7 @@ impl AnyTransaction {
         match self {
             Self::MySql(_) => DriverKind::MySql,
             Self::Postgres(_) => DriverKind::Postgres,
+            Self::Sqlite(_) => DriverKind::Sqlite,
         }
     }
 
@@ -105,7 +130,7 @@ impl AnyTransaction {
     pub fn as_mysql_connection(&mut self) -> Result<&mut MySqlConnection> {
         match self {
             Self::MySql(txn) => Ok(&mut **txn),
-            Self::Postgres(_) => Err(anyhow!(
+            Self::Postgres(_) | Self::Sqlite(_) => Err(anyhow!(
                 "该功能尚未支持 {}，将在后续批次提供",
                 self.driver().display_name()
             )),
@@ -116,7 +141,19 @@ impl AnyTransaction {
     pub fn as_pg_connection(&mut self) -> Result<&mut PgConnection> {
         match self {
             Self::Postgres(txn) => Ok(&mut **txn),
-            Self::MySql(_) => Err(anyhow!("当前连接不是 PostgreSQL，无法在事务中执行该语句")),
+            Self::MySql(_) | Self::Sqlite(_) => Err(anyhow!(
+                "当前连接不是 PostgreSQL，无法在事务中执行该语句"
+            )),
+        }
+    }
+
+    /// 取 SQLite 事务连接；其它驱动返回明确错误
+    pub fn as_sqlite_connection(&mut self) -> Result<&mut SqliteConnection> {
+        match self {
+            Self::Sqlite(txn) => Ok(&mut **txn),
+            Self::MySql(_) | Self::Postgres(_) => Err(anyhow!(
+                "当前连接不是 SQLite，无法在事务中执行该语句"
+            )),
         }
     }
 
@@ -124,6 +161,7 @@ impl AnyTransaction {
         match self {
             Self::MySql(txn) => txn.commit().await,
             Self::Postgres(txn) => txn.commit().await,
+            Self::Sqlite(txn) => txn.commit().await,
         }
         .map_err(Into::into)
     }
@@ -132,6 +170,7 @@ impl AnyTransaction {
         match self {
             Self::MySql(txn) => txn.rollback().await,
             Self::Postgres(txn) => txn.rollback().await,
+            Self::Sqlite(txn) => txn.rollback().await,
         }
         .map_err(Into::into)
     }

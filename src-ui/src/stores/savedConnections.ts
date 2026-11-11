@@ -12,7 +12,7 @@ export type SshAuthType = 'password' | 'private-key'
 export type SafetyMode = 'off' | 'safe' | 'read-only'
 
 /** 数据库驱动，值需与后端 DriverKind 的 serde 命名（lowercase）一致 */
-export type DriverKind = 'mysql' | 'postgres'
+export type DriverKind = 'mysql' | 'postgres' | 'sqlite'
 
 /** SSH 配置中可持久化的部分（密码/口令不写 localStorage） */
 interface SshSavedFields {

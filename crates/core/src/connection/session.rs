@@ -7,6 +7,7 @@ use super::types::*;
 use anyhow::{anyhow, Context, Result};
 use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions, MySqlSslMode};
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgSslMode};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -133,6 +134,9 @@ impl ConnectionManager {
         // 隧道对象在此处持有，若后续建池失败会随作用域 Drop 一并关闭。
         let (tunnel, host, port) = match &request.ssh_config {
             Some(ssh) => {
+                if request.config.driver == DriverKind::Sqlite {
+                    return Err(anyhow!("SQLite 本地文件连接不支持 SSH 隧道"));
+                }
                 let factory = self
                     .tunnel_factory()
                     .ok_or_else(|| anyhow!("当前版本不包含 SSH 隧道功能"))?;
@@ -225,13 +229,54 @@ impl ConnectionManager {
                     .await
                     .map(AnyPool::Postgres)?
             }
+            DriverKind::Sqlite => {
+                // database 字段承载本地文件路径；不允许为空，避免静默创建内存库/临时库
+                let path = request
+                    .config
+                    .database
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                    .ok_or_else(|| anyhow!("SQLite 连接必须指定数据库文件路径"))?;
+
+                let mut opts: SqliteConnectOptions = format!("sqlite://{}", path)
+                    .parse::<SqliteConnectOptions>()
+                    .context("SQLite 数据库文件路径无效")?
+                    // 文件不存在时直接报错，而不是静默创建一个空库让用户误以为连上了
+                    .create_if_missing(false)
+                    .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                    .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+                    .foreign_keys(true)
+                    // 写并发靠 busy_timeout 排队（WAL 下多读一写）；
+                    // 取 max(connect_timeout, 5s)，避免 connect_timeout 过小时写入立刻报 SQLITE_BUSY
+                    .busy_timeout(Duration::from_secs(pool_config.connect_timeout.max(5)));
+
+                // TLS 配置对本地文件无意义，忽略即可（不报错，保持表单可复用）
+                if request.config.ssl_config.mode != SslMode::Disabled {
+                    tracing::debug!("SQLite 连接忽略 SSL 配置（本地文件不使用 TLS）");
+                }
+                let _ = &mut opts;
+
+                SqlitePoolOptions::new()
+                    .max_connections(pool_config.max_connections)
+                    // SQLite 常驻连接无收益，且每个连接独立打开文件句柄
+                    .min_connections(0)
+                    .acquire_timeout(Duration::from_secs(pool_config.connect_timeout))
+                    .idle_timeout(Duration::from_secs(pool_config.idle_timeout))
+                    .max_lifetime(Duration::from_secs(pool_config.max_lifetime))
+                    .connect_with(opts)
+                    .await
+                    .map_err(|e| anyhow!("打开 SQLite 数据库失败：{}", e))
+                    .map(AnyPool::Sqlite)?
+            }
         };
 
         // 测试连接
         pool.ping().await?;
 
         // 回查实际落地的数据库名：配置未填库时 PG 由服务端决定（默认与用户名同名），
-        // 前端在连接节点上标注该值，避免把 schema 误当成数据库
+        // 前端在连接节点上标注该值，避免把 schema 误当成数据库；
+        // SQLite 的「库」就是文件路径本身，直接采用配置值
         let current_database = match &pool {
             AnyPool::Postgres(pg) => sqlx::query_scalar::<_, String>("SELECT current_database()")
                 .fetch_one(pg)
@@ -242,6 +287,7 @@ impl ConnectionManager {
                 .await
                 .ok()
                 .flatten(),
+            AnyPool::Sqlite(_) => request.config.database.clone(),
         };
 
         // 启动心跳
@@ -399,7 +445,9 @@ impl ConnectionManager {
             .ok_or_else(|| anyhow!("连接不可用: {}", connection_id))?;
         match pool {
             AnyPool::Postgres(pg) => Ok((pg.clone(), conn.current_database.clone())),
-            AnyPool::MySql(_) => Err(anyhow!("连接 {} 不是 PostgreSQL 连接", connection_id)),
+            AnyPool::MySql(_) | AnyPool::Sqlite(_) => {
+                Err(anyhow!("连接 {} 不是 PostgreSQL 连接", connection_id))
+            }
         }
     }
 
@@ -419,7 +467,7 @@ impl ConnectionManager {
                 .ok_or_else(|| anyhow!("连接不可用: {}", connection_id))?;
             let main_pool = match pool {
                 AnyPool::Postgres(pg) => pg.clone(),
-                AnyPool::MySql(_) => {
+                AnyPool::MySql(_) | AnyPool::Sqlite(_) => {
                     return Err(anyhow!("连接 {} 不是 PostgreSQL 连接", connection_id))
                 }
             };

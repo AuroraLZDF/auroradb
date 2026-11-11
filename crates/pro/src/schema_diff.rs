@@ -996,7 +996,7 @@ async fn resolve_pg_scope(
     let snapshot = manager.connection_snapshot(connection_id).await?;
     let pool = match &snapshot.pool {
         AnyPool::Postgres(pool) => pool.clone(),
-        AnyPool::MySql(_) => {
+        AnyPool::MySql(_) | AnyPool::Sqlite(_) => {
             return Err(anyhow!("连接不是 PostgreSQL 连接: {}", connection_id));
         }
     };
