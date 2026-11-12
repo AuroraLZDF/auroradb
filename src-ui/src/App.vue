@@ -822,10 +822,13 @@ async function openSavedConnection(savedConn: SavedConnection) {
     return
   }
 
-  // 获取密码
-  const password = await savedStore.getPassword(savedConn.id)
+  // SQLite 本地文件连接无凭据：跳过取密码步骤直接建连，
+  // 否则 getPassword 返回空会误入「补密码」表单，双击连接表现为打开编辑弹层
+  const password = (savedConn.driver ?? 'mysql') === 'sqlite'
+    ? ''
+    : await savedStore.getPassword(savedConn.id)
 
-  if (!password) {
+  if (!password && (savedConn.driver ?? 'mysql') !== 'sqlite') {
     // 没有保存密码，需要重新输入；带上已保存的连接信息回填表单
     editingConnection.value = savedConn
     showConnectionForm.value = true
@@ -868,7 +871,7 @@ async function openSavedConnection(savedConn: SavedConnection) {
       port: savedConn.port,
       database: savedConn.database || '',
       username: savedConn.username,
-      password: password,
+      password: password ?? '',
       safety_mode: savedConn.safetyMode ?? 'off',
       ssl_config: {
         mode: savedConn.sslMode ?? 'preferred',

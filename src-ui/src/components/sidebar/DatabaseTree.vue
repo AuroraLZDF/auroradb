@@ -117,16 +117,15 @@
 import { computed } from 'vue'
 import { Table2, Database, LayoutGrid, Wrench, Cog, Zap, CalendarClock, ChevronDown, ChevronRight, Plus } from 'lucide-vue-next'
 import type { DatabaseObject } from '@/stores/dataBrowser'
+import type { DriverKind } from '@/stores/savedConnections'
 import { t } from '@/i18n'
 
-const objectCategories = computed(() => [
-  { type: 'tables', label: t('tree.tables'), icon: Table2, objectType: '' },
-  { type: 'views', label: t('tree.views'), icon: LayoutGrid, objectType: 'View' },
-  { type: 'functions', label: t('tree.functions'), icon: Wrench, objectType: 'Function' },
-  { type: 'procedures', label: t('tree.procedures'), icon: Cog, objectType: 'Procedure' },
-  { type: 'triggers', label: t('tree.triggers'), icon: Zap, objectType: 'Trigger' },
-  { type: 'events', label: t('tree.events'), icon: CalendarClock, objectType: 'Event' },
-] as const)
+/** 各驱动支持的对象分类：SQLite 无函数/存储过程/事件，PG 无事件，避免渲染恒为空的文件夹 */
+const CATEGORIES_BY_DRIVER: Record<DriverKind, readonly string[]> = {
+  mysql: ['tables', 'views', 'functions', 'procedures', 'triggers', 'events'],
+  postgres: ['tables', 'views', 'functions', 'procedures', 'triggers'],
+  sqlite: ['tables', 'views', 'triggers'],
+}
 
 interface Props {
   connectionId: string
@@ -140,9 +139,23 @@ interface Props {
   connectionDatabaseTables: Record<string, DatabaseObject[]>
   /** 侧边栏过滤关键字：非空时只展示命中的库/表，并临时展开 */
   filter?: string
+  /** 连接驱动：决定展示哪些对象分类，缺省按 mysql 处理 */
+  driver?: DriverKind
 }
 
 const props = defineProps<Props>()
+
+const objectCategories = computed(() => {
+  const allowed = CATEGORIES_BY_DRIVER[props.driver ?? 'mysql']
+  return ([
+    { type: 'tables', label: t('tree.tables'), icon: Table2, objectType: '' },
+    { type: 'views', label: t('tree.views'), icon: LayoutGrid, objectType: 'View' },
+    { type: 'functions', label: t('tree.functions'), icon: Wrench, objectType: 'Function' },
+    { type: 'procedures', label: t('tree.procedures'), icon: Cog, objectType: 'Procedure' },
+    { type: 'triggers', label: t('tree.triggers'), icon: Zap, objectType: 'Trigger' },
+    { type: 'events', label: t('tree.events'), icon: CalendarClock, objectType: 'Event' },
+  ] as const).filter(category => allowed.includes(category.type))
+})
 
 const emit = defineEmits<{
   selectDatabase: [dbName: string]

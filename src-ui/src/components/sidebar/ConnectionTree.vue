@@ -131,6 +131,7 @@
             :selected-info-type="selectedInfoType"
             :selected-info-data="selectedInfoData"
             :connection-database-tables="connectionDatabaseTables[item.active!.id] || {}"
+            :driver="driverOf(item)"
             :filter="filter"
             @select-database="(db) => emit('selectDatabase', item.active!.id, db)"
             @dblclick-database="(db) => emit('dblclickDatabase', item.active!.id, db)"

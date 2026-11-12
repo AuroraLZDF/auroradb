@@ -2012,6 +2012,29 @@ impl ConnectionManager {
         connection_id: &str,
         database: Option<&str>,
     ) -> Result<Vec<DatabaseObject>> {
+        // 根级调用：SQLite 单文件库没有「库列表」概念，返回单个 Database 节点。
+        // name 即库文件路径——前端展开该节点、备份/还原与全局搜索的库下拉
+        // 都以该 name 作为 database 参数回传，必须与连接配置的路径一致。
+        if database.is_none() {
+            let file_path = {
+                let connections = self.connections.read().await;
+                connections
+                    .get(connection_id)
+                    .and_then(|conn| conn.config.database.clone())
+                    .unwrap_or_default()
+            };
+            return Ok(vec![DatabaseObject {
+                id: file_path.clone(),
+                name: file_path,
+                object_type: ObjectType::Database,
+                schema: None,
+                children: None,
+                auto_increment: None,
+                updated_at: None,
+                size_bytes: None,
+            }]);
+        }
+
         let cache_key = match database {
             Some(db) => format!("tree:sqlite:db:{}", db),
             None => "tree:sqlite:root".to_string(),
