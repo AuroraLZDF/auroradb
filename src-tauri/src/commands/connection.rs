@@ -103,6 +103,48 @@ pub async fn connect(
     }
 }
 
+/// 测试连接的自增序号：保证一次性连接 ID 唯一，避免并发测试互相覆盖
+static TEST_CONNECTION_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// 测试连接：按传入配置建立一次连接验证可达性，成功后立即断开
+///
+/// 使用一次性 ID，不进入前端活跃连接列表，也不影响已打开的连接。
+/// 返回建连耗时（毫秒），供界面展示。
+#[command]
+pub async fn test_connection(
+    state: State<'_, ConnectionManagerState>,
+    config: ConnectionConfig,
+    ssh_config: Option<SshConfig>,
+) -> Result<u64, String> {
+    let manager = state.manager.read().await;
+
+    let mut cfg = config;
+    let seq = TEST_CONNECTION_SEQ
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    cfg.id = format!(
+        "conn_test_{}_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0),
+        seq
+    );
+
+    let request = ConnectionRequest {
+        config: cfg,
+        ssh_config,
+    };
+
+    let started = Instant::now();
+    let id = manager.connect(request).await.map_err(|e| fail(&e))?;
+    let elapsed = started.elapsed().as_millis() as u64;
+
+    // 测试结果已确定，断开失败不影响返回（连接会随后端会话清理）
+    let _ = manager.disconnect(&id).await;
+
+    Ok(elapsed)
+}
+
 /// 断开连接
 #[command]
 pub async fn disconnect(

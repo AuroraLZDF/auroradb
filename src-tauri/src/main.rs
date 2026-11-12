@@ -109,6 +109,7 @@ fn main() {
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             commands::connection::connect,
+            commands::connection::test_connection,
             commands::connection::disconnect,
             commands::connection::get_connection_status,
             commands::connection::execute_sql,

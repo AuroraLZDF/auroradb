@@ -251,6 +251,10 @@
         {{ error }}
       </div>
 
+      <div v-if="testResult" :class="testResult === 'success' ? 'success-message' : 'error-message'">
+        {{ testMessage }}
+      </div>
+
       <div v-if="duplicateWarning" class="warning-message">
         {{ duplicateWarning }}
       </div>
@@ -261,8 +265,11 @@
           <span>{{ t('connectionForm.rememberPassword') }}</span>
         </label>
         <div class="form-actions">
+          <button type="button" :disabled="testing || loading" @click="handleTestConnection">
+            {{ testing ? t('connectionForm.testing') : t('connectionForm.test') }}
+          </button>
           <button type="button" @click="emit('cancel')">{{ t('common.cancel') }}</button>
-          <button type="submit" :disabled="loading">
+          <button type="submit" :disabled="loading || testing">
             {{ loading
               ? (isEditMode ? t('connectionForm.saving') : t('connectionForm.connecting'))
               : (isEditMode ? t('common.save') : t('connectionForm.connect')) }}
@@ -297,6 +304,10 @@ const savedStore = useSavedConnectionsStore()
 
 const loading = ref(false)
 const error = ref('')
+/** 测试连接状态与提示文案 */
+const testing = ref(false)
+const testResult = ref<'success' | 'failed' | null>(null)
+const testMessage = ref('')
 const duplicateName = ref('')
 const duplicateWarning = computed(() =>
   duplicateName.value ? t('connectionForm.duplicateWarning', { name: duplicateName.value }) : ''
@@ -377,6 +388,8 @@ const advancedConfigured = computed(
 function selectTab(tab: 'basic' | 'advanced') {
   activeTab.value = tab
   error.value = ''
+  testResult.value = null
+  testMessage.value = ''
 }
 
 // 端口联动：只在端口仍是上一驱动的默认值时跟随切换，避免覆盖用户自定义端口
@@ -498,8 +511,113 @@ function findMissingRequired(): { tab: 'basic' | 'advanced'; field: string } | n
   return null
 }
 
+/** 组装 SSL 配置（新建/保存与测试连接共用） */
+function buildSslConfig() {
+  return {
+    mode: form.sslMode,
+    ca_path: form.sslCaPath.trim() || undefined,
+    cert_path: form.sslCertPath.trim() || undefined,
+    key_path: form.sslKeyPath.trim() || undefined,
+  }
+}
+
+/** 组装 SSH 隧道配置：未启用返回 undefined；凭据由调用方传入（测试连接时会回退到已保存密钥） */
+function buildSshConfig(sshPassword?: string, sshPassphrase?: string) {
+  if (!form.sshEnabled) return undefined
+  const port = Number(form.sshPort) || 22
+  return {
+    host: form.sshHost.trim(),
+    port,
+    username: form.sshUsername.trim(),
+    auth_type: form.sshAuthType,
+    password: form.sshAuthType === 'password' ? sshPassword || undefined : undefined,
+    private_key_path:
+      form.sshAuthType === 'private-key' ? form.sshPrivateKeyPath.trim() || undefined : undefined,
+    passphrase: form.sshAuthType === 'private-key' ? sshPassphrase || undefined : undefined,
+  }
+}
+
+/** 组装建连配置（数据库主机/端口在启用 SSH 时由 SSH 服务器侧解析） */
+function buildConnectionConfig(password: string) {
+  return {
+    id: `conn_${Date.now()}`,
+    name: form.name,
+    driver: form.driver,
+    host: form.host,
+    port: Number(form.port),
+    database: form.database,
+    username: form.username,
+    password,
+    safety_mode: form.safetyMode,
+    ssl_config: buildSslConfig(),
+    pool_config: {
+      max_connections: 10,
+      min_connections: 2,
+      connect_timeout: 10,
+      idle_timeout: 300,
+      max_lifetime: 1800,
+      heartbeat_interval: 30,
+    },
+  }
+}
+
+/** 测试连接：按当前表单配置建立一次连接并立即断开，不保存任何内容 */
+async function handleTestConnection() {
+  error.value = ''
+  testResult.value = null
+  testMessage.value = ''
+
+  const missing = findMissingRequired()
+  if (missing) {
+    activeTab.value = missing.tab
+    error.value = t('connectionForm.fieldRequired', { field: missing.field })
+    return
+  }
+
+  testing.value = true
+  try {
+    // 编辑模式密码留空表示沿用已保存的密码，测试时需取真实凭据
+    let password = form.password
+    if (!password && isEditMode.value && props.editConnection) {
+      try {
+        password = (await savedStore.getPassword(props.editConnection.id)) || ''
+      } catch {
+        // 读取失败按无密码处理，由后端返回具体错误
+      }
+    }
+
+    // SSH 凭据同理：留空时回退到已保存的密码/口令
+    let sshPassword = form.sshPassword
+    let sshPassphrase = form.sshPassphrase
+    if (isEditMode.value && props.editConnection && editHasSshSecret.value) {
+      try {
+        const saved = (await savedStore.getSshSecret(props.editConnection.id)) || ''
+        if (form.sshAuthType === 'password' && !sshPassword) sshPassword = saved
+        if (form.sshAuthType === 'private-key' && !sshPassphrase) sshPassphrase = saved
+      } catch {
+        // 读取失败时使用表单当前值
+      }
+    }
+
+    const elapsed = await store.testConnection(
+      buildConnectionConfig(password),
+      buildSshConfig(sshPassword, sshPassphrase)
+    )
+
+    testResult.value = 'success'
+    testMessage.value = t('connectionForm.testSuccess', { ms: elapsed })
+  } catch (e) {
+    testResult.value = 'failed'
+    testMessage.value = t('connectionForm.testFailed', { error: String(e) })
+  } finally {
+    testing.value = false
+  }
+}
+
 async function handleSubmit() {
   error.value = ''
+  testResult.value = null
+  testMessage.value = ''
 
   const missing = findMissingRequired()
   if (missing) {
@@ -511,27 +629,9 @@ async function handleSubmit() {
   loading.value = true
 
   try {
-    const sslConfig = {
-      mode: form.sslMode,
-      ca_path: form.sslCaPath.trim() || undefined,
-      cert_path: form.sslCertPath.trim() || undefined,
-      key_path: form.sslKeyPath.trim() || undefined,
-    }
-
     // SSH 隧道配置：启用时数据库主机/端口由 SSH 服务器侧解析
     const sshPort = Number(form.sshPort) || 22
-    const sshConfig = form.sshEnabled
-      ? {
-          host: form.sshHost.trim(),
-          port: sshPort,
-          username: form.sshUsername.trim(),
-          auth_type: form.sshAuthType,
-          password: form.sshAuthType === 'password' ? form.sshPassword || undefined : undefined,
-          private_key_path:
-            form.sshAuthType === 'private-key' ? form.sshPrivateKeyPath.trim() || undefined : undefined,
-          passphrase: form.sshAuthType === 'private-key' ? form.sshPassphrase || undefined : undefined,
-        }
-      : undefined
+    const sshConfig = buildSshConfig(form.sshPassword, form.sshPassphrase)
 
     // 保存到本地时一并记录 SSH 配置；secret 仅在勾选「记住密码」时持久化
     const sshSaved = {
@@ -593,26 +693,10 @@ async function handleSubmit() {
       // 否则之后「编辑/删除保存的连接」找不到正在运行的这条连接
       const connectionId = existing?.id ?? `conn_${Date.now()}`
 
-      // 创建连接
+      // 创建连接（id 必须沿用 connectionId，保证活跃连接与已保存记录一致）
       await store.createConnection({
+        ...buildConnectionConfig(form.password),
         id: connectionId,
-        name: form.name,
-        driver: form.driver,
-        host: form.host,
-        port: Number(form.port),
-        database: form.database,
-        username: form.username,
-        password: form.password,
-        safety_mode: form.safetyMode,
-        ssl_config: sslConfig,
-        pool_config: {
-          max_connections: 10,
-          min_connections: 2,
-          connect_timeout: 10,
-          idle_timeout: 300,
-          max_lifetime: 1800,
-          heartbeat_interval: 30,
-        },
       }, sshConfig)
 
       // 保存连接配置（含密码）- 关键修复：await + 密码传递
@@ -977,6 +1061,16 @@ button:disabled {
   margin-top: 12px;
   padding: 8px;
   background: rgba(244, 67, 54, 0.1);
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+/* 测试连接成功的提示 */
+.success-message {
+  color: var(--success-500);
+  margin-top: 12px;
+  padding: 8px;
+  background: rgba(34, 197, 94, 0.1);
   border-radius: 4px;
   font-size: 13px;
 }

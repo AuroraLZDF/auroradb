@@ -125,6 +125,14 @@ export const useConnectionStore = defineStore('connection', () => {
     }
   }
 
+  // 测试连接：后端建连验证后立即断开，返回建连耗时（毫秒）；不进入活跃连接列表
+  async function testConnection(config: ConnectionConfig, sshConfig?: SshConfig): Promise<number> {
+    return await tauriInvoke<number>('test_connection', {
+      config,
+      sshConfig: sshConfig ?? null,
+    })
+  }
+
   // 断开指定连接
   async function disconnect(connectionId: string): Promise<void> {
     try {
@@ -238,6 +246,7 @@ export const useConnectionStore = defineStore('connection', () => {
     connectionList,
     hasConnection,
     createConnection,
+    testConnection,
     disconnect,
     switchConnection,
     getStatus,
