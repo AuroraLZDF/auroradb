@@ -525,71 +525,10 @@
     </div>
 
     <!-- 导入数据弹窗 -->
-    <div v-if="importDialog.show" class="modal-overlay" @click.self="importDialog.show = false">
-      <div class="dialog import-dialog">
-        <h3>{{ t('dataTable.importTitle') }}</h3>
-        <div class="dialog-content">
-          <div class="form-group">
-            <label>{{ t('dataTable.format') }}</label>
-            <Select
-              :model-value="importDialog.format"
-              :options="importFormatOptions"
-              @update:model-value="onImportFormatChange"
-            />
-          </div>
-          <div class="form-group">
-            <label>{{ t('dataTable.file') }}</label>
-            <div class="file-select-area">
-              <button @click="selectImportFile" :disabled="importDialog.loading" class="btn-secondary">
-                <Folder class="btn-icon" :size="16" /> {{ t('dataTable.selectFile') }}
-              </button>
-              <div v-if="importDialog.filePath" class="file-info">
-                <span class="file-name">{{ importDialog.fileName }}</span>
-                <span class="file-size">({{ formatFileSize(importDialog.fileSize) }})</span>
-              </div>
-              <div v-else class="file-hint">
-                {{ t('dataTable.fileHint') }}
-              </div>
-            </div>
-          </div>
-          <div class="form-group" v-if="importDialog.data">
-            <label>{{ t('dataTable.previewFirst500') }}</label>
-            <div class="file-preview">
-              <pre>{{ importDialog.data.substring(0, 500) }}{{ importDialog.data.length > 500 ? '...' : '' }}</pre>
-            </div>
-          </div>
-        </div>
-        <div class="dialog-actions">
-          <button @click="importDialog.show = false" class="btn-secondary">{{ t('common.cancel') }}</button>
-          <button @click="executeImport" :disabled="importDialog.loading || !importDialog.data" class="btn-primary">
-            {{ importDialog.loading ? t('dataTable.importing') : t('common.import') }}
-          </button>
-        </div>
-      </div>
-    </div>
+    <ImportDialog ref="importDialogRef" :table="currentTab" @imported="loadData" @toast="showToast" />
 
     <!-- 导出数据弹窗 -->
-    <div v-if="exportDialog.show" class="modal-overlay" @click.self="exportDialog.show = false">
-      <div class="dialog export-dialog">
-        <h3>{{ t('dataTable.exportTitle') }}</h3>
-        <div class="dialog-content">
-          <div class="form-group">
-            <label>{{ t('dataTable.format') }}</label>
-            <Select
-              :model-value="exportDialog.format"
-              :options="exportFormatOptions"
-              @update:model-value="onExportFormatChange"
-            />
-          </div>
-        </div>
-        <div class="dialog-actions">
-          <button @click="exportDialog.show = false" class="btn-secondary">{{ t('common.cancel') }}</button>
-          <button @click="executeExport" :disabled="exportDialog.loading" class="btn-primary">
-            {{ exportDialog.loading ? t('dataTable.exporting') : t('common.export') }}
-          </button>
-        </div>
-      </div>
-    </div>
+    <ExportDialog ref="exportDialogRef" :table="currentTab" @toast="showToast" />
 
     <!-- 数据生成器（B8） -->
     <DataGeneratorDialog
@@ -631,7 +570,6 @@ import {
   ChevronUp,
   ChevronDown,
   Circle,
-  Folder,
   X,
   AlignHorizontalDistributeCenter
 } from '@/components/icons'
@@ -639,6 +577,8 @@ import { Calendar, Columns3, Filter, Wand2 } from 'lucide-vue-next'
 import Select from '@/components/ui/Select.vue'
 import PaginationBar from '@/components/datatable/PaginationBar.vue'
 import DataGeneratorDialog from '@/components/DataGeneratorDialog.vue'
+import ImportDialog from '@/components/datatable/ImportDialog.vue'
+import ExportDialog from '@/components/datatable/ExportDialog.vue'
 
 interface TableTab {
   id: string
@@ -841,22 +781,17 @@ watch(
   }
 )
 
-// 导入导出弹窗
-const importDialog = ref({
-  show: false,
-  format: 'csv' as 'csv' | 'sql',
-  data: '',
-  filePath: '',
-  fileName: '',
-  fileSize: 0,
-  loading: false
-})
+// 导入导出弹窗（组件自身持有状态，父组件只负责触发打开与转发 toast）
+const importDialogRef = ref<InstanceType<typeof ImportDialog> | null>(null)
+const exportDialogRef = ref<InstanceType<typeof ExportDialog> | null>(null)
 
-const exportDialog = ref({
-  show: false,
-  format: 'csv' as 'csv' | 'xlsx' | 'sql' | 'json',
-  loading: false
-})
+function showImportDialog() {
+  importDialogRef.value?.open()
+}
+
+function showExportDialog() {
+  exportDialogRef.value?.open()
+}
 
 // 每页条数选项
 const pageSizeOptions = computed(() =>
@@ -979,31 +914,11 @@ function applyColumns() {
   loadData()
 }
 
-// 导入 / 导出格式选项
-const importFormatOptions = [
-  { label: 'CSV', value: 'csv' },
-  { label: 'SQL', value: 'sql' },
-]
-
-const exportFormatOptions = [
-  { label: 'CSV', value: 'csv' },
-  { label: 'Excel (xlsx)', value: 'xlsx' },
-  { label: 'SQL', value: 'sql' },
-  { label: 'JSON', value: 'json' },
-]
+// 导入 / 导出格式选项已移入 ImportDialog / ExportDialog 组件
 
 function onPageSizeChange(value: string) {
   browserStore.setPageSize(Number(value))
   reload()
-}
-
-function onImportFormatChange(value: string) {
-  importDialog.value.format = value as 'csv' | 'sql'
-  handleImportFormatChange()
-}
-
-function onExportFormatChange(value: string) {
-  exportDialog.value.format = value as 'csv' | 'xlsx' | 'sql' | 'json'
 }
 
 // 计算属性
@@ -2562,148 +2477,7 @@ async function rollbackTransaction() {
   }
 }
 
-// 导入导出
-function showImportDialog() {
-  importDialog.value = {
-    show: true,
-    format: 'csv',
-    data: '',
-    filePath: '',
-    fileName: '',
-    fileSize: 0,
-    loading: false
-  }
-}
-
-// 格式化文件大小
-function formatFileSize(bytes: number): string {
-  if (bytes === 0) return '0 B'
-  const k = 1024
-  const sizes = ['B', 'KB', 'MB', 'GB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
-}
-
-// 选择导入文件
-async function selectImportFile() {
-  try {
-    importDialog.value.loading = true
-    const result = await invoke<[string, string]>('read_file_from_dialog', {
-      format: importDialog.value.format
-    })
-    const [filePath, content] = result
-    importDialog.value.filePath = filePath
-    importDialog.value.fileName = filePath.split('/').pop() || filePath.split('\\').pop() || ''
-    importDialog.value.data = content
-    // 估算文件大小（字符数 * 2 字节，近似 UTF-8）
-    importDialog.value.fileSize = new Blob([content]).size
-  } catch (error: unknown) {
-    const errorMessage = String(error)
-    // 用户取消选择时不显示错误
-    if (!errorMessage.includes('用户取消') && !errorMessage.includes('被取消')) {
-      showToast(t('dataTable.selectFileFailed', { error: errorMessage }), 'error')
-    }
-  } finally {
-    importDialog.value.loading = false
-  }
-}
-
-// 处理导入格式变更
-function handleImportFormatChange() {
-  // 清除已选择的文件
-  importDialog.value.data = ''
-  importDialog.value.filePath = ''
-  importDialog.value.fileName = ''
-  importDialog.value.fileSize = 0
-}
-
-function showExportDialog() {
-  exportDialog.value = {
-    show: true,
-    format: 'csv',
-    loading: false
-  }
-}
-
-async function executeExport() {
-  if (!currentTab.value) {
-    showToast(t('dataTable.openTableFirst'), 'error')
-    return
-  }
-  const conn = connectionStore.currentConnection
-  if (!conn) {
-    showToast(t('dataTable.connectFirst'), 'error')
-    return
-  }
-
-  exportDialog.value.loading = true
-  const format = exportDialog.value.format
-  try {
-    // 两种格式都由后端直接写文件：Excel 用工作簿，其余逐行流式写出
-    const filePath =
-      format === 'xlsx'
-        ? await browserStore.exportTableToExcel(
-            conn.id,
-            currentTab.value.database,
-            currentTab.value.tableName,
-            `${currentTab.value.tableName}.xlsx`
-          )
-        : await browserStore.exportTableToFile(
-            conn.id,
-            currentTab.value.database,
-            currentTab.value.tableName,
-            format,
-            `${currentTab.value.tableName}.${format}`
-          )
-    showToast(t('dataTable.fileSaved', { path: filePath }))
-    exportDialog.value.show = false
-  } catch (e: unknown) {
-    const errorMessage = String(e)
-    // 用户取消保存时不提示错误
-    if (!errorMessage.includes('用户取消')) {
-      console.error('Export failed:', e)
-      showToast(t('dataTable.exportFailed', { error: errorMessage }), 'error')
-    }
-  } finally {
-    exportDialog.value.loading = false
-  }
-}
-
-async function executeImport() {
-  if (!currentTab.value) {
-    showToast(t('dataTable.openTableFirst'), 'error')
-    return
-  }
-  const conn = connectionStore.currentConnection
-  if (!conn) {
-    showToast(t('dataTable.connectFirst'), 'error')
-    return
-  }
-
-  if (!importDialog.value.data.trim()) {
-    showToast(t('dataTable.importDataRequired'), 'error')
-    return
-  }
-
-  importDialog.value.loading = true
-  try {
-    const count = await browserStore.importData(
-      conn.id,
-      currentTab.value.database,
-      currentTab.value.tableName,
-      importDialog.value.format,
-      importDialog.value.data
-    )
-    showToast(t('dataTable.importSuccess', { count }))
-    importDialog.value.show = false
-    await loadData()
-  } catch (e: unknown) {
-    console.error('Import failed:', e)
-    showToast(t('dataTable.importFailed', { error: String(e) }), 'error')
-  } finally {
-    importDialog.value.loading = false
-  }
-}
+// 导入导出逻辑已移入 ImportDialog / ExportDialog 组件
 
 // 暴露方法
 defineExpose({
