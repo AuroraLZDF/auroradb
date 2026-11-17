@@ -220,11 +220,20 @@
         </div>
       </template>
 
-      <!-- 未连接状态 -->
+      <!-- 未连接状态：新手引导（CTA + 核心快捷键） -->
       <template v-else>
         <div class="welcome">
+          <Database class="welcome-icon" :size="56" :stroke-width="1.5" />
           <h2>{{ t('layout.welcomeTitle') }}</h2>
           <p>{{ t('layout.welcomeSavedHint') }}</p>
+          <button class="welcome-cta" @click="emit('newConnection')">
+            <Plus :size="16" /> {{ t('layout.welcomeNewConnection') }}
+          </button>
+          <div class="welcome-shortcuts">
+            <span v-for="item in welcomeShortcuts" :key="item.label" class="welcome-shortcut">
+              <kbd>{{ item.keys }}</kbd>{{ item.label }}
+            </span>
+          </div>
         </div>
       </template>
     </div>
@@ -233,7 +242,7 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue'
-import { Database, Table2, FileCode, X, Terminal, Network } from 'lucide-vue-next'
+import { Database, Table2, FileCode, X, Terminal, Network, Plus } from 'lucide-vue-next'
 import DataTable from '@/components/DataTable.vue'
 import SqlEditor from '@/components/SqlEditor.vue'
 import Console from '@/components/Console.vue'
@@ -298,6 +307,8 @@ const props = defineProps<Props>()
 const emit = defineEmits<{
   newQuery: []
   newConsole: []
+  // 空状态引导：点击「新建连接」CTA
+  newConnection: []
   selectTable: [tableName: string]
   openTable: [tableName: string]
   // 对象列表右键菜单：与左侧连接树共用同一套表操作菜单
@@ -306,6 +317,14 @@ const emit = defineEmits<{
   // 表 Tab 被真正移除后通知父组件，用于同步右侧信息面板
   tableTabClosed: [tab: { connectionId: string; database: string; tableName: string }]
 }>()
+
+/** 空状态引导展示的核心快捷键（均为 App.vue 全局键盘中真实绑定的键） */
+const welcomeShortcuts = [
+  { keys: 'Ctrl+K', label: t('layout.shortcutPalette') },
+  { keys: 'Ctrl+N', label: t('layout.shortcutNewQuery') },
+  { keys: 'Ctrl+Shift+T', label: t('layout.shortcutNewConsole') },
+  { keys: 'Ctrl+Shift+L', label: t('layout.shortcutToggleTheme') },
+]
 
 const dataTableRef = ref<InstanceType<typeof DataTable> | null>(null)
 
@@ -1040,5 +1059,60 @@ defineExpose({
 .welcome h2 {
   font-size: var(--text-2xl);
   color: var(--text-primary);
+}
+
+.welcome-icon {
+  color: var(--text-tertiary);
+  opacity: 0.6;
+  margin-bottom: var(--space-4);
+}
+
+/* 新建连接 CTA：主按钮风格 */
+.welcome-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-5);
+  padding: var(--space-2) var(--space-5);
+  background: var(--brand-500);
+  color: var(--text-inverse, #fff);
+  border: none;
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  transition: var(--transition-colors);
+}
+
+.welcome-cta:hover {
+  filter: brightness(1.08);
+}
+
+/* 核心快捷键提示 */
+.welcome-shortcuts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2) var(--space-4);
+  margin-top: var(--space-5);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.welcome-shortcut {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.welcome-shortcut kbd {
+  padding: 2px var(--space-2);
+  background: var(--surface-default);
+  border: 1px solid var(--border-default);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
 }
 </style>

@@ -68,6 +68,7 @@
         :connection-database-tables="connectionDatabaseTables"
         ref="mainContentRef"
         @new-query="openNewQueryTab"
+        @new-connection="openConnectionForm"
         @select-table="onSelectTableFromObjects"
         @open-table="onOpenTableFromObjects"
         @show-table-menu="showTableContextMenu"
