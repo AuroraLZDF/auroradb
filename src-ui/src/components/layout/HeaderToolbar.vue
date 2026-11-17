@@ -565,6 +565,16 @@ async function handleUpdateClick() {
   margin: 0 var(--space-1);
 }
 
+/* 应用内标题栏的窗口控制按钮：macOS 风格圆形灰底 */
+.window-btn {
+  background: var(--bg-tertiary);
+  border-radius: 50%;
+}
+
+.window-btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
 /* 关闭按钮悬停红底，符合桌面应用惯例 */
 .window-btn-close:hover:not(:disabled) {
   background: var(--error-500);
