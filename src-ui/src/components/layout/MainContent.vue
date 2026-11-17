@@ -318,11 +318,9 @@ const emit = defineEmits<{
   tableTabClosed: [tab: { connectionId: string; database: string; tableName: string }]
 }>()
 
-/** 空状态引导展示的核心快捷键（均为 App.vue 全局键盘中真实绑定的键） */
+/** 空状态引导展示的核心快捷键：只列无前置条件的键；Ctrl+N / Ctrl+Shift+T 需先连接数据库，不在此展示 */
 const welcomeShortcuts = [
   { keys: 'Ctrl+K', label: t('layout.shortcutPalette') },
-  { keys: 'Ctrl+N', label: t('layout.shortcutNewQuery') },
-  { keys: 'Ctrl+Shift+T', label: t('layout.shortcutNewConsole') },
   { keys: 'Ctrl+Shift+L', label: t('layout.shortcutToggleTheme') },
 ]
 
