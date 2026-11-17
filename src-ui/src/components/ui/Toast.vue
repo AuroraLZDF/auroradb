@@ -7,7 +7,7 @@
           :key="toast.id"
           class="toast"
           :class="toast.type"
-          @click="removeToast(toast.id)"
+          @click="onToastClick(toast)"
         >
           <div class="toast-icon">
             <CheckCircle v-if="toast.type === 'success'" :size="20" />
@@ -15,7 +15,30 @@
             <AlertTriangle v-else-if="toast.type === 'warning'" :size="20" />
             <Info v-else :size="20" />
           </div>
-          <span class="toast-message">{{ toast.message }}</span>
+          <!-- 错误消息可能很长：默认两行截断，点击正文或箭头展开查看全文 -->
+          <span class="toast-message" :class="{ 'expandable': toast.type === 'error', 'expanded': isExpanded(toast.id) }">
+            {{ toast.message }}
+          </span>
+          <template v-if="toast.type === 'error'">
+            <button
+              v-if="isExpanded(toast.id)"
+              class="toast-action"
+              :title="t('ui.copyToast')"
+              :aria-label="t('ui.copyToast')"
+              @click.stop="copyToast(toast)"
+            >
+              <Copy :size="14" />
+            </button>
+            <button
+              class="toast-action"
+              :title="isExpanded(toast.id) ? t('ui.collapseToast') : t('ui.expandToast')"
+              :aria-label="isExpanded(toast.id) ? t('ui.collapseToast') : t('ui.expandToast')"
+              @click.stop="toggleExpand(toast.id)"
+            >
+              <ChevronUp v-if="isExpanded(toast.id)" :size="14" />
+              <ChevronDown v-else :size="14" />
+            </button>
+          </template>
           <button
             class="toast-close"
             :title="t('ui.closeToast')"
@@ -32,17 +55,19 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
-import { CheckCircle, XCircle, AlertTriangle, Info, X } from '@/components/icons'
+import { CheckCircle, XCircle, AlertTriangle, Info, X, ChevronDown, ChevronUp, Copy } from '@/components/icons'
 import { t } from '@/i18n'
 
 interface ToastNotificationItem {
   id: string
   message: string
   type: 'success' | 'error' | 'warning' | 'info'
+  /** 0 表示常驻，需手动关闭（error 默认） */
   duration: number
 }
 
 const toasts = ref<ToastNotificationItem[]>([])
+const expandedIds = ref<Set<string>>(new Set())
 let toastId = 0
 
 // 显示 Toast
@@ -56,10 +81,12 @@ function show(message: string, type: ToastNotificationItem['type'] = 'info', dur
   }
   toasts.value.push(toast)
 
-  // 自动移除
-  setTimeout(() => {
-    removeToast(id)
-  }, duration)
+  // duration <= 0 常驻：由用户通过关闭按钮移除
+  if (duration > 0) {
+    setTimeout(() => {
+      removeToast(id)
+    }, duration)
+  }
 }
 
 // 移除 Toast
@@ -68,13 +95,43 @@ function removeToast(id: string) {
   if (index > -1) {
     toasts.value.splice(index, 1)
   }
+  expandedIds.value.delete(id)
+}
+
+function isExpanded(id: string): boolean {
+  return expandedIds.value.has(id)
+}
+
+function toggleExpand(id: string) {
+  if (expandedIds.value.has(id)) {
+    expandedIds.value.delete(id)
+  } else {
+    expandedIds.value.add(id)
+  }
+}
+
+// 非 error 的 toast 保持「点击即关」；error 的正文点击用于展开/收起
+function onToastClick(toast: ToastNotificationItem) {
+  if (toast.type === 'error') {
+    toggleExpand(toast.id)
+  } else {
+    removeToast(toast.id)
+  }
+}
+
+async function copyToast(toast: ToastNotificationItem) {
+  try {
+    await navigator.clipboard.writeText(toast.message)
+  } catch {
+    // 剪贴板不可用时静默失败，用户仍可手动选中文本复制
+  }
 }
 
 // 导出方法
 defineExpose({
   show,
   success: (msg: string) => show(msg, 'success'),
-  error: (msg: string) => show(msg, 'error'),
+  error: (msg: string) => show(msg, 'error', 0),
   warning: (msg: string) => show(msg, 'warning'),
   info: (msg: string) => show(msg, 'info')
 })
@@ -90,6 +147,9 @@ defineExpose({
   flex-direction: column;
   gap: var(--space-2);
   pointer-events: none;
+  /* 常驻错误可能堆积：超过视口时容器内部滚动 */
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
 }
 
 .toast {
@@ -148,6 +208,48 @@ defineExpose({
   font-size: var(--text-sm);
   color: var(--text-primary);
   line-height: var(--leading-normal);
+  word-break: break-all;
+}
+
+/* 错误详情默认两行截断，展开后显示全文 */
+.toast-message.expandable {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  cursor: zoom-in;
+}
+
+.toast-message.expandable.expanded {
+  -webkit-line-clamp: unset;
+  overflow-wrap: anywhere;
+  cursor: zoom-out;
+}
+
+.toast-action {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  opacity: 0;
+  transition: var(--transition-all);
+}
+
+.toast:hover .toast-action,
+.toast-message.expandable.expanded + .toast-action {
+  opacity: 1;
+}
+
+.toast-action:hover {
+  color: var(--text-secondary);
+  background: var(--surface-hover);
 }
 
 .toast-close {

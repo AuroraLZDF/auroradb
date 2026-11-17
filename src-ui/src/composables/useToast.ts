@@ -31,7 +31,9 @@ export function useToast() {
   }
 
   function error(message: string, options?: ToastOptions) {
-    show(message, 'error', { ...options, duration: 5000 })
+    // 错误信息常驻（duration 0），由用户手动关闭；显式传入 duration 时优先使用
+    const duration = options?.duration ?? 0
+    show(message, 'error', { duration })
   }
 
   function warning(message: string, options?: ToastOptions) {
@@ -63,7 +65,8 @@ export const globalToast = {
     this.show(message, 'success')
   },
   error(message: string) {
-    this.show(message, 'error', 5000)
+    // 错误信息常驻，由用户手动关闭
+    this.show(message, 'error', 0)
   },
   warning(message: string) {
     this.show(message, 'warning')
