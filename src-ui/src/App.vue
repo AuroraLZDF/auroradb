@@ -342,7 +342,7 @@ watch(isMobile, (mobile) => {
 }, { immediate: true })
 
 // Toast 通知
-const { setToastRef, success: showToast, error: showError } = useToast()
+const { setToastRef, success: showToast, error: showError, info: showInfo } = useToast()
 onMounted(() => {
   if (toastRef.value) {
     setToastRef(toastRef.value)
@@ -1900,10 +1900,10 @@ function isInDataTable(target: EventTarget | null): boolean {
 function handleMenuAction(id: string) {
   switch (id) {
     case 'new-query':
-      registry.execute('new-query')
+      runTabCommand('new-query')
       break
     case 'new-console':
-      registry.execute('new-console')
+      runTabCommand('new-console')
       break
     case 'command-palette':
       if (registry.open) registry.closePalette()
@@ -1919,6 +1919,18 @@ function handleMenuAction(id: string) {
       void exit(0)
       break
   }
+}
+
+// 新建查询/控制台需要活跃连接；无连接时（如欢迎页）明确提示而不是静默无效
+function runTabCommand(id: 'new-query' | 'new-console'): boolean {
+  const cmd = registry.commands.find(c => c.id === id)
+  if (!cmd) return false
+  if (cmd.available && !cmd.available()) {
+    showInfo(t('app.connectRequired'))
+    return false
+  }
+  registry.execute(id)
+  return true
 }
 
 function onGlobalKeydown(e: KeyboardEvent) {
@@ -1944,7 +1956,7 @@ function onGlobalKeydown(e: KeyboardEvent) {
   ) {
     const key = e.key.toLowerCase()
     if (e.shiftKey) {
-      if (key === 't' && registry.execute('new-console')) {
+      if (key === 't' && runTabCommand('new-console')) {
         e.preventDefault()
         return
       }
@@ -1952,7 +1964,7 @@ function onGlobalKeydown(e: KeyboardEvent) {
         e.preventDefault()
         return
       }
-    } else if (key === 'n' && registry.execute('new-query')) {
+    } else if (key === 'n' && runTabCommand('new-query')) {
       e.preventDefault()
       return
     }
