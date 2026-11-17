@@ -96,6 +96,14 @@
       </div>
     </div>
 
+    <!-- 全局状态栏：连接状态 / 当前库表 / 未保存提示 -->
+    <StatusBar
+      :current-connection="currentConnection"
+      :current-database="browserStore.currentDatabase"
+      :current-table="selectedTable"
+      :has-unsaved="hasUnsaved"
+    />
+
     <!-- 连接表单弹窗 -->
     <div v-if="showConnectionForm" class="modal-overlay" role="presentation">
       <div class="modal-content modal-connection" role="dialog" aria-modal="true">
@@ -274,6 +282,7 @@ import { confirmDanger } from '@/composables/useConfirm'
 import { hasUnsavedSources } from '@/composables/useUnsavedGuard'
 import { useBreakpoints } from '@/composables/useBreakpoints'
 import ContextMenu, { type MenuEntry } from '@/components/ui/ContextMenu.vue'
+import StatusBar from '@/components/layout/StatusBar.vue'
 import {
   Database,
   X,
@@ -496,6 +505,9 @@ const selectedTable = ref('')
 const viewingTableStructure = ref('')
 const currentView = ref<'data' | 'sql'>('data')
 const activeTool = ref<'connection' | 'query'>('connection')
+
+// 状态栏：是否存在未保存内容（dirtySources 为 reactive Set，computed 可追踪变化）
+const hasUnsaved = computed(() => hasUnsavedSources())
 
 // 表格设计器
 const showTableDesigner = ref(false)

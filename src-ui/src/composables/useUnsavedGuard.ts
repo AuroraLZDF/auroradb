@@ -1,7 +1,7 @@
-import { onUnmounted, watch, type Ref } from 'vue'
+import { onUnmounted, reactive, watch, type Ref } from 'vue'
 
 /** 记录各来源（数据表编辑、表设计器等）是否存在未保存内容 */
-const dirtySources = new Set<string>()
+const dirtySources = reactive(new Set<string>())
 
 /** 标记某个来源是否存在未保存内容 */
 export function setUnsavedSource(key: string, dirty: boolean) {
