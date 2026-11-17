@@ -281,6 +281,8 @@ import { useCommandRegistryStore } from '@/stores/commandRegistry'
 import { useToast } from '@/composables/useToast'
 import { confirmDanger } from '@/composables/useConfirm'
 import { hasUnsavedSources } from '@/composables/useUnsavedGuard'
+import { buildAppMenu, setMenuActionHandler } from '@/utils/appMenu'
+import { exit } from '@tauri-apps/api/app'
 import { useBreakpoints } from '@/composables/useBreakpoints'
 import ContextMenu, { type MenuEntry } from '@/components/ui/ContextMenu.vue'
 import StatusBar from '@/components/layout/StatusBar.vue'
@@ -1894,6 +1896,31 @@ function isInDataTable(target: EventTarget | null): boolean {
   return el.closest('.data-table') !== null
 }
 
+// 原生菜单动作 → 命令注册表 / UI 状态（加速键由系统菜单层拦截，不会与 webview 快捷键重复触发）
+function handleMenuAction(id: string) {
+  switch (id) {
+    case 'new-query':
+      registry.execute('new-query')
+      break
+    case 'new-console':
+      registry.execute('new-console')
+      break
+    case 'command-palette':
+      if (registry.open) registry.closePalette()
+      else registry.openPalette()
+      break
+    case 'toggle-theme':
+      registry.execute('toggle-theme')
+      break
+    case 'about':
+      showAbout.value = true
+      break
+    case 'quit':
+      void exit(0)
+      break
+  }
+}
+
 function onGlobalKeydown(e: KeyboardEvent) {
   const mod = e.ctrlKey || e.metaKey
   // Ctrl/Cmd+K 打开/关闭命令面板
@@ -2023,6 +2050,10 @@ onMounted(() => {
   themeStore.init()
 
   registerCommands()
+  // 原生菜单栏（文件/编辑/视图/帮助）：动作转发到 commandRegistry，语言切换时重建
+  setMenuActionHandler(handleMenuAction)
+  void buildAppMenu()
+  watch(locale, () => void buildAppMenu())
   // 表列表加载/刷新后同步「跳转到表」命令
   watch(connectionDatabaseTables, syncTableCommands, { deep: true })
   window.addEventListener('keydown', onGlobalKeydown)
