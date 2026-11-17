@@ -406,50 +406,22 @@
     </div>
 
     <!-- 分页 / 游标续页 -->
-    <div v-if="currentTableData" class="table-footer">
-      <div class="footer-left">
-        <!-- 行区间只在这里出现一次（原工具栏也显示一份，属于重复信息） -->
-        <span v-if="currentTableData" class="row-info">
-          {{ t('dataTable.rowRange', {
-            start: cursorMode ? 1 : (page - 1) * pageSize + 1,
-            end: cursorMode ? currentTableData.rows.length : Math.min(page * pageSize, currentTableData.total_count),
-            total: currentTableData.total_count
-          }) }}
-        </span>
-        <!-- 大表使用游标翻页：只追加「加载更多」，不再展示页码 -->
-        <div v-if="cursorMode" class="pagination load-more-bar">
-          <span class="loaded-rows">
-            {{ t('dataTable.loadedRows', { loaded: currentTableData.rows.length, total: currentTableData.total_count }) }}
-          </span>
-          <button
-            v-if="currentTableData.next_cursor != null"
-            @click="loadMore"
-            :disabled="!canLoadMore"
-          >{{ loadingMore ? t('dataTable.loadingMore') : t('dataTable.loadMore') }}</button>
-          <span v-else class="all-loaded">{{ t('dataTable.allLoaded') }}</span>
-        </div>
-        <div v-else class="pagination">
-          <button @click="firstPage" :disabled="page <= 1">{{ t('dataTable.firstPage') }}</button>
-          <button @click="prevPage" :disabled="page <= 1">{{ t('dataTable.prevPage') }}</button>
-          <span>{{ t('dataTable.pageIndicator', { page, total: totalPages }) }}</span>
-          <button @click="nextPage" :disabled="page >= totalPages">{{ t('dataTable.nextPage') }}</button>
-          <button @click="lastPage" :disabled="page >= totalPages">{{ t('dataTable.lastPage') }}</button>
-        </div>
-      </div>
-      <div class="footer-right">
-        <div class="page-size">
-          <Select
-            :model-value="String(pageSize)"
-            :options="pageSizeOptions"
-            size="sm"
-            @update:model-value="onPageSizeChange"
-          />
-        </div>
-        <div class="execution-time" v-if="currentTableData">
-          {{ t('dataTable.executionTime', { ms: currentTableData.execution_time_ms }) }}
-        </div>
-      </div>
-    </div>
+    <PaginationBar
+      :table-data="currentTableData"
+      :cursor-mode="cursorMode"
+      :page="page"
+      :page-size="pageSize"
+      :total-pages="totalPages"
+      :can-load-more="canLoadMore"
+      :loading-more="loadingMore"
+      :page-size-options="pageSizeOptions"
+      @load-more="loadMore"
+      @first-page="firstPage"
+      @prev-page="prevPage"
+      @next-page="nextPage"
+      @last-page="lastPage"
+      @page-size-change="onPageSizeChange"
+    />
 
     <!-- 加载失败 -->
     <div v-if="!currentTableData && !loading && loadError" class="empty-state error-state">
@@ -665,6 +637,7 @@ import {
 } from '@/components/icons'
 import { Calendar, Columns3, Filter, Wand2 } from 'lucide-vue-next'
 import Select from '@/components/ui/Select.vue'
+import PaginationBar from '@/components/datatable/PaginationBar.vue'
 import DataGeneratorDialog from '@/components/DataGeneratorDialog.vue'
 
 interface TableTab {
@@ -3090,14 +3063,6 @@ defineExpose({
   border-color: var(--brand-500);
 }
 
-.row-info {
-  color: var(--text-tertiary);
-  font-size: var(--text-xs);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
 /* 表格容器 */
 .table-container {
   flex: 1;
@@ -3671,98 +3636,6 @@ td.editing::before {
   margin: var(--space-1) 0;
 }
 
-/* 分页 */
-.table-footer {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: var(--space-3);
-  height: var(--toolbar-height);
-  padding: 0 var(--space-2) 0 var(--space-3);
-  background: var(--canvas);
-  border-top: 1px solid var(--hairline);
-  flex-shrink: 0;
-  overflow: hidden;
-}
-
-/* 窄窗口时行数/分页只横向滚动，不允许换行（换行会撑破 32px 的脚注） */
-.footer-left,
-.footer-right {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  min-width: 0;
-  white-space: nowrap;
-}
-
-.footer-left {
-  flex: 1 1 auto;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.footer-left::-webkit-scrollbar {
-  display: none;
-}
-
-.footer-left > * {
-  flex-shrink: 0;
-}
-
-.footer-right {
-  flex-shrink: 0;
-}
-
-.pagination {
-  display: flex;
-  gap: var(--space-1);
-  align-items: center;
-  flex-shrink: 0;
-  white-space: nowrap;
-}
-
-.pagination button {
-  height: 22px;
-  padding: 0 var(--space-2);
-  border: none;
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-  border-radius: var(--radius-sm);
-  font-size: var(--text-xs);
-  transition: var(--transition-colors);
-}
-
-.pagination button:hover:not(:disabled) {
-  background: var(--hover-fill);
-  color: var(--text-primary);
-}
-
-.pagination button:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-/* 分页条数选择：外层定宽，触发器与分页按钮同高 */
-.page-size {
-  width: 120px;
-  flex-shrink: 0;
-}
-
-.page-size :deep(.custom-select .select-trigger) {
-  height: 22px;
-  padding: 0 var(--space-2);
-  border-color: transparent;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: var(--text-xs);
-}
-
-.page-size :deep(.custom-select .select-trigger:hover) {
-  background: var(--hover-fill);
-}
-
 /* 空状态 */
 .empty-state {
   flex: 1;
@@ -4047,21 +3920,6 @@ td.editing::before {
 .pending-hint {
   color: var(--warning-500);
   font-size: var(--text-xs);
-}
-
-/* 游标续页 */
-.load-more-bar {
-  gap: 12px;
-}
-
-.loaded-rows {
-  font-size: var(--text-xs);
-  color: var(--text-secondary);
-}
-
-.all-loaded {
-  font-size: var(--text-xs);
-  color: var(--text-tertiary);
 }
 
 .transaction-indicator {
