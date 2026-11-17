@@ -20,7 +20,8 @@
         "minWidth": 800,
         "minHeight": 600,
         "center": true,
-        "theme": "Dark"
+        "theme": "Dark",
+        "decorations": false
       }
     ],
     "security": {

@@ -1,5 +1,5 @@
 <template>
-  <header class="app-header">
+  <header class="app-header" data-tauri-drag-region>
     <!-- 移动端菜单按钮 -->
     <button
       class="header-btn menu-toggle u-visible-mobile"
@@ -9,11 +9,11 @@
       <Menu :size="16" />
     </button>
 
-    <h1>AuroraDB</h1>
+    <h1 data-tauri-drag-region>AuroraDB</h1>
 
     <!-- 顶部工具栏 -->
-    <div class="header-toolbar">
-      <div class="toolbar-left">
+    <div class="header-toolbar" data-tauri-drag-region>
+      <div class="toolbar-left" data-tauri-drag-region>
         <button
           class="header-btn"
           @click="emit('openConnectionForm')"
@@ -185,8 +185,8 @@
         </div>
       </div>
 
-      <!-- 右侧快捷入口：更新 / 主题切换 / GitHub 仓库 -->
-      <div class="toolbar-right">
+      <!-- 右侧快捷入口：更新 / 主题切换 / GitHub 仓库 + 窗口控制 -->
+      <div class="toolbar-right" data-tauri-drag-region>
         <button
           class="header-btn header-icon-btn"
           :title="updateStore.label"
@@ -210,6 +210,20 @@
         >
           <Github :size="15" />
         </button>
+        <!-- 窗口控制：decorations=false 后由应用内标题栏提供 -->
+        <template v-if="isTauri">
+          <div class="window-controls-divider"></div>
+          <button class="header-btn header-icon-btn window-btn" :title="t('header.minimize')" @click="appWindow?.minimize()">
+            <Minus :size="15" />
+          </button>
+          <button class="header-btn header-icon-btn window-btn" :title="isMaximized ? t('header.restore') : t('header.maximize')" @click="appWindow?.toggleMaximize()">
+            <Copy v-if="isMaximized" :size="13" />
+            <Square v-else :size="13" />
+          </button>
+          <button class="header-btn header-icon-btn window-btn window-btn-close" :title="t('header.closeWindow')" @click="appWindow?.close()">
+            <X :size="15" />
+          </button>
+        </template>
       </div>
     </div>
 
@@ -258,12 +272,33 @@ import { useUpdaterStore } from '@/stores/updater'
 import { t, locale, toggleLocale } from '@/i18n'
 import { confirmAction } from '@/composables/useConfirm'
 import { capabilitiesOf, normalizeDriver, type DriverKind } from '@/utils/driver'
-import { Menu, Plug, FileCode, Moon, Sun, PanelRight, Terminal, RefreshCw, GitCompare, Activity, Languages, Network, HardDrive, Search, Wrench, Settings, ChevronDown, Info, History, Github } from 'lucide-vue-next'
+import { Menu, Plug, FileCode, Moon, Sun, PanelRight, Terminal, RefreshCw, GitCompare, Activity, Languages, Network, HardDrive, Search, Wrench, Settings, ChevronDown, Info, History, Github, Minus, Square, Copy } from 'lucide-vue-next'
 import { openUrl } from '@tauri-apps/plugin-opener'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 
 const themeStore = useThemeStore()
 const connStore = useConnectionStore()
 const updateStore = useUpdaterStore()
+
+// 无边框窗口（decorations=false）：应用内导航栏承担标题栏职责
+const isTauri = '__TAURI_INTERNALS__' in window
+const appWindow = isTauri ? getCurrentWindow() : null
+const isMaximized = ref(false)
+let unlistenResize: (() => void) | null = null
+
+onMounted(async () => {
+  if (!appWindow) return
+  isMaximized.value = await appWindow.isMaximized()
+  // 拖拽区域双击 / 系统快捷键也可能改变最大化状态，统一靠 resize 事件同步
+  unlistenResize = await appWindow.onResized(async () => {
+    isMaximized.value = await appWindow.isMaximized()
+  })
+})
+
+onUnmounted(() => {
+  unlistenResize?.()
+  unlistenResize = null
+})
 
 interface Props {
   activeTool?: 'connection' | 'query'
@@ -520,6 +555,20 @@ async function handleUpdateClick() {
   border-radius: 50%;
   background: var(--error-500);
   pointer-events: none;
+}
+
+/* 应用内标题栏的窗口控制按钮 */
+.window-controls-divider {
+  width: 1px;
+  height: 14px;
+  background: var(--hairline);
+  margin: 0 var(--space-1);
+}
+
+/* 关闭按钮悬停红底，符合桌面应用惯例 */
+.window-btn-close:hover:not(:disabled) {
+  background: var(--error-500);
+  color: #fff;
 }
 
 /* 「工具」下拉菜单 */
