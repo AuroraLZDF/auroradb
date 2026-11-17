@@ -6,7 +6,7 @@
       @click="emit('toggleSidebar')"
       :title="t('header.toggleSidebar')"
      :aria-label="t('header.toggleSidebar')">
-      <Menu :size="16" />
+      <Menu :size="15" />
     </button>
 
     <h1 data-tauri-drag-region>AuroraDB</h1>
@@ -217,8 +217,8 @@
             <Minus :size="15" />
           </button>
           <button class="header-btn header-icon-btn window-btn" :title="isMaximized ? t('header.restore') : t('header.maximize')" @click="appWindow?.toggleMaximize()">
-            <Copy v-if="isMaximized" :size="13" />
-            <Square v-else :size="13" />
+            <Copy v-if="isMaximized" :size="15" />
+            <Square v-else :size="15" />
           </button>
           <button class="header-btn header-icon-btn window-btn window-btn-close" :title="t('header.closeWindow')" @click="appWindow?.close()">
             <X :size="15" />
@@ -259,7 +259,7 @@
       @click="emit('togglePanel')"
       :title="t('header.togglePanel')"
      :aria-label="t('header.togglePanel')">
-      <PanelRight :size="16" />
+      <PanelRight :size="15" />
     </button>
   </header>
 </template>
@@ -272,7 +272,7 @@ import { useUpdaterStore } from '@/stores/updater'
 import { t, locale, toggleLocale } from '@/i18n'
 import { confirmAction } from '@/composables/useConfirm'
 import { capabilitiesOf, normalizeDriver, type DriverKind } from '@/utils/driver'
-import { Menu, Plug, FileCode, Moon, Sun, PanelRight, Terminal, RefreshCw, GitCompare, Activity, Languages, Network, HardDrive, Search, Wrench, Settings, ChevronDown, Info, History, Github, Minus, Square, Copy } from 'lucide-vue-next'
+import { Menu, Plug, FileCode, Moon, Sun, PanelRight, Terminal, RefreshCw, GitCompare, Activity, Languages, Network, HardDrive, Search, Wrench, Settings, ChevronDown, Info, History, Github, Minus, Square, Copy, X } from 'lucide-vue-next'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 
