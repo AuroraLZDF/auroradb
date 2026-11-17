@@ -184,6 +184,33 @@
           </div>
         </div>
       </div>
+
+      <!-- 右侧快捷入口：更新 / 主题切换 / GitHub 仓库 -->
+      <div class="toolbar-right">
+        <button
+          class="header-btn header-icon-btn"
+          :title="updateStore.label"
+          :disabled="updateStore.busy"
+          @click="handleUpdateClick"
+        >
+          <RefreshCw class="header-btn-icon" :class="{ spinning: updateStore.busy }" :size="15" />
+          <span v-if="updateStore.availableVersion" class="update-dot" />
+        </button>
+        <button
+          class="header-btn header-icon-btn"
+          :title="themeTooltip"
+          @click="themeStore.toggleTheme()"
+        >
+          <component :is="themeIcon" :size="15" />
+        </button>
+        <button
+          class="header-btn header-icon-btn"
+          :title="t('header.githubRepo')"
+          @click="openRepo"
+        >
+          <Github :size="15" />
+        </button>
+      </div>
     </div>
 
     <!-- 更新包下载进度：菜单会因点击而收起，进度必须常驻在头部，否则用户无感知 -->
@@ -231,7 +258,8 @@ import { useUpdaterStore } from '@/stores/updater'
 import { t, locale, toggleLocale } from '@/i18n'
 import { confirmAction } from '@/composables/useConfirm'
 import { capabilitiesOf, normalizeDriver, type DriverKind } from '@/utils/driver'
-import { Menu, Plug, FileCode, Moon, Sun, PanelRight, Terminal, RefreshCw, GitCompare, Activity, Languages, Network, HardDrive, Search, Wrench, Settings, ChevronDown, Info, History } from 'lucide-vue-next'
+import { Menu, Plug, FileCode, Moon, Sun, PanelRight, Terminal, RefreshCw, GitCompare, Activity, Languages, Network, HardDrive, Search, Wrench, Settings, ChevronDown, Info, History, Github } from 'lucide-vue-next'
+import { openUrl } from '@tauri-apps/plugin-opener'
 
 const themeStore = useThemeStore()
 const connStore = useConnectionStore()
@@ -395,6 +423,13 @@ const themeTooltip = computed(() => {
   return themeStore.effectiveTheme === 'dark' ? t('header.themeDark') : t('header.themeLight')
 })
 
+/** 开源仓库主页：在系统浏览器打开（opener 插件） */
+const REPO_URL = 'https://github.com/AuroraLZDF/auroradb'
+
+function openRepo() {
+  void openUrl(REPO_URL)
+}
+
 // 按钮上显示「切换到另一种语言」的简称，避免用户看不出可点击
 const languageLabel = computed(() => (locale.value === 'zh-CN' ? 'EN' : '中文'))
 
@@ -458,6 +493,33 @@ async function handleUpdateClick() {
   display: flex;
   min-width: 0;
   gap: var(--space-2);
+}
+
+/* 右侧快捷入口（更新/主题/GitHub）：图标按钮 */
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-shrink: 0;
+}
+
+.header-icon-btn {
+  position: relative;
+  justify-content: center;
+  width: var(--control-height-sm);
+  padding: 0;
+}
+
+/* 已发现可用更新时的角标红点 */
+.update-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--error-500);
+  pointer-events: none;
 }
 
 /* 「工具」下拉菜单 */

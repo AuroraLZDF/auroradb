@@ -104,6 +104,8 @@ fn main() {
             });
         }))
         .plugin(tauri_plugin_dialog::init())
+        // 系统浏览器打开外部链接（GitHub 仓库引导等）
+        .plugin(tauri_plugin_opener::init())
         // 自动更新：更新源与签名公钥在 tauri.conf.json 的 plugins.updater 中配置
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())

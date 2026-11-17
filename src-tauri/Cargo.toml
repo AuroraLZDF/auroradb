@@ -15,6 +15,8 @@ auroradb-core = { path = "../crates/core" }
 auroradb-pro = { path = "../crates/pro" }
 tauri = { version = "2.0", features = [] }
 tauri-plugin-dialog = "2.0"
+# 前端通过 openUrl 在系统浏览器打开外部链接（GitHub 仓库引导）
+tauri-plugin-opener = "2.0"
 # 自动更新：检查/下载/安装更新包，安装后需要重启进程
 tauri-plugin-updater = "2.0"
 tauri-plugin-process = "2.0"
