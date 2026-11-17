@@ -27,6 +27,7 @@
         <div
           v-for="item in group.items"
           :key="item.key"
+          class="conn-entry"
         >
         <div
           v-if="item.type === 'saved'"
@@ -375,6 +376,11 @@ function getConnectionStatus(state: string): 'online' | 'offline' | 'reconnectin
 .group-count {
   font-weight: 400;
   color: var(--text-tertiary);
+}
+
+/* 连接与连接之间的垂直间距：只作用于相邻两条连接，不影响组头与组内展开的子节点 */
+.conn-entry + .conn-entry {
+  margin-top: var(--space-2);
 }
 
 .connection-item {
