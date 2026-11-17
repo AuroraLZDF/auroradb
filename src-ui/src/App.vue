@@ -107,135 +107,15 @@
       </div>
     </div>
 
-    <!-- 表右键菜单 -->
-    <div
-      v-if="tableContextMenu.show"
-      class="context-menu"
-      role="menu"
-      :style="{ top: tableContextMenu.y + 'px', left: tableContextMenu.x + 'px' }"
-      @click.stop
-    >
-      <!-- 多选时仅提供批量删除，避免单表操作含义不明 -->
-      <template v-if="tableContextMenu.tableNames.length > 1">
-        <div class="menu-item menu-item-danger" role="menuitem" @click="handleTableMenu('delete-table')">
-          <Trash2 class="menu-icon" :size="14" />
-          {{ t('app.deleteSelectedTables', { count: tableContextMenu.tableNames.length }) }}
-        </div>
-      </template>
-      <template v-else>
-        <div class="menu-item" role="menuitem" @click="handleTableMenu('view-data')">
-          <Eye class="menu-icon" :size="14" /> {{ t('app.viewData') }}
-        </div>
-        <div class="menu-item" role="menuitem" @click="handleTableMenu('design-table')">
-          <Settings class="menu-icon" :size="14" /> {{ t('app.designTable') }}
-        </div>
-        <div class="menu-item" role="menuitem" @click="handleTableMenu('refresh-tables')">
-          <RefreshCw class="menu-icon" :size="14" /> {{ t('common.refresh') }}
-        </div>
-        <div class="menu-divider"></div>
-        <div class="menu-item" role="menuitem" @click="handleTableMenu('export')">
-          <Download class="menu-icon" :size="14" /> {{ t('app.exportData') }}
-        </div>
-        <div class="menu-item" role="menuitem" @click="handleTableMenu('import')">
-          <Upload class="menu-icon" :size="14" /> {{ t('app.importData') }}
-        </div>
-        <div class="menu-divider"></div>
-        <div class="menu-item" role="menuitem" @click="handleTableMenu('copy-name')">
-          <Copy class="menu-icon" :size="14" /> {{ t('app.copyName') }}
-        </div>
-        <div class="menu-item" role="menuitem" @click="handleTableMenu('copy-table')">
-          <Copy class="menu-icon" :size="14" /> {{ t('app.copyTable') }}
-        </div>
-        <div class="menu-item" role="menuitem" @click="handleTableMenu('clear-table')">
-          <Eraser class="menu-icon" :size="14" /> {{ t('app.clearTable') }}
-        </div>
-        <div class="menu-item" role="menuitem" @click="handleTableMenu('truncate-table')">
-          <Trash2 class="menu-icon" :size="14" /> {{ t('app.truncateTable') }}
-        </div>
-        <div class="menu-item menu-item-danger" role="menuitem" @click="handleTableMenu('delete-table')">
-          <Trash2 class="menu-icon" :size="14" /> {{ t('app.deleteTable') }}
-        </div>
-      </template>
-    </div>
-
-    <!-- 数据库右键菜单 -->
-    <div
-      v-if="databaseContextMenu.show"
-      class="context-menu"
-      role="menu"
-      :style="{ top: databaseContextMenu.y + 'px', left: databaseContextMenu.x + 'px' }"
-      @click.stop
-    >
-      <div v-if="!databaseContextMenu.isOpened" class="menu-item" @click="handleDatabaseMenu('open')">
-        <Database class="menu-icon" :size="14" /> {{ t('app.openDatabase') }}
-      </div>
-      <div v-if="databaseContextMenu.isOpened" class="menu-item" @click="handleDatabaseMenu('close')">
-        <X class="menu-icon" :size="14" /> {{ t('app.closeDatabase') }}
-      </div>
-      <div class="menu-divider"></div>
-      <div class="menu-item" role="menuitem" @click="handleDatabaseMenu('edit')">
-        <Settings class="menu-icon" :size="14" /> {{ isSchemaDatabaseNode ? t('databaseDesigner.newSchema') : t('app.editDatabase') }}
-      </div>
-      <div class="menu-item" role="menuitem" @click="handleDatabaseMenu('new-table')">
-        <Plus class="menu-icon" :size="14" /> {{ t('app.newTable') }}
-      </div>
-      <div class="menu-item" role="menuitem" @click="handleDatabaseMenu('refresh')">
-        <RefreshCw class="menu-icon" :size="14" /> {{ t('common.refresh') }}
-      </div>
-      <div class="menu-divider"></div>
-      <div class="menu-item" role="menuitem" @click="handleDatabaseMenu('export-sql')">
-        <Download class="menu-icon" :size="14" /> {{ t('app.exportSql') }}
-      </div>
-      <div class="menu-item" role="menuitem" @click="handleDatabaseMenu('import-sql')">
-        <Upload class="menu-icon" :size="14" /> {{ t('app.importSql') }}
-      </div>
-      <div class="menu-divider"></div>
-      <div class="menu-item menu-item-danger" role="menuitem" @click="handleDatabaseMenu('delete')">
-        <Trash2 class="menu-icon" :size="14" /> {{ t('app.deleteDatabase') }}
-      </div>
-    </div>
-
-    <!-- 已保存连接右键菜单 -->
-    <div
-      v-if="savedConnectionContextMenu.show"
-      class="context-menu"
-      role="menu"
-      :style="{ top: savedConnectionContextMenu.y + 'px', left: savedConnectionContextMenu.x + 'px' }"
-      @click.stop
-    >
-      <div class="menu-item" role="menuitem" @click="handleSavedConnectionMenu('open')">
-        <Plug class="menu-icon" :size="14" /> {{ t('app.openConnection') }}
-      </div>
-      <div class="menu-item" role="menuitem" @click="handleSavedConnectionMenu('edit')">
-        <Settings class="menu-icon" :size="14" /> {{ t('app.editConnection') }}
-      </div>
-      <div class="menu-divider"></div>
-      <div class="menu-item menu-item-danger" role="menuitem" @click="handleSavedConnectionMenu('delete')">
-        <Trash2 class="menu-icon" :size="14" /> {{ t('app.deleteConnection') }}
-      </div>
-    </div>
-
-    <!-- 活跃连接右键菜单 -->
-    <div
-      v-if="activeConnectionContextMenu.show"
-      class="context-menu"
-      role="menu"
-      :style="{ top: activeConnectionContextMenu.y + 'px', left: activeConnectionContextMenu.x + 'px' }"
-      @click.stop
-    >
-      <div class="menu-item menu-item-danger" role="menuitem" @click="handleActiveConnectionMenu('disconnect')">
-        <X class="menu-icon" :size="14" /> {{ t('app.disconnect') }}
-      </div>
-      <template v-if="activeConnectionContextMenu.driver !== 'postgres'">
-        <div class="menu-divider"></div>
-        <div
-          class="menu-item"
-          @click="handleActiveConnectionMenu('new-database')"
-        >
-          <Plus class="menu-icon" :size="14" /> {{ t('app.newDatabase') }}
-        </div>
-      </template>
-    </div>
+    <!-- 统一右键菜单：表 / 数据库 / 已保存连接 / 活跃连接（条目由 contextMenuEntries 按当前上下文生成） -->
+    <ContextMenu
+      :show="contextMenuActive"
+      :x="contextMenuPos.x"
+      :y="contextMenuPos.y"
+      :entries="contextMenuEntries"
+      @select="onContextMenuSelect"
+      @close="hideAllContextMenus"
+    />
 
     <!-- 关于弹窗 -->
     <div v-if="showAbout" class="modal-overlay" role="presentation">
@@ -393,6 +273,7 @@ import { useToast } from '@/composables/useToast'
 import { confirmDanger } from '@/composables/useConfirm'
 import { hasUnsavedSources } from '@/composables/useUnsavedGuard'
 import { useBreakpoints } from '@/composables/useBreakpoints'
+import ContextMenu, { type MenuEntry } from '@/components/ui/ContextMenu.vue'
 import {
   Database,
   X,
@@ -509,11 +390,103 @@ function handleDocumentClick(e: MouseEvent) {
   const target = e.target as HTMLElement
   // 如果点击的不是右键菜单内部，则关闭菜单
   if (!target.closest('.context-menu')) {
-    tableContextMenu.value.show = false
-    databaseContextMenu.value.show = false
-    savedConnectionContextMenu.value.show = false
-    activeConnectionContextMenu.value.show = false
+    hideAllContextMenus()
   }
+}
+
+// ========== 统一右键菜单：按当前上下文生成条目，动作仍分发给各 handle*Menu ==========
+const contextMenuActive = computed(() =>
+  tableContextMenu.value.show ||
+  databaseContextMenu.value.show ||
+  savedConnectionContextMenu.value.show ||
+  activeConnectionContextMenu.value.show
+)
+
+const contextMenuPos = computed(() => {
+  const active = [
+    tableContextMenu.value,
+    databaseContextMenu.value,
+    savedConnectionContextMenu.value,
+    activeConnectionContextMenu.value,
+  ].find(menu => menu.show)
+  return { x: active?.x ?? 0, y: active?.y ?? 0 }
+})
+
+const contextMenuEntries = computed<MenuEntry[]>(() => {
+  if (tableContextMenu.value.show) {
+    const menu = tableContextMenu.value
+    // 多选时仅提供批量删除，避免单表操作含义不明
+    if (menu.tableNames.length > 1) {
+      return [{
+        key: 'delete-table',
+        label: t('app.deleteSelectedTables', { count: menu.tableNames.length }),
+        danger: true,
+        icon: Trash2,
+      }]
+    }
+    return [
+      { key: 'view-data', label: t('app.viewData'), icon: Eye },
+      { key: 'design-table', label: t('app.designTable'), icon: Settings },
+      { key: 'refresh-tables', label: t('common.refresh'), icon: RefreshCw },
+      { divider: true },
+      { key: 'export', label: t('app.exportData'), icon: Download },
+      { key: 'import', label: t('app.importData'), icon: Upload },
+      { divider: true },
+      { key: 'copy-name', label: t('app.copyName'), icon: Copy },
+      { key: 'copy-table', label: t('app.copyTable'), icon: Copy },
+      { key: 'clear-table', label: t('app.clearTable'), icon: Eraser },
+      { key: 'truncate-table', label: t('app.truncateTable'), icon: Trash2 },
+      { key: 'delete-table', label: t('app.deleteTable'), danger: true, icon: Trash2 },
+    ]
+  }
+  if (databaseContextMenu.value.show) {
+    return [
+      databaseContextMenu.value.isOpened
+        ? { key: 'close', label: t('app.closeDatabase'), icon: X }
+        : { key: 'open', label: t('app.openDatabase'), icon: Database },
+      { divider: true },
+      {
+        key: 'edit',
+        label: isSchemaDatabaseNode.value ? t('databaseDesigner.newSchema') : t('app.editDatabase'),
+        icon: Settings,
+      },
+      { key: 'new-table', label: t('app.newTable'), icon: Plus },
+      { key: 'refresh', label: t('common.refresh'), icon: RefreshCw },
+      { divider: true },
+      { key: 'export-sql', label: t('app.exportSql'), icon: Download },
+      { key: 'import-sql', label: t('app.importSql'), icon: Upload },
+      { divider: true },
+      { key: 'delete', label: t('app.deleteDatabase'), danger: true, icon: Trash2 },
+    ]
+  }
+  if (savedConnectionContextMenu.value.show) {
+    return [
+      { key: 'open', label: t('app.openConnection'), icon: Plug },
+      { key: 'edit', label: t('app.editConnection'), icon: Settings },
+      { divider: true },
+      { key: 'delete', label: t('app.deleteConnection'), danger: true, icon: Trash2 },
+    ]
+  }
+  // 活跃连接：断开 + 非 PG 驱动提供新建数据库
+  const entries: MenuEntry[] = [{ key: 'disconnect', label: t('app.disconnect'), danger: true, icon: X }]
+  if (activeConnectionContextMenu.value.driver !== 'postgres') {
+    entries.push({ divider: true }, { key: 'new-database', label: t('app.newDatabase'), icon: Plus })
+  }
+  return entries
+})
+
+function onContextMenuSelect(key: string) {
+  if (tableContextMenu.value.show) handleTableMenu(key)
+  else if (databaseContextMenu.value.show) handleDatabaseMenu(key)
+  else if (savedConnectionContextMenu.value.show) handleSavedConnectionMenu(key)
+  else if (activeConnectionContextMenu.value.show) handleActiveConnectionMenu(key)
+}
+
+function hideAllContextMenus() {
+  tableContextMenu.value.show = false
+  databaseContextMenu.value.show = false
+  savedConnectionContextMenu.value.show = false
+  activeConnectionContextMenu.value.show = false
 }
 
 const showConnectionForm = ref(false)
@@ -2207,64 +2180,7 @@ body {
   width: 92%;
 }
 
-/* 右键菜单 */
-.context-menu {
-  position: fixed;
-  background: var(--overlay);
-  border: 1px solid var(--hairline-strong);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-lg);
-  z-index: var(--z-popover);
-  min-width: 160px;
-  padding: var(--space-1) 0;
-  animation: menu-enter var(--duration-fast) var(--ease-out);
-}
-
-@keyframes menu-enter {
-  from {
-    opacity: 0;
-    transform: scale(0.95);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
-.menu-item {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-4);
-  cursor: pointer;
-  font-size: var(--text-sm);
-  color: var(--text-primary);
-  transition: background var(--duration-fast);
-}
-
-.menu-item:hover {
-  background: var(--hover-fill);
-}
-
-.menu-item-danger {
-  color: var(--error-500);
-}
-
-.menu-item-danger:hover {
-  background: rgba(239, 68, 68, 0.12);
-  color: var(--error-500);
-}
-
-.menu-icon {
-  color: var(--text-tertiary);
-  flex-shrink: 0;
-}
-
-.menu-divider {
-  height: 1px;
-  background: var(--hairline);
-  margin: var(--space-1) 0;
-}
+/* 右键菜单样式已移入 components/ui/ContextMenu.vue */
 
 /* Mobile styles */
 @media (max-width: 767px) {
@@ -2329,12 +2245,6 @@ body {
 }
 
 /* Touch device optimizations */
-@media (pointer: coarse) {
-
-  .menu-item {
-    min-height: 44px;
-  }
-}
 
 /* High DPI screens */
 @media (-webkit-min-device-pixel-ratio: 2), (min-resolution: 192dpi) {
