@@ -282,7 +282,6 @@ import { useToast } from '@/composables/useToast'
 import { confirmDanger } from '@/composables/useConfirm'
 import { hasUnsavedSources } from '@/composables/useUnsavedGuard'
 import { buildAppMenu, setMenuActionHandler } from '@/utils/appMenu'
-import { exit } from '@tauri-apps/api/app'
 import { useBreakpoints } from '@/composables/useBreakpoints'
 import ContextMenu, { type MenuEntry } from '@/components/ui/ContextMenu.vue'
 import StatusBar from '@/components/layout/StatusBar.vue'
@@ -1914,9 +1913,6 @@ function handleMenuAction(id: string) {
       break
     case 'about':
       showAbout.value = true
-      break
-    case 'quit':
-      void exit(0)
       break
   }
 }
