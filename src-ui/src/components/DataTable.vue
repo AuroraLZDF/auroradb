@@ -610,7 +610,6 @@ import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import {
   useDataBrowserStore,
-  type DataFilterCondition,
   type TableChange,
 } from '@/stores/dataBrowser'
 import { useConnectionStore } from '@/stores/connection'
@@ -618,6 +617,7 @@ import { useDebounce } from '@/composables/useDebounce'
 import { confirmAction } from '@/composables/useConfirm'
 import { useUnsavedGuard } from '@/composables/useUnsavedGuard'
 import { useVirtualRows } from '@/composables/useVirtualRows'
+import { useTableFilters } from '@/composables/useTableFilters'
 import { collectTableChanges, formatSqlValue, isBinaryType, isSameValue } from '@/utils/tableChanges'
 import { quoteIdentifier, quoteQualifiedIdentifier } from '@/utils/sql'
 import { capabilitiesOf, normalizeDriver, type DriverKind } from '@/utils/driver'
@@ -776,226 +776,6 @@ const searchText = ref('')
 // 当前生效的搜索关键字（由后端执行，用于分页/排序复用，并避免重复请求）
 const activeSearch = ref('')
 const { debouncedValue: debouncedSearchText, flush: flushSearch } = useDebounce(searchText, 300)
-
-// ========== 过滤栏（列头筛选 + 多条件构建器 + 已存过滤器） ==========
-type FilterOperator = 'Eq' | 'Ne' | 'Gt' | 'Gte' | 'Lt' | 'Lte' | 'Like' | 'IsNull' | 'IsNotNull'
-
-interface FilterRow {
-  id: number
-  column: string
-  operator: FilterOperator
-  value: string
-}
-
-interface SavedFilter {
-  name: string
-  logic: 'AND' | 'OR'
-  rows: { column: string; operator: FilterOperator; value: string }[]
-}
-
-const showFilterPanel = ref(false)
-const filterRows = ref<FilterRow[]>([])
-const filterLogic = ref<'AND' | 'OR'>('AND')
-/** 已应用到请求的筛选（面板里可以继续编辑而不立即生效） */
-const activeFilters = ref<FilterRow[]>([])
-const activeFilterLogic = ref<'AND' | 'OR'>('AND')
-const savedFilters = ref<SavedFilter[]>([])
-const selectedSavedFilter = ref('')
-const newFilterName = ref('')
-let filterRowSeq = 0
-
-const filterOperatorOptions: { label: string; value: FilterOperator }[] = [
-  { label: '=', value: 'Eq' },
-  { label: '!=', value: 'Ne' },
-  { label: '>', value: 'Gt' },
-  { label: '>=', value: 'Gte' },
-  { label: '<', value: 'Lt' },
-  { label: '<=', value: 'Lte' },
-  { label: 'LIKE（包含）', value: 'Like' },
-  { label: 'IS NULL', value: 'IsNull' },
-  { label: 'IS NOT NULL', value: 'IsNotNull' },
-]
-
-const filterColumnOptions = computed(() => allColumnsForTab.value.map(col => col.name))
-
-/** 列选择器选项（CustomSelect 需要 { label, value } 结构，但支持纯字符串，这里保持字符串便于 placeholder） */
-const filterColumnChoices = computed(() => filterColumnOptions.value)
-
-/** 已保存筛选的选项 */
-const savedFilterChoices = computed(() =>
-  savedFilters.value.map(item => ({ label: item.name, value: item.name })),
-)
-
-const savedFilterKey = computed(() =>
-  currentTab.value
-    ? `auroradb:savedFilters:${currentTab.value.connectionId}:${currentTab.value.database}:${currentTab.value.tableName}`
-    : ''
-)
-
-/** 条件是否有效：IS NULL 类不需要值，其它必须填值 */
-function isUsableFilter(row: FilterRow): boolean {
-  if (!row.column) return false
-  if (row.operator === 'IsNull' || row.operator === 'IsNotNull') return true
-  return row.value !== ''
-}
-
-function isNullOperator(operator: FilterOperator): boolean {
-  return operator === 'IsNull' || operator === 'IsNotNull'
-}
-
-/** 数值列把输入转成数字，避免 PG 文本与整型比较报错 */
-function coerceFilterValue(row: FilterRow): unknown {
-  if (isNullOperator(row.operator)) return null
-  const type = allColumnsForTab.value.find(col => col.name === row.column)?.data_type?.toLowerCase() ?? ''
-  const numeric = /int|decimal|numeric|float|double|real|year|bit/.test(type)
-  if (numeric && row.value.trim() !== '' && !Number.isNaN(Number(row.value))) {
-    return Number(row.value)
-  }
-  return row.value
-}
-
-function toFilterConditions(rows: FilterRow[]): DataFilterCondition[] {
-  return rows.filter(isUsableFilter).map(row => ({
-    column: row.column,
-    operator: row.operator,
-    value: coerceFilterValue(row),
-  }))
-}
-
-function addFilterRow(column = '') {
-  showFilterPanel.value = true
-  filterRows.value = [
-    ...filterRows.value,
-    {
-      id: ++filterRowSeq,
-      column: column || filterColumnOptions.value[0] || '',
-      operator: 'Eq',
-      value: '',
-    },
-  ]
-}
-
-function removeFilterRow(id: number) {
-  filterRows.value = filterRows.value.filter(row => row.id !== id)
-}
-
-/** 生成的 WHERE 预览（可直接复制到 SQL 编辑器） */
-const filterWherePreview = computed(() => {
-  const rows = filterRows.value.filter(isUsableFilter)
-  if (rows.length === 0) return ''
-  const quote = (name: string) => quoteIdentifier(name, driverKind.value)
-  const literal = (row: FilterRow): string => {
-    const coerced = coerceFilterValue(row)
-    if (coerced === null) return ''
-    if (typeof coerced === 'number') return String(coerced)
-    return `'${String(coerced).replace(/'/g, "''")}'`
-  }
-  const parts = rows.map(row => {
-    const column = quote(row.column)
-    switch (row.operator) {
-      case 'Eq': return `${column} = ${literal(row)}`
-      case 'Ne': return `${column} != ${literal(row)}`
-      case 'Gt': return `${column} > ${literal(row)}`
-      case 'Gte': return `${column} >= ${literal(row)}`
-      case 'Lt': return `${column} < ${literal(row)}`
-      case 'Lte': return `${column} <= ${literal(row)}`
-      // LIKE 是「包含」语义：不为空且没写通配符时自动补 `%`，与后端 like_pattern 保持一致
-      case 'Like': {
-        const raw = String(coerceFilterValue(row) ?? '')
-        const pattern = raw.includes('%') || raw.includes('_') ? raw : `%${raw}%`
-        return `${column} LIKE '${pattern.replace(/'/g, "''")}'`
-      }
-      case 'IsNull': return `${column} IS NULL`
-      case 'IsNotNull': return `${column} IS NOT NULL`
-    }
-  })
-  return `WHERE ${parts.join(` ${filterLogic.value} `)}`
-})
-
-async function copyWherePreview() {
-  try {
-    await navigator.clipboard.writeText(filterWherePreview.value)
-    showToast(t('dataTable.filterCopied'))
-  } catch {
-    showToast(t('dataTable.filterCopied'), 'error')
-  }
-}
-
-/** 应用筛选：会丢弃未保存的修改，因此先确认 */
-async function applyFilters() {
-  if (hasUnsavedChanges.value) {
-    const confirmed = await confirmAction({
-      message: t('dataTable.filterDiscardConfirm'),
-      confirmText: t('common.confirm'),
-    })
-    if (!confirmed) return
-  }
-  activeFilters.value = filterRows.value.filter(isUsableFilter).map(row => ({ ...row }))
-  activeFilterLogic.value = filterLogic.value
-  browserStore.setPage(1)
-  await loadData()
-}
-
-async function clearFilters() {
-  filterRows.value = []
-  activeFilters.value = []
-  activeFilterLogic.value = 'AND'
-  filterLogic.value = 'AND'
-  selectedSavedFilter.value = ''
-  browserStore.setPage(1)
-  await loadData()
-}
-
-function loadSavedFilters() {
-  if (!savedFilterKey.value) {
-    savedFilters.value = []
-    return
-  }
-  try {
-    const raw = localStorage.getItem(savedFilterKey.value)
-    savedFilters.value = raw ? (JSON.parse(raw) as SavedFilter[]) : []
-  } catch {
-    savedFilters.value = []
-  }
-}
-
-function persistSavedFilters() {
-  if (!savedFilterKey.value) return
-  localStorage.setItem(savedFilterKey.value, JSON.stringify(savedFilters.value))
-}
-
-function saveCurrentFilter() {
-  const name = newFilterName.value.trim()
-  if (!name) return
-  const rows = filterRows.value.filter(isUsableFilter).map(row => ({
-    column: row.column,
-    operator: row.operator,
-    value: row.value,
-  }))
-  const next: SavedFilter = { name, logic: filterLogic.value, rows }
-  const index = savedFilters.value.findIndex(item => item.name === name)
-  if (index >= 0) savedFilters.value[index] = next
-  else savedFilters.value.push(next)
-  persistSavedFilters()
-  selectedSavedFilter.value = name
-  newFilterName.value = ''
-}
-
-async function applySavedFilter(name: string) {
-  const saved = savedFilters.value.find(item => item.name === name)
-  if (!saved) return
-  filterLogic.value = saved.logic
-  filterRows.value = saved.rows.map(row => ({ ...row, id: ++filterRowSeq }))
-  await applyFilters()
-}
-
-function deleteSavedFilter() {
-  const name = selectedSavedFilter.value
-  if (!name) return
-  savedFilters.value = savedFilters.value.filter(item => item.name !== name)
-  persistSavedFilters()
-  selectedSavedFilter.value = ''
-}
 
 // 右键菜单
 const contextMenu = ref({
@@ -1252,6 +1032,41 @@ const hasPrimaryKey = computed(() => (currentTableData.value?.columns ?? []).som
 const driverKind = computed<DriverKind>(() => normalizeDriver(connectionStore.currentConnection?.driver))
 const driverCaps = computed(() => capabilitiesOf(driverKind.value))
 
+// ========== 过滤栏（列头筛选 + 多条件构建器 + 已存过滤器）：逻辑见 useTableFilters ==========
+const {
+  showFilterPanel,
+  filterRows,
+  filterLogic,
+  activeFilters,
+  activeFilterLogic,
+  selectedSavedFilter,
+  newFilterName,
+  filterOperatorOptions,
+  filterColumnChoices,
+  savedFilterChoices,
+  isNullOperator,
+  toFilterConditions,
+  addFilterRow,
+  removeFilterRow,
+  filterWherePreview,
+  copyWherePreview,
+  applyFilters,
+  clearFilters,
+  saveCurrentFilter,
+  applySavedFilter,
+  deleteSavedFilter,
+  resetFilters,
+} = useTableFilters({
+  currentTab,
+  allColumnsForTab,
+  driverKind,
+  setPage: (p: number) => browserStore.setPage(p),
+  loadData,
+  hasUnsavedChanges: () => hasUnsavedChanges.value,
+  showToast,
+})
+
+
 // 只读连接同样禁止写入（后端也会兜底拦截）
 const isReadOnlyConnection = computed(
   () => !driverCaps.value.editableTableData ||
@@ -1437,13 +1252,7 @@ async function activateTab(tab: TableTab) {
   searchText.value = ''
   activeSearch.value = ''
   flushSearch()
-  filterRows.value = []
-  activeFilters.value = []
-  filterLogic.value = 'AND'
-  activeFilterLogic.value = 'AND'
-  selectedSavedFilter.value = ''
-  newFilterName.value = ''
-  loadSavedFilters()
+  resetFilters()
   
   // 重置排序状态，避免使用之前表的排序列
   sortColumn.value = ''
