@@ -102,7 +102,7 @@
     </div>
 
     <div v-else-if="resultView === 'explain'" class="result-panel">
-      <component :is="ProUi.ExplainTree" v-if="ProUi.ExplainTree" :plan="explainResult" />
+      <component :is="FeatureUi.ExplainTree" v-if="FeatureUi.ExplainTree" :plan="explainResult" />
     </div>
 
     <div v-else-if="result" class="result-panel">
@@ -291,7 +291,7 @@ import {
 } from '@/composables/useSqlCompletion'
 import { createSqlEditor, type SqlEditorApi } from '@/composables/useCodeMirror'
 import type { ExplainPlan } from '@/utils/explain'
-import { ProUi } from '@/utils/pro'
+import { FeatureUi } from '@/utils/features'
 import CellViewer from '@/components/CellViewer.vue'
 import Select from '@/components/ui/Select.vue'
 

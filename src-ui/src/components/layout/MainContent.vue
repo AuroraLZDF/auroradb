@@ -206,8 +206,8 @@
           <!-- ER 图视图 -->
           <div v-else-if="activeTab?.type === 'er'" class="er-view">
             <component
-              :is="ProUi.ErDiagram"
-              v-if="ProUi.ErDiagram"
+              :is="FeatureUi.ErDiagram"
+              v-if="FeatureUi.ErDiagram"
               :database="(activeTab as ErTab).database.split('.').pop() || ''"
             />
           </div>
@@ -246,7 +246,7 @@ import { Database, Table2, FileCode, X, Terminal, Network, Plus } from 'lucide-v
 import DataTable from '@/components/DataTable.vue'
 import SqlEditor from '@/components/SqlEditor.vue'
 import Console from '@/components/Console.vue'
-import { ProUi } from '@/utils/pro'
+import { FeatureUi } from '@/utils/features'
 import { useDataBrowserStore } from '@/stores/dataBrowser'
 import { useEditorTabsStore } from '@/stores/editorTabs'
 import { confirmDanger } from '@/composables/useConfirm'

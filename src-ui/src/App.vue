@@ -137,8 +137,8 @@
     <div v-if="showSchemaDiff" class="modal-overlay" role="presentation">
       <div class="modal-content modal-large" role="dialog" aria-modal="true">
         <component
-          :is="ProUi.SchemaDiff"
-          v-if="ProUi.SchemaDiff"
+          :is="FeatureUi.SchemaDiff"
+          v-if="FeatureUi.SchemaDiff"
           :connections="activeConnections"
           :initial-connection-id="currentConnection?.id"
           :initial-database="browserStore.currentDatabase"
@@ -151,8 +151,8 @@
     <div v-if="showMonitor" class="modal-overlay" role="presentation">
       <div class="modal-content modal-large" role="dialog" aria-modal="true">
         <component
-          :is="ProUi.MonitorPanel"
-          v-if="ProUi.MonitorPanel"
+          :is="FeatureUi.MonitorPanel"
+          v-if="FeatureUi.MonitorPanel"
           :connections="activeConnections"
           :initial-connection-id="currentConnection?.id"
           @close="showMonitor = false"
@@ -164,8 +164,8 @@
     <div v-if="showBackup" class="modal-overlay" role="presentation">
       <div class="modal-content modal-backup" role="dialog" aria-modal="true">
         <component
-          :is="ProUi.BackupDialog"
-          v-if="ProUi.BackupDialog"
+          :is="FeatureUi.BackupDialog"
+          v-if="FeatureUi.BackupDialog"
           @close="showBackup = false"
           @restored="onDatabaseRestored"
         />
@@ -201,8 +201,8 @@
     <div v-if="showGlobalSearch" class="modal-overlay" role="presentation">
       <div class="modal-content modal-large" role="dialog" aria-modal="true">
         <component
-          :is="ProUi.GlobalSearchDialog"
-          v-if="ProUi.GlobalSearchDialog"
+          :is="FeatureUi.GlobalSearchDialog"
+          v-if="FeatureUi.GlobalSearchDialog"
           :initial-connection-id="currentConnection?.id"
           :initial-database="browserStore.currentDatabase"
           @open-table="handleGlobalSearchOpenTable"
@@ -276,7 +276,7 @@ import CommandPalette from '@/components/CommandPalette.vue'
 import HistoryDialog from '@/components/HistoryDialog.vue'
 import type { QueryHistoryEntry } from '@/stores/queryLibrary'
 import ImportProgressDialog from '@/components/ImportProgressDialog.vue'
-import { ProUi } from '@/utils/pro'
+import { FeatureUi } from '@/utils/features'
 import { useCommandRegistryStore } from '@/stores/commandRegistry'
 import { useToast } from '@/composables/useToast'
 import { confirmDanger } from '@/composables/useConfirm'
