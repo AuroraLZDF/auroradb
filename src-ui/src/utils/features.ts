@@ -22,4 +22,5 @@ export const FeatureUi = {
   ExplainTree: pick('ExplainTree'),
   DashboardView: pick('DashboardView'),
   ErModelDesigner: pick('ErModelDesigner'),
+  LineageDialog: pick('LineageDialog'),
 }

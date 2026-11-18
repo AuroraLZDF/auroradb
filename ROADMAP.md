@@ -247,6 +247,13 @@ V2-7 质量门禁随每批并行推进
 | V3-4.1 | **pro 目录收敛** | `src-ui/src/pro/` 目录命名清理（2026-11-04 起全部功能免费开源，pro 命名已无意义） | ErDiagram.vue 等迁往常规目录；同步检查公开仓库导出脚本与文档中的 pro 引用 |
 | V3-4.2 | **包体积回归** | 引入 ECharts 后 AppImage full 体积无明显回退 | `echarts/core` 按需注册组件与图表类型；对照 v2.x 压缩链路（[appimage-repack.sh](tools/build/appimage-repack.sh)）复测 |
 
+## V3-5 数据血缘分析
+
+| # | 任务 | 验收标准 | 技术要点 |
+|---|------|----------|----------|
+| V3-5.1 ✅ | **表级血缘** | 解析 SQL 推导「源表 → 目标表」依赖并可视化；工具菜单入口，不依赖连接离线可用 | 新增 `crates/core/src/sql/lineage.rs`：sqlparser AST + Visitor 收集关系位置，覆盖 INSERT...SELECT / REPLACE / UPDATE（JOIN / FROM / 子查询）/ DELETE（多表 + USING）/ CTAS / LIKE / CLONE / CREATE VIEW / WITH CTE 前缀 DML（CTE 别名不计入源表）；未限定表名补默认库前缀、跨库引用保留库名；单条解析失败计数跳过不中断。前端 `utils/lineageGraph.ts` 边去重合并 + `LineageDialog.vue` SVG 血缘图（源表左 / 目标表右 / 读写居中，连线标注操作类型）+ 语句明细；方言 MySQL / PG 可选 |
+| V3-5.2 | **列级血缘** | 解析 SELECT 列表达式，推导字段 → 字段依赖并叠加到血缘图 | 在 V3-5.1 AST 提取上深入 Expression 侧：INSERT 列清单与 SELECT 投影对齐、UPDATE 赋值右侧表达式中的列引用；视图列展开留待后续 |
+
 ## v3.0 实施顺序
 
 ```
@@ -259,6 +266,8 @@ V3-2 AI SQL 助手（与 BI 并行可开发，互不阻塞）
 V3-3 ER 建模正向化（依赖 Schema Diff 已有能力）
     ↓
 V3-4.2 包体积回归（随每批验证，不留到最后）
+    ↓
+V3-5.1 表级血缘（纯文本解析，不依赖连接）
 ```
 
 ## v3.0 验收总标准
@@ -268,6 +277,7 @@ V3-4.2 包体积回归（随每批验证，不留到最后）
 3. BYOK 配置完成后 NL2SQL / 解释 / 优化三类能力可用，API Key 与查询上下文不出本机。
 4. 模型设计器可正向生成 DDL，并通过 Schema Diff 同步到实际库。
 5. AppImage 体积对照 v2.x 基线无明显回退；三平台构建与发布链路不受影响。
+6. 粘贴 SQL 即可得到表级血缘图，解析失败的语句不阻塞整批分析。
 
 ---
 

@@ -161,6 +161,7 @@ fn main() {
             commands::sql_file::take_pending_sql_files,
             commands::sql_file::read_sql_file,
             commands::sql_tools::format_sql,
+            commands::sql_tools::analyze_sql_lineage,
             commands::ai::ai_get_config,
             commands::ai::ai_save_config,
             commands::ai::ai_test_connection,

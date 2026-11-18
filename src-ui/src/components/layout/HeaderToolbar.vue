@@ -73,6 +73,15 @@
             <button
               class="tools-item"
               role="menuitem"
+              :title="toolTitle('openLineage')"
+              @click="openTool('openLineage')"
+            >
+              <Workflow :size="15" />
+              <span>{{ t('header.lineage') }}</span>
+            </button>
+            <button
+              class="tools-item"
+              role="menuitem"
               :title="toolTitle('openErDiagram')"
               :disabled="toolDisabled('openErDiagram')"
               @click="openTool('openErDiagram')"
@@ -300,7 +309,7 @@ import { useUpdaterStore } from '@/stores/updater'
 import { t, locale, toggleLocale } from '@/i18n'
 import { confirmAction } from '@/composables/useConfirm'
 import { capabilitiesOf, normalizeDriver, type DriverKind } from '@/utils/driver'
-import { Menu, Plug, FileCode, Moon, Sun, PanelRight, Terminal, RefreshCw, GitCompare, Activity, Languages, Network, HardDrive, Search, LayoutDashboard, Wrench, Settings, ChevronDown, Info, History, Github, Minus, Square, Copy, X, Sparkles, Shapes } from 'lucide-vue-next'
+import { Menu, Plug, FileCode, Moon, Sun, PanelRight, Terminal, RefreshCw, GitCompare, Activity, Languages, Network, HardDrive, Search, LayoutDashboard, Wrench, Settings, ChevronDown, Info, History, Github, Minus, Square, Copy, X, Sparkles, Shapes, Workflow } from 'lucide-vue-next'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 
@@ -345,6 +354,7 @@ const emit = defineEmits<{
   openNewQueryTab: []
   openNewConsoleTab: []
   openSchemaDiff: []
+  openLineage: []
   openDashboard: []
   openErDiagram: []
   openErModel: []
@@ -365,11 +375,12 @@ const toolDriver = computed<DriverKind>(() =>
 )
 const toolCaps = computed(() => capabilitiesOf(toolDriver.value))
 
-type ProTool = 'openDashboard' | 'openSchemaDiff' | 'openErDiagram' | 'openErModel' | 'openMonitor' | 'openBackup' | 'openGlobalSearch'
+type ProTool = 'openDashboard' | 'openSchemaDiff' | 'openLineage' | 'openErDiagram' | 'openErModel' | 'openMonitor' | 'openBackup' | 'openGlobalSearch'
 
 const PRO_TOOL_LABEL: Record<ProTool, string> = {
   openDashboard: 'header.dashboard',
   openSchemaDiff: 'header.schemaDiff',
+  openLineage: 'header.lineage',
   openErDiagram: 'header.erDiagram',
   openErModel: 'header.erModel',
   openMonitor: 'header.monitor',
@@ -380,6 +391,7 @@ const PRO_TOOL_LABEL: Record<ProTool, string> = {
 const PRO_TOOL_HINT: Record<ProTool, string> = {
   openDashboard: 'header.dashboardHint',
   openSchemaDiff: 'header.schemaDiffHint',
+  openLineage: 'header.lineageHint',
   openErDiagram: 'header.erDiagramHint',
   openErModel: 'header.erModelHint',
   openMonitor: 'header.monitorHint',
@@ -388,8 +400,8 @@ const PRO_TOOL_HINT: Record<ProTool, string> = {
 }
 
 function toolDisabled(tool: ProTool): boolean {
-  // 模型设计器不依赖连接，离线也能建模（V3-3.1）
-  if (tool === 'openErModel') return false
+  // 模型设计器与血缘分析不依赖连接，离线也能用（V3-3.1 / V3-5.1）
+  if (tool === 'openErModel' || tool === 'openLineage') return false
   if (!hasActiveConnection.value) return true
   switch (tool) {
     // 仪表盘不依赖驱动特有能力，任何已激活连接都可用
@@ -434,6 +446,7 @@ function closeMenus() {
 type ToolEvent =
   | 'openDashboard'
   | 'openSchemaDiff'
+  | 'openLineage'
   | 'openErDiagram'
   | 'openErModel'
   | 'openMonitor'
@@ -447,6 +460,7 @@ type ToolEvent =
 const toolActions: Record<ToolEvent, () => void> = {
   openDashboard: () => emit('openDashboard'),
   openSchemaDiff: () => emit('openSchemaDiff'),
+  openLineage: () => emit('openLineage'),
   openErDiagram: () => emit('openErDiagram'),
   openErModel: () => emit('openErModel'),
   openMonitor: () => emit('openMonitor'),

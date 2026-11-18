@@ -9,6 +9,7 @@
       @open-new-query-tab="openNewQueryTab"
       @open-new-console-tab="openNewConsoleTab"
       @open-schema-diff="handleOpenSchemaDiff"
+      @open-lineage="showLineageDialog = true"
       @open-dashboard="handleOpenDashboard"
       @open-ai-settings="showAiSettings = true"
       @open-er-diagram="handleOpenErDiagram"
@@ -153,6 +154,19 @@
           :initial-connection-id="currentConnection?.id"
           :initial-database="browserStore.currentDatabase"
           @close="showSchemaDiff = false"
+        />
+      </div>
+    </div>
+
+    <!-- 数据血缘分析弹窗 -->
+    <div v-if="showLineageDialog" class="modal-overlay" role="presentation">
+      <div class="modal-content modal-large" role="dialog" aria-modal="true">
+        <component
+          :is="FeatureUi.LineageDialog"
+          v-if="FeatureUi.LineageDialog"
+          :initial-dialect="currentConnection?.driver"
+          :initial-database="selectedDatabase"
+          @close="showLineageDialog = false"
         />
       </div>
     </div>
@@ -630,6 +644,9 @@ function handleOpenSchemaDiff() {
   showSchemaDiff.value = true
 }
 
+// 数据血缘分析（V3-5.1）：纯文本解析，不依赖连接
+const showLineageDialog = ref(false)
+
 function handleOpenErDiagram() {
   if (!selectedDatabase.value) {
     showError(t('erDiagram.needsDatabase'))
@@ -678,6 +695,7 @@ const databaseDesignerData = ref({
 const hasOpenModal = computed(() =>
   showConnectionForm.value ||
   showSchemaDiff.value ||
+  showLineageDialog.value ||
   showMonitor.value ||
   showBackup.value ||
   showGlobalSearch.value ||
@@ -1974,6 +1992,7 @@ function onGlobalKeydown(e: KeyboardEvent) {
       [showBackup.value, () => (showBackup.value = false)],
       [showMonitor.value, () => (showMonitor.value = false)],
       [showSchemaDiff.value, () => (showSchemaDiff.value = false)],
+      [showLineageDialog.value, () => (showLineageDialog.value = false)],
       [showAbout.value, () => (showAbout.value = false)],
       [showConnectionForm.value, () => (showConnectionForm.value = false)]
     ]
