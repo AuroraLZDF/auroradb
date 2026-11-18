@@ -25,8 +25,8 @@ function liveRelations(model: ErModel): ModelRelation[] {
   })
 }
 
-/** 单表 → 表设计器的 DDL 输入结构（方言差异由 buildCreateTableSql 按驱动处理） */
-function tableToDdlInput(model: ErModel, table: ModelTable): TableDdlInput {
+/** 单表 → 表设计器的 DDL 输入结构（方言差异由 buildCreateTableSql 按驱动处理）；V3-3.3 比对同步复用 */
+export function tableToDdlInput(model: ErModel, table: ModelTable): TableDdlInput {
   const relations = liveRelations(model)
 
   const fields: DdlField[] = table.columns.map((col) => ({

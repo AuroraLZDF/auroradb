@@ -37,6 +37,9 @@
       <button class="erm-btn primary" :disabled="!modelStore.current || modelStore.current.tables.length === 0" @click="openDdlDialog">
         <FileCode :size="14" /> {{ t('erModel.generateDdl') }}
       </button>
+      <button class="erm-btn" :disabled="!modelStore.current || modelStore.current.tables.length === 0" @click="openSyncDialog">
+        <GitCompare :size="14" /> {{ t('erModel.syncWithDb') }}
+      </button>
       <span class="erm-spacer"></span>
       <div class="erm-stats" v-if="modelStore.current">
         <span>{{ t('erDiagram.tables', { count: modelStore.current.tables.length }) }}</span>
@@ -292,19 +295,95 @@
         <pre class="erm-dialog-code" data-testid="er-ddl-preview">{{ ddlText }}</pre>
       </div>
     </div>
+
+    <!-- 比对同步弹窗（V3-3.3） -->
+    <div v-if="syncOpen" class="erm-dialog-mask" @click.self="syncOpen = false">
+      <div class="erm-dialog erm-dialog-wide" role="dialog" :aria-label="t('erModel.syncTitle')">
+        <div class="erm-dialog-head">
+          <span>{{ t('erModel.syncTitle') }}</span>
+          <button class="erm-panel-close" :title="t('common.close')" @click="syncOpen = false">
+            <X :size="14" />
+          </button>
+        </div>
+        <div class="erm-dialog-toolbar">
+          <span class="erm-dialog-label">{{ t('erModel.syncConnection') }}</span>
+          <Select
+            v-model="syncConnId"
+            :options="syncConnOptions"
+            size="sm"
+            :placeholder="t('erModel.syncSelectConnection')"
+          />
+          <span class="erm-dialog-label">{{ t('erModel.syncDatabase') }}</span>
+          <Select
+            v-model="syncDb"
+            :options="syncDbOptions"
+            size="sm"
+            :disabled="!syncConnId || syncDbLoading"
+            :placeholder="syncDbLoading ? t('common.loading') : t('erModel.syncSelectDatabase')"
+          />
+          <button class="erm-btn primary" :disabled="!syncConnId || !syncDb || syncLoading" @click="runCompare">
+            {{ syncLoading ? t('common.loading') : t('erModel.syncCompare') }}
+          </button>
+        </div>
+        <div v-if="syncError" class="erm-sync-error">{{ syncError }}</div>
+        <div v-if="syncPlan" class="erm-sync-body">
+          <div class="erm-sync-options">
+            <label class="erm-sync-opt">
+              <input type="checkbox" v-model="syncDropTables" /> {{ t('erModel.syncDropTables') }}
+            </label>
+            <label class="erm-sync-opt">
+              <input type="checkbox" v-model="syncDropCols" /> {{ t('erModel.syncDropColumns') }}
+            </label>
+          </div>
+          <div v-if="syncPlan.items.length === 0" class="erm-sync-empty">
+            <CheckCircle2 :size="16" /> {{ t('erModel.syncNoDiff') }}
+          </div>
+          <div v-else class="erm-sync-list">
+            <label
+              v-for="(item, idx) in syncPlan.items"
+              :key="`${item.kind}-${item.tableName}-${item.columnName ?? ''}-${idx}`"
+              class="erm-sync-item"
+              :class="{ danger: item.kind === 'drop-table' || item.kind === 'drop-column' }"
+            >
+              <input type="checkbox" v-model="syncChecked[idx]" />
+              <span>{{ syncItemLabel(item) }}</span>
+            </label>
+          </div>
+          <div class="erm-sync-preview-head">{{ t('erModel.syncPreview') }}</div>
+          <pre class="erm-dialog-code erm-sync-preview">{{ syncSqlPreview || t('erModel.syncPreviewEmpty') }}</pre>
+          <div class="erm-dialog-toolbar erm-sync-actions">
+            <button class="erm-btn primary" :disabled="!syncSelectedItems.length || syncExecuting" @click="executeSync">
+              {{ syncExecuting ? t('erModel.syncExecuting') : t('erModel.syncExecute') }}
+            </button>
+            <span class="erm-dialog-label">
+              {{ t('erModel.syncSelectedCount', { count: collectStatements(syncSelectedItems).length }) }}
+            </span>
+          </div>
+        </div>
+        <div v-else class="erm-sync-empty erm-sync-initial">{{ t('erModel.syncSelectHint') }}</div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
-import { Plus, Trash2, X, Scan, Download, Upload, FileCode, Copy } from 'lucide-vue-next'
+import { Plus, Trash2, X, Scan, Download, Upload, FileCode, Copy, GitCompare, CheckCircle2 } from 'lucide-vue-next'
 import { invoke } from '@tauri-apps/api/core'
 import Select from '@/components/ui/Select.vue'
 import { useErModelStore, type ModelTable, type ModelColumn } from '@/stores/erModel'
+import { useConnectionStore } from '@/stores/connection'
+import { useDataBrowserStore } from '@/stores/dataBrowser'
 import { confirmDanger } from '@/composables/useConfirm'
 import { globalToast } from '@/composables/useToast'
 import { t } from '@/i18n'
 import { buildModelDdl, type ModelDialect } from '@/utils/erModelDdl'
+import {
+  buildModelSyncPlan,
+  collectStatements,
+  type DbSnapshot,
+  type ModelSyncItem
+} from '@/utils/erModelSync'
 
 // ========== 常量 ==========
 const TABLE_W = 220
@@ -775,6 +854,143 @@ async function copyDdl() {
     ddlCopiedTimer = window.setTimeout(() => { ddlCopied.value = false }, 2000)
   } catch {
     globalToast.error(t('erModel.ddlCopyFailed'))
+  }
+}
+
+// ========== 比对同步（V3-3.3） ==========
+const connStore = useConnectionStore()
+const dataBrowserStore = useDataBrowserStore()
+
+const syncOpen = ref(false)
+const syncConnId = ref('')
+const syncDb = ref('')
+const syncDbLoading = ref(false)
+const syncDbOptions = ref<{ label: string; value: string }[]>([])
+const syncLoading = ref(false)
+const syncError = ref('')
+const syncSnapshot = ref<DbSnapshot | null>(null)
+const syncDropTables = ref(false)
+const syncDropCols = ref(false)
+const syncChecked = ref<boolean[]>([])
+const syncExecuting = ref(false)
+
+const syncConnOptions = computed(() =>
+  connStore.activeConnections.map((c) => ({ label: `${c.name} (${c.host}:${c.port})`, value: c.id }))
+)
+
+function openSyncDialog() {
+  syncConnId.value = connStore.currentConnection?.id ?? ''
+  syncDb.value = connStore.currentConnection?.database ?? ''
+  syncSnapshot.value = null
+  syncError.value = ''
+  syncDropTables.value = false
+  syncDropCols.value = false
+  syncOpen.value = true
+  void loadSyncDatabases()
+}
+
+async function loadSyncDatabases() {
+  if (!syncConnId.value) {
+    syncDbOptions.value = []
+    syncDb.value = ''
+    return
+  }
+  syncDbLoading.value = true
+  try {
+    const databases = await dataBrowserStore.listDatabases(syncConnId.value)
+    syncDbOptions.value = databases.map((name) => ({ label: name, value: name }))
+    if (!databases.includes(syncDb.value)) syncDb.value = databases[0] ?? ''
+  } catch (e) {
+    syncError.value = t('erModel.syncLoadDbsFailed', { error: String(e) })
+  } finally {
+    syncDbLoading.value = false
+  }
+}
+
+// 切换连接：清空比对结果并重新加载库列表
+watch(syncConnId, () => {
+  syncSnapshot.value = null
+  syncError.value = ''
+  void loadSyncDatabases()
+})
+
+async function runCompare() {
+  if (!modelStore.current || !syncConnId.value || !syncDb.value) return
+  syncLoading.value = true
+  syncError.value = ''
+  try {
+    // 复用反向 ER 的数据源：一次拿到表/列/外键快照
+    syncSnapshot.value = await invoke<DbSnapshot>('get_er_diagram_data', {
+      connectionId: syncConnId.value,
+      database: syncDb.value,
+    })
+  } catch (e) {
+    syncError.value = t('erModel.syncCompareFailed', { error: String(e) })
+    syncSnapshot.value = null
+  } finally {
+    syncLoading.value = false
+  }
+}
+
+/** 计划随模型 / 快照 / 删除选项即时重算；勾选状态按差异清单重置 */
+const syncPlan = computed(() => {
+  if (!modelStore.current || !syncSnapshot.value) return null
+  return buildModelSyncPlan(modelStore.current, syncSnapshot.value, {
+    dropMissingTables: syncDropTables.value,
+    dropMissingColumns: syncDropCols.value,
+  })
+})
+
+watch(() => syncPlan.value?.items.map((i) => `${i.kind}:${i.tableName}:${i.columnName ?? ''}`).join('|'), () => {
+  const items = syncPlan.value?.items ?? []
+  // DROP 类操作默认不勾选，其余差异默认勾选
+  syncChecked.value = items.map((i) => i.kind !== 'drop-table' && i.kind !== 'drop-column')
+})
+
+const syncSelectedItems = computed(() =>
+  (syncPlan.value?.items ?? []).filter((_, idx) => syncChecked.value[idx] === true)
+)
+const syncSqlPreview = computed(() => collectStatements(syncSelectedItems.value).join('\n\n'))
+
+function syncItemLabel(item: ModelSyncItem): string {
+  switch (item.kind) {
+    case 'create-table': return t('erModel.syncKindCreateTable', { table: item.tableName })
+    case 'drop-table': return t('erModel.syncKindDropTable', { table: item.tableName })
+    case 'add-column': return t('erModel.syncKindAddColumn', { table: item.tableName, column: item.columnName ?? '' })
+    case 'alter-column': return t('erModel.syncKindAlterColumn', { table: item.tableName, column: item.columnName ?? '' })
+    case 'drop-column': return t('erModel.syncKindDropColumn', { table: item.tableName, column: item.columnName ?? '' })
+    case 'add-fk': return t('erModel.syncKindAddFk', { table: item.tableName, column: item.columnName ?? '' })
+  }
+}
+
+async function executeSync() {
+  const statements = collectStatements(syncSelectedItems.value)
+  if (!statements.length || !syncConnId.value || !syncDb.value) return
+  const ok = await confirmDanger({
+    title: t('erModel.syncExecute'),
+    message: t('erModel.syncConfirm', { count: statements.length, database: syncDb.value }),
+  })
+  if (!ok) return
+  syncExecuting.value = true
+  syncError.value = ''
+  try {
+    // 复用 Schema Diff 的执行链路：逐条应用、遇错即停
+    const res = await dataBrowserStore.applySchemaDiff(syncConnId.value, syncDb.value, statements)
+    if (res.failed_at !== null || res.error) {
+      syncError.value = t('erModel.syncPartial', {
+        count: res.applied,
+        failedAt: res.failed_at ?? 0,
+        error: res.error ?? '',
+      })
+    } else {
+      globalToast.success(t('erModel.syncApplied', { count: res.applied }))
+      // 同步后重新比对，展示剩余差异
+      void runCompare()
+    }
+  } catch (e) {
+    syncError.value = t('erModel.syncCompareFailed', { error: String(e) })
+  } finally {
+    syncExecuting.value = false
   }
 }
 
@@ -1285,5 +1501,92 @@ g.dragging .erm-table-bg {
   font-size: var(--text-xs);
   line-height: 1.6;
   white-space: pre;
+}
+
+/* 比对同步弹窗（V3-3.3） */
+.erm-dialog-wide {
+  width: min(880px, calc(100% - 48px));
+  max-height: min(700px, calc(100% - 48px));
+}
+
+.erm-sync-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.erm-sync-options {
+  display: flex;
+  gap: var(--space-4);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.erm-sync-opt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.erm-sync-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 200px;
+  overflow: auto;
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.erm-sync-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.erm-sync-item.danger {
+  color: var(--error-600, #dc2626);
+}
+
+.erm-sync-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--text-tertiary);
+}
+
+.erm-sync-initial {
+  border-top: 1px solid var(--hairline);
+}
+
+.erm-sync-error {
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--text-xs);
+  color: var(--error-600, #dc2626);
+}
+
+.erm-sync-preview-head {
+  padding: var(--space-2) var(--space-4) 0;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.erm-sync-preview {
+  min-height: 120px;
+}
+
+.erm-sync-actions {
+  border-top: 1px solid var(--hairline);
 }
 </style>
