@@ -59,17 +59,38 @@
         <span>{{ t('lineage.parseFailed', { count: result.unparsedCount }) }}</span>
       </div>
 
-      <div v-if="!graph.edges.length" class="lineage-empty">
+      <div v-if="!activeGraph.edges.length" class="lineage-empty">
         <Workflow :size="40" class="empty-icon" />
         <p>{{ t('lineage.noStatements') }}</p>
       </div>
 
       <!-- 血缘图 -->
       <div v-else class="lineage-graph-wrap">
-        <div class="graph-legend">
-          <span class="legend-item"><span class="dot dot-source"></span>{{ t('lineage.roleSource') }}</span>
-          <span class="legend-item"><span class="dot dot-both"></span>{{ t('lineage.roleBoth') }}</span>
-          <span class="legend-item"><span class="dot dot-target"></span>{{ t('lineage.roleTarget') }}</span>
+        <div class="graph-toolbar">
+          <div class="view-toggle">
+            <button
+              type="button"
+              class="toggle-btn"
+              :class="{ active: activeView === 'table' }"
+              @click="viewMode = 'table'"
+            >
+              {{ t('lineage.viewTable') }}
+            </button>
+            <button
+              type="button"
+              class="toggle-btn"
+              :class="{ active: activeView === 'column' }"
+              :disabled="!hasColumnGraph"
+              @click="viewMode = 'column'"
+            >
+              {{ t('lineage.viewColumn') }}
+            </button>
+          </div>
+          <div class="graph-legend">
+            <span class="legend-item"><span class="dot dot-source"></span>{{ t('lineage.roleSource') }}</span>
+            <span class="legend-item"><span class="dot dot-both"></span>{{ t('lineage.roleBoth') }}</span>
+            <span class="legend-item"><span class="dot dot-target"></span>{{ t('lineage.roleTarget') }}</span>
+          </div>
         </div>
         <div class="graph-scroll">
           <svg :width="layout.width" :height="layout.height" :viewBox="`0 0 ${layout.width} ${layout.height}`" class="lineage-svg">
@@ -124,6 +145,15 @@
               <span v-else class="no-source">{{ t('lineage.noSource') }}</span>
             </template>
           </span>
+          <div v-if="statement.columnLineage?.length" class="column-flows">
+            <div v-for="flow in statement.columnLineage" :key="columnFlowKey(flow)" class="column-flow">
+              <code class="flow-target">{{ displayColumn(flow.target) }}</code>
+              <span class="flow-arrow">←</span>
+              <code v-for="source in flow.sources" :key="displayColumn(source)" class="flow-source">
+                {{ displayColumn(source) }}
+              </code>
+            </div>
+          </div>
         </div>
       </div>
     </template>
@@ -138,8 +168,11 @@ import Button from '@/components/ui/Button.vue'
 import { invoke } from '@tauri-apps/api/core'
 import { t } from '@/i18n'
 import {
+  buildColumnLineageGraph,
   buildLineageGraph,
+  type ColumnLineage,
   type LineageAnalysis,
+  type LineageGraph,
   type LineageGraphEdge,
   type LineageGraphNode,
 } from '@/utils/lineageGraph'
@@ -169,6 +202,17 @@ const errorMessage = ref('')
 const result = ref<LineageAnalysis | null>(null)
 
 const graph = computed(() => buildLineageGraph(result.value?.statements ?? []))
+const columnGraph = computed(() => buildColumnLineageGraph(result.value?.statements ?? []))
+
+// 图视图：表级 / 列级；无列级数据时强制回退表级
+const viewMode = ref<'table' | 'column'>('table')
+const hasColumnGraph = computed(() => columnGraph.value.edges.length > 0)
+const activeView = computed(() =>
+  viewMode.value === 'column' && hasColumnGraph.value ? 'column' : 'table'
+)
+const activeGraph = computed(() =>
+  viewMode.value === 'column' && hasColumnGraph.value ? columnGraph.value : graph.value
+)
 
 const writableStatements = computed(() =>
   (result.value?.statements ?? []).filter((statement) => statement.target !== null)
@@ -182,6 +226,14 @@ function opLabel(operation: string): string {
 
 function displayTable(ref: { database: string | null; table: string }): string {
   return ref.database ? `${ref.database}.${ref.table}` : ref.table
+}
+
+function displayColumn(ref: ColumnLineage['target']): string {
+  return `${displayTable(ref.table)}.${ref.column}`
+}
+
+function columnFlowKey(flow: ColumnLineage): string {
+  return `${displayColumn(flow.target)}<-${flow.sources.map(displayColumn).join(',')}`
 }
 
 async function runAnalyze() {
@@ -225,7 +277,7 @@ interface LaidOutEdge {
   labelY: number
 }
 
-const layout = computed(() => {
+function layoutGraph(graph: LineageGraph) {
   const byRole: Record<LineageGraphNode['role'], LaidOutNode[]> = {
     source: [],
     both: [],
@@ -237,7 +289,7 @@ const layout = computed(() => {
     target: PADDING + (NODE_WIDTH + COLUMN_GAP) * 2
   }
 
-  for (const node of graph.value.nodes) {
+  for (const node of graph.nodes) {
     const column = byRole[node.role]
     const index = column.length
     byRole[node.role].push({
@@ -259,7 +311,7 @@ const layout = computed(() => {
   const height = PADDING * 2 + maxRows * NODE_HEIGHT + Math.max(0, maxRows - 1) * NODE_GAP
   const width = PADDING * 2 + (NODE_WIDTH + COLUMN_GAP) * 2 + NODE_WIDTH
 
-  const edges: LaidOutEdge[] = graph.value.edges.map((edge: LineageGraphEdge) => {
+  const edges: LaidOutEdge[] = graph.edges.map((edge: LineageGraphEdge) => {
     const from = positions.get(edge.from)
     const to = positions.get(edge.to)
     const key = `${edge.from}->${edge.to}`
@@ -282,7 +334,9 @@ const layout = computed(() => {
 
   const nodes = [...byRole.source, ...byRole.both, ...byRole.target]
   return { nodes, edges, width, height }
-})
+}
+
+const layout = computed(() => layoutGraph(activeGraph.value))
 </script>
 
 <style scoped>
@@ -428,6 +482,40 @@ const layout = computed(() => {
   flex: 1;
 }
 
+.graph-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.view-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border-color, #444);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.toggle-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary, #888);
+  font-size: 12px;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+
+.toggle-btn.active {
+  background: rgba(86, 168, 245, 0.15);
+  color: var(--accent-blue, #56a8f5);
+}
+
+.toggle-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .graph-legend {
   display: flex;
   gap: 16px;
@@ -561,5 +649,32 @@ const layout = computed(() => {
 .no-source {
   color: var(--text-secondary, #888);
   font-size: 12px;
+}
+
+.column-flows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex-basis: 100%;
+  padding-left: 8px;
+}
+
+.column-flow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+.column-flow code {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(127, 127, 127, 0.08);
+  font-size: 11.5px;
+}
+
+.column-flow .flow-target {
+  background: rgba(92, 201, 140, 0.14);
 }
 </style>

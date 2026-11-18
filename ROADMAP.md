@@ -252,7 +252,7 @@ V2-7 质量门禁随每批并行推进
 | # | 任务 | 验收标准 | 技术要点 |
 |---|------|----------|----------|
 | V3-5.1 ✅ | **表级血缘** | 解析 SQL 推导「源表 → 目标表」依赖并可视化；工具菜单入口，不依赖连接离线可用 | 新增 `crates/core/src/sql/lineage.rs`：sqlparser AST + Visitor 收集关系位置，覆盖 INSERT...SELECT / REPLACE / UPDATE（JOIN / FROM / 子查询）/ DELETE（多表 + USING）/ CTAS / LIKE / CLONE / CREATE VIEW / WITH CTE 前缀 DML（CTE 别名不计入源表）；未限定表名补默认库前缀、跨库引用保留库名；单条解析失败计数跳过不中断。前端 `utils/lineageGraph.ts` 边去重合并 + `LineageDialog.vue` SVG 血缘图（源表左 / 目标表右 / 读写居中，连线标注操作类型）+ 语句明细；方言 MySQL / PG 可选 |
-| V3-5.2 | **列级血缘** | 解析 SELECT 列表达式，推导字段 → 字段依赖并叠加到血缘图 | 在 V3-5.1 AST 提取上深入 Expression 侧：INSERT 列清单与 SELECT 投影对齐、UPDATE 赋值右侧表达式中的列引用；视图列展开留待后续 |
+| V3-5.2 ✅ | **列级血缘** | 解析 SELECT 列表达式，推导字段 → 字段依赖并叠加到血缘图 | `lineage.rs` 扩展 `ColumnLineage`（target ← sources）：INSERT/REPLACE 列清单与 SELECT 投影按位置对齐、无列清单时投影名/别名作目标列名、UPDATE 赋值右侧表达式列引用（别名映射 + 无限定列单表归属、`SET a = a` 自赋值跳过）、CTAS / CREATE VIEW 投影名对齐；`SELECT *`、UNION 主体、CTE 中间层列引用不解析（fail-open）。前端 `buildColumnLineageGraph` 列节点图 + LineageDialog 表级/列级视图切换，语句明细叠加列级映射；视图列展开留待后续 |
 
 ## v3.0 实施顺序
 
@@ -311,3 +311,4 @@ V3-5.1 表级血缘（纯文本解析，不依赖连接）
 - 2026-11-18：V3-3.2 正向 DDL 生成完成 — 新增 `utils/erModelDdl.ts`（复用 `ddl.ts` 方言链路生成 CREATE TABLE：PK/NOT NULL/UNIQUE/默认值/注释/外键，拓扑排序建表顺序，环引用兜底）；设计器工具栏「生成 DDL」弹窗：MySQL/PG 方言切换、预览、一键复制；单测新增 10 条（含拓扑序、约束命名去重、悬空关系过滤）
 - 2026-11-18：V3-3.3 模型↔库比对同步完成，V3-3 ER 建模线收尾 — 新增 `utils/erModelSync.ts`（库快照取自 `get_er_diagram_data`，前端 diff：新表拓扑序 CREATE、列差异按方言 ALTER（复用表设计器生成链路）、缺失外键补建、多余表列可选 DROP）；设计器工具栏「与库比对」弹窗：连接/库选择 → 差异勾选（DROP 默认不勾）→ SQL 预览 → 二次确认 → `apply_schema_diff` 逐条执行遇错即停，成功后自动重新比对；单测新增 15 条
 - 2026-11-18：V3-5.1 表级血缘完成 — 新增 v3.0「V3-5 数据血缘分析」小节；`crates/core/src/sql/lineage.rs` 基于 sqlparser AST + Visitor 提取表级血缘（INSERT...SELECT / REPLACE / UPDATE / DELETE / CTAS / LIKE / CLONE / CREATE VIEW / WITH 前缀 DML，CTE 别名不入源表，解析失败逐条计数跳过，22 条单测）；Tauri 命令 `analyze_sql_lineage`（MySQL / PG 方言）；前端 `utils/lineageGraph.ts`（9 条单测）与 `LineageDialog.vue` SVG 血缘图 + 语句明细；工具菜单「血缘分析」离线可用；前端单测 171 → 180 条
+- 2026-11-18：V3-5.2 列级血缘完成，V3-5 数据血缘线收尾 — `lineage.rs` 新增 `ColumnLineage`（目标列 ← 源列列表）：INSERT/REPLACE 列清单与 SELECT 投影按位置对齐、无列清单时投影名/别名作目标列名、UPDATE 赋值右侧表达式列引用（别名映射、无限定列仅单表归属、`SET a = a` 自赋值跳过）、CTAS / CREATE VIEW 投影名对齐；子查询内列引用、`SELECT *`、UNION 主体、CTE 中间层不解析（fail-open），Rust 单测 22 → 45 条；前端 `buildColumnLineageGraph`（单测 9 → 16 条）、LineageDialog 表级/列级视图切换 + 语句明细列级映射；命令与调用方签名不变；前端单测 180 → 187 条
