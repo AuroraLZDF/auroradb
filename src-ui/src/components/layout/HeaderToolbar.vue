@@ -214,14 +214,14 @@
         <template v-if="isTauri">
           <div class="window-controls-divider"></div>
           <button class="header-btn header-icon-btn window-btn" :title="t('header.minimize')" @click="appWindow?.minimize()">
-            <Minus :size="15" />
+            <Minus :size="22" />
           </button>
           <button class="header-btn header-icon-btn window-btn" :title="isMaximized ? t('header.restore') : t('header.maximize')" @click="appWindow?.toggleMaximize()">
-            <Copy v-if="isMaximized" :size="15" />
-            <Square v-else :size="15" />
+            <Copy v-if="isMaximized" :size="20" />
+            <Square v-else :size="17" />
           </button>
           <button class="header-btn header-icon-btn window-btn window-btn-close" :title="t('header.closeWindow')" @click="appWindow?.close()">
-            <X :size="15" />
+            <X :size="22" />
           </button>
         </template>
       </div>
@@ -538,11 +538,18 @@ async function handleUpdateClick() {
   flex-shrink: 0;
 }
 
-.header-icon-btn {
+/* 双类选择器提高优先级：覆盖 .header-btn 的横向 padding（其在样式表后面声明），
+   否则内容区只剩 10px，图标 svg 会被压缩或溢出 */
+.header-btn.header-icon-btn {
   position: relative;
   justify-content: center;
   width: var(--control-height-sm);
   padding: 0;
+}
+
+/* 图标按钮内的 svg 禁止被 flex 压缩：内容区仅 10px，压缩会导致各图标大小不一 */
+.header-icon-btn svg {
+  flex-shrink: 0;
 }
 
 /* 已发现可用更新时的角标红点 */
