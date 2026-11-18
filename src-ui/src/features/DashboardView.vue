@@ -29,6 +29,20 @@
       </button>
     </div>
 
+    <!-- 参数栏（V3-1.4）：卡片 SQL 含 :name 参数时显示，改值即刷新用到它的卡片 -->
+    <div v-if="paramNames.length > 0 && dashStore.current" class="dashboard-params">
+      <span class="dashboard-params-label">SQL {{ t('dashboard.params') }}</span>
+      <label v-for="name in paramNames" :key="name" class="dashboard-param">
+        <span class="dashboard-param-name">:{{ name }}</span>
+        <input
+          v-model="paramValues[name]"
+          class="dashboard-param-input"
+          :placeholder="t('dashboard.paramPlaceholder')"
+          @change="refreshCardsUsingParam(name)"
+        />
+      </label>
+    </div>
+
     <div v-if="!dashStore.current" class="dashboard-empty">{{ t('dashboard.select') }}</div>
     <div v-else-if="dashStore.current.cards.length === 0" class="dashboard-empty">{{ t('dashboard.empty') }}</div>
     <div v-else class="dashboard-grid">
@@ -36,6 +50,14 @@
         <div class="dash-card-head">
           <span class="dash-card-title" :title="card.title">{{ card.title }}</span>
           <span v-if="errorOf(card.id)" class="dash-card-error" :title="errorOf(card.id)">{{ t('dashboard.cardNoData') }}</span>
+          <Select
+            class="dash-card-interval"
+            size="sm"
+            :model-value="String(card.refresh_sec ?? 0)"
+            :options="intervalOptions"
+            :title="t('dashboard.interval')"
+            @update:model-value="dashStore.updateCard(dashStore.current!.id, card.id, { refresh_sec: Number($event) })"
+          />
           <button class="dash-card-btn" :title="t('dashboard.refreshAll')" @click="runCard(card)">
             <RefreshCw :size="13" :class="{ spinning: isLoading(card.id) }" />
           </button>
@@ -120,7 +142,7 @@
  * 仪表盘视图（V3-1.3）：卡片网格 + 聚合查询取数。
  * 卡片定义（SQL + 字段映射）存 localStorage，数据每次打开/刷新时执行 SQL 获取。
  */
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { Play, Plus, RefreshCw, Trash2, X } from 'lucide-vue-next'
 import { BarChart3, LineChart as LineChartIcon, PieChart as PieChartIcon, ScatterChart as ScatterChartIcon } from 'lucide-vue-next'
 import Select from '@/components/ui/Select.vue'
@@ -129,6 +151,7 @@ import { globalToast } from '@/composables/useToast'
 import { t } from '@/i18n'
 import { useConnectionStore } from '@/stores/connection'
 import { useDashboardStore, type DashboardCard } from '@/stores/dashboard'
+import { extractSqlParams, substituteParams } from '@/utils/sqlParam'
 import { numericColumnIndices, type AggFn, type ChartConfig, type ChartType } from '@/utils/chart'
 
 interface ResultPayload {
@@ -160,6 +183,51 @@ const cardData = reactive<Record<string, ResultPayload>>({})
 const cardError = reactive<Record<string, string>>({})
 const cardLoading = reactive<Record<string, boolean>>({})
 
+// ---- 参数化（V3-1.4）----
+const paramValues = reactive<Record<string, string>>({})
+
+/** 当前仪表盘所有卡片 SQL 中出现的具名参数（顺序去重） */
+const paramNames = computed(() => {
+  const names = new Set<string>()
+  for (const card of dashStore.current?.cards ?? []) {
+    for (const n of extractSqlParams(card.sql)) names.add(n)
+  }
+  return [...names]
+})
+
+/** 卡片 SQL 经参数替换后的可执行文本 */
+function resolveCardSql(card: DashboardCard, dialect: string): string {
+  return substituteParams(card.sql, paramValues, dialect)
+}
+
+function refreshCardsUsingParam(name: string) {
+  for (const card of dashStore.current?.cards ?? []) {
+    if (extractSqlParams(card.sql).includes(name)) void runCard(card)
+  }
+}
+
+// ---- 定时刷新（V3-1.4）：每秒 tick，到期的卡片重跑；页面隐藏时暂停 ----
+// tab 切走时组件卸载、定时器随之清除，无需额外 active 判断
+const REFRESH_CHOICES = [0, 5, 30, 60, 300]
+const intervalOptions = computed(() => REFRESH_CHOICES.map((s) => ({
+  label: s === 0 ? t('dashboard.intervalOff') : s < 60 ? t('dashboard.intervalSec', { n: s }) : t('dashboard.intervalMin', { n: s / 60 }),
+  value: String(s),
+})))
+
+const lastRunAt: Record<string, number> = {}
+let tickTimer: ReturnType<typeof setInterval> | null = null
+
+function tick() {
+  if (document.hidden) return
+  const now = Date.now()
+  for (const card of dashStore.current?.cards ?? []) {
+    const sec = card.refresh_sec ?? 0
+    if (sec <= 0) continue
+    if (cardLoading[card.id]) continue
+    if (now - (lastRunAt[card.id] ?? 0) >= sec * 1000) void runCard(card)
+  }
+}
+
 function hasData(id: string): boolean {
   return cardData[id] !== undefined
 }
@@ -187,8 +255,10 @@ async function runCard(card: DashboardCard) {
     return
   }
   cardLoading[card.id] = true
+  lastRunAt[card.id] = Date.now()
   try {
-    const result = await connStore.executeSql(dash.connectionId, dash.database, card.sql) as ResultPayload
+    const sql = resolveCardSql(card, conn.driver ?? '')
+    const result = await connStore.executeSql(dash.connectionId, dash.database, sql) as ResultPayload
     cardData[card.id] = { columns: result.columns, rows: result.rows }
     delete cardError[card.id]
   } catch (e) {
@@ -211,6 +281,12 @@ onMounted(() => {
   // 恢复最近使用的仪表盘；无则用当前连接新建
   if (!dashStore.current && dashStore.recent) dashStore.setCurrent(dashStore.recent.id)
   void runAllCards()
+  tickTimer = setInterval(tick, 1000)
+})
+
+onUnmounted(() => {
+  if (tickTimer) clearInterval(tickTimer)
+  tickTimer = null
 })
 
 function createDashboard() {
@@ -329,6 +405,53 @@ defineExpose({ runAllCards })
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--hairline);
+}
+
+/* 参数栏（V3-1.4） */
+.dashboard-params {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface-subtle);
+}
+
+.dashboard-params-label {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.dashboard-param {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.dashboard-param-name {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-xs);
+  color: var(--brand-600);
+}
+
+.dashboard-param-input {
+  width: 120px;
+  padding: 3px var(--space-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+}
+
+.dashboard-param-input:focus {
+  outline: none;
+  border-color: var(--brand-600);
+}
+
+.dash-card-interval {
+  width: 88px;
 }
 
 .dash-name-input {

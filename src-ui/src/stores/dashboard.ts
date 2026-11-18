@@ -9,9 +9,11 @@ import type { ChartConfig } from '@/utils/chart'
 export interface DashboardCard {
   id: string
   title: string
-  /** 聚合查询 SQL（SELECT 维度, AGG(度量)... GROUP BY ...） */
+  /** 聚合查询 SQL（SELECT 维度, AGG(度量)... GROUP BY ...），可含 :name 具名参数 */
   sql: string
   config: ChartConfig
+  /** 自动刷新间隔秒数，0 或缺省为关闭（V3-1.4） */
+  refresh_sec?: number
 }
 
 export interface Dashboard {
