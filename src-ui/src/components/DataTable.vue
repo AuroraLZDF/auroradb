@@ -4,7 +4,8 @@
     <div class="table-toolbar" v-if="currentTab">
       <div class="toolbar-left">
         <div class="toolbar-actions">
-          <button v-if="!loading" @click="refreshData" :title="t('dataTable.refreshHint')" :aria-label="t('dataTable.refreshHint')">
+          <!-- 仅当加载持续超过阈值才切换为「取消查询」：快速加载时刷新按钮保持不动，避免按钮一闪而过 -->
+          <button v-if="!showCancelLoad" @click="refreshData" :title="t('dataTable.refreshHint')" :aria-label="t('dataTable.refreshHint')">
             <RefreshCw :size="14" />
           </button>
           <!-- 加载中（大表 COUNT / 慢查询）允许取消，避免界面一直等待 -->
@@ -30,14 +31,17 @@
           <!-- 按需列加载：宽表默认只取前 N 列，勾选后重新查询 -->
           <div v-if="allColumnsForTab.length > 0" class="column-selector">
             <button
-              @click.stop="showColumnSelector = !showColumnSelector"
+              ref="columnSelectorBtn"
+              @click.stop="toggleColumnSelector"
               :class="{ active: showColumnSelector }"
               :title="t('dataTable.columnsHint')"
             >
               <Columns3 :size="14" />
               {{ t('dataTable.columnsLabel', { selected: selectedColumnNames.length, total: allColumnsForTab.length }) }}
             </button>
-            <div v-if="showColumnSelector" class="column-selector-menu" @click.stop>
+            <!-- Teleport 到 body：工具栏 overflow-y: hidden 会裁掉绝对定位的下拉菜单 -->
+            <Teleport to="body">
+              <div v-if="showColumnSelector" ref="columnSelectorMenu" class="column-selector-menu" :style="columnSelectorMenuStyle" @click.stop>
               <div class="column-selector-header">
                 <span>{{ t('dataTable.columnsTitle') }}</span>
                 <div class="column-selector-actions">
@@ -66,7 +70,8 @@
                   @click="applyColumns"
                 >{{ t('dataTable.applyColumns') }}</button>
               </div>
-            </div>
+              </div>
+            </Teleport>
           </div>
           <button
             @click="showGenerator = true"
@@ -624,6 +629,32 @@ const openTables = ref<TableTab[]>([])
 const currentTab = ref<TableTab | null>(null)
 const currentTableData = computed(() => browserStore.tableData)
 const loading = computed(() => browserStore.loading)
+
+/** 「取消查询」延迟显示阈值：加载持续超过该时长才允许取消 */
+const CANCEL_VISIBLE_DELAY = 500
+const slowLoading = ref(false)
+let slowLoadingTimer: ReturnType<typeof setTimeout> | null = null
+
+watch(loading, (active) => {
+  if (slowLoadingTimer) {
+    clearTimeout(slowLoadingTimer)
+    slowLoadingTimer = null
+  }
+  if (active) {
+    slowLoadingTimer = setTimeout(() => {
+      slowLoading.value = true
+    }, CANCEL_VISIBLE_DELAY)
+  } else {
+    slowLoading.value = false
+  }
+})
+
+/** 快速加载（打开/刷新表格）时保持刷新按钮，仅慢查询才切换为「取消查询」 */
+const showCancelLoad = computed(() => loading.value && slowLoading.value)
+
+onUnmounted(() => {
+  if (slowLoadingTimer) clearTimeout(slowLoadingTimer)
+})
 const loadError = ref('')
 
 // 分页和排序
@@ -839,6 +870,42 @@ const tableForeignKeys = ref<Record<string, ForeignKeyMeta[]>>({})
 /** 每张表当前勾选要查询的列 */
 const selectedColumns = ref<Record<string, string[]>>({})
 const showColumnSelector = ref(false)
+
+// 列选择菜单 Teleport 到 body 后按按钮位置固定定位，不受工具栏 overflow 裁剪
+const columnSelectorBtn = ref<HTMLElement | null>(null)
+const columnSelectorMenu = ref<HTMLElement | null>(null)
+const columnSelectorMenuStyle = ref<Record<string, string>>({})
+
+/** 打开列选择菜单：按按钮位置计算，靠近窗口底部时向上展开 */
+function toggleColumnSelector() {
+  showColumnSelector.value = !showColumnSelector.value
+  if (!showColumnSelector.value || !columnSelectorBtn.value) return
+  const rect = columnSelectorBtn.value.getBoundingClientRect()
+  const top = rect.bottom + 4
+  // 360 为菜单 max-height，底部空间不足时改为向上展开
+  if (top + 360 > window.innerHeight && rect.top - 4 - 360 > 0) {
+    columnSelectorMenuStyle.value = {
+      position: 'fixed',
+      left: `${Math.round(rect.left)}px`,
+      bottom: `${Math.round(window.innerHeight - rect.top + 4)}px`,
+    }
+  } else {
+    columnSelectorMenuStyle.value = {
+      position: 'fixed',
+      left: `${Math.round(rect.left)}px`,
+      top: `${Math.round(top)}px`,
+    }
+  }
+}
+
+/** 点击菜单与触发按钮之外的区域时收起菜单 */
+function handleColumnSelectorDocClick(e: MouseEvent) {
+  if (!showColumnSelector.value) return
+  const target = e.target as Node
+  if (columnSelectorMenu.value?.contains(target)) return
+  if (columnSelectorBtn.value?.contains(target)) return
+  showColumnSelector.value = false
+}
 /** 是否处于游标续页模式（首页返回 next_cursor 时开启） */
 const cursorMode = ref(false)
 const loadingMore = computed(() => browserStore.loadingMore)
@@ -1065,10 +1132,12 @@ watch(() => currentTableData.value?.columns, (columns) => {
 // 键盘快捷键
 onMounted(() => {
   document.addEventListener('keydown', handleKeyDown)
+  document.addEventListener('click', handleColumnSelectorDocClick)
 })
 
 onUnmounted(() => {
   document.removeEventListener('keydown', handleKeyDown)
+  document.removeEventListener('click', handleColumnSelectorDocClick)
   // 拖拽列宽中卸载时清理全局监听
   document.removeEventListener('mousemove', handleResize)
   document.removeEventListener('mouseup', stopResize)
@@ -3224,11 +3293,9 @@ td.editing::before {
   position: relative;
 }
 
+/* 列选择菜单：Teleport 到 body，定位（fixed + top/left/bottom）由内联样式按按钮位置计算 */
 .column-selector-menu {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  z-index: 60;
+  z-index: 1000;
   width: 280px;
   max-height: 360px;
   display: flex;
