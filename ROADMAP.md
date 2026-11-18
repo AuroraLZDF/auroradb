@@ -213,6 +213,7 @@ V2-7 质量门禁随每批并行推进
 | D3 | **ER 图/建模** | **补正向能力：模型设计器 → DDL 生成 → Schema Diff 比对同步** | 反向 ER 已有，正向补齐形成建模闭环 |
 | D4 | **免费/Pro 归属** | **全部免费** | 2026-11-04 起已全量开源，无 Pro 边界问题 |
 | D5 | **图表库选型** | **ECharts 按需引入** | 图表类型全、生态好；AppImage 体积敏感，必须 tree-shaking（`echarts/core` 只注册所用图表） |
+| D6 | **后续排期原则（2026-11-18 补充拍板）** | **个人 SQL 工作台日常功能优先** | v3.0 四条线（BI / AI / ER / 血缘）均已收尾；评审结论：BI 仪表盘、ER 建模、血缘分析属低频治理类工具，与个人日常使用场景不匹配。下一阶段优先编辑器/查询体验本身（查询历史管理、结果集导出、连接管理增强等日常功能）；治理类功能及 follow-up（如视图列展开）冻结排期，已完成功能保留不砍 |
 
 ## V3-1 数据可视化 BI（主线）
 
@@ -312,3 +313,4 @@ V3-5.1 表级血缘（纯文本解析，不依赖连接）
 - 2026-11-18：V3-3.3 模型↔库比对同步完成，V3-3 ER 建模线收尾 — 新增 `utils/erModelSync.ts`（库快照取自 `get_er_diagram_data`，前端 diff：新表拓扑序 CREATE、列差异按方言 ALTER（复用表设计器生成链路）、缺失外键补建、多余表列可选 DROP）；设计器工具栏「与库比对」弹窗：连接/库选择 → 差异勾选（DROP 默认不勾）→ SQL 预览 → 二次确认 → `apply_schema_diff` 逐条执行遇错即停，成功后自动重新比对；单测新增 15 条
 - 2026-11-18：V3-5.1 表级血缘完成 — 新增 v3.0「V3-5 数据血缘分析」小节；`crates/core/src/sql/lineage.rs` 基于 sqlparser AST + Visitor 提取表级血缘（INSERT...SELECT / REPLACE / UPDATE / DELETE / CTAS / LIKE / CLONE / CREATE VIEW / WITH 前缀 DML，CTE 别名不入源表，解析失败逐条计数跳过，22 条单测）；Tauri 命令 `analyze_sql_lineage`（MySQL / PG 方言）；前端 `utils/lineageGraph.ts`（9 条单测）与 `LineageDialog.vue` SVG 血缘图 + 语句明细；工具菜单「血缘分析」离线可用；前端单测 171 → 180 条
 - 2026-11-18：V3-5.2 列级血缘完成，V3-5 数据血缘线收尾 — `lineage.rs` 新增 `ColumnLineage`（目标列 ← 源列列表）：INSERT/REPLACE 列清单与 SELECT 投影按位置对齐、无列清单时投影名/别名作目标列名、UPDATE 赋值右侧表达式列引用（别名映射、无限定列仅单表归属、`SET a = a` 自赋值跳过）、CTAS / CREATE VIEW 投影名对齐；子查询内列引用、`SELECT *`、UNION 主体、CTE 中间层不解析（fail-open），Rust 单测 22 → 45 条；前端 `buildColumnLineageGraph`（单测 9 → 16 条）、LineageDialog 表级/列级视图切换 + 语句明细列级映射；命令与调用方签名不变；前端单测 180 → 187 条
+- 2026-11-18：v3.0 复盘后补充决策 D6「后续排期原则」— 评审认为 BI 仪表盘 / ER 建模 / 血缘分析属低频治理类功能，与个人日常使用场景不匹配；下一阶段优先编辑器 / 查询体验日常功能，治理类功能与 follow-up（视图列展开等）冻结排期，已完成功能保留不砍
