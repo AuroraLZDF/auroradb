@@ -161,6 +161,9 @@ fn main() {
             commands::sql_file::take_pending_sql_files,
             commands::sql_file::read_sql_file,
             commands::sql_tools::format_sql,
+            commands::ai::ai_get_config,
+            commands::ai::ai_save_config,
+            commands::ai::ai_test_connection,
         ])
         // 首次启动就带文件参数（文件关联双击）：先入队，等前端挂载后取走
         .setup(|app| {

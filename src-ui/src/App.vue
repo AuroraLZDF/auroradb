@@ -10,6 +10,7 @@
       @open-new-console-tab="openNewConsoleTab"
       @open-schema-diff="handleOpenSchemaDiff"
       @open-dashboard="handleOpenDashboard"
+      @open-ai-settings="showAiSettings = true"
       @open-er-diagram="handleOpenErDiagram"
       @open-monitor="handleOpenMonitor"
       @open-backup="handleOpenBackup"
@@ -131,6 +132,13 @@
     <div v-if="showAbout" class="modal-overlay" role="presentation">
       <div class="modal-content modal-about" role="dialog" aria-modal="true">
         <AboutDialog @close="showAbout = false" />
+      </div>
+    </div>
+
+    <!-- AI 助手设置（V3-2.1） -->
+    <div v-if="showAiSettings" class="modal-overlay" role="presentation">
+      <div class="modal-content modal-about" role="dialog" aria-modal="true">
+        <AiSettingsDialog @close="showAiSettings = false" />
       </div>
     </div>
 
@@ -271,6 +279,7 @@ import InfoPanel from '@/components/InfoPanel.vue'
 import TableDesigner from '@/components/TableDesigner.vue'
 import DatabaseDesigner from '@/components/DatabaseDesigner.vue'
 import AboutDialog from '@/components/AboutDialog.vue'
+import AiSettingsDialog from '@/components/AiSettingsDialog.vue'
 import ToastNotification from '@/components/ui/Toast.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import CommandPalette from '@/components/CommandPalette.vue'
@@ -612,6 +621,8 @@ async function rerunHistory(entry: QueryHistoryEntry) {
 
 // 关于
 const showAbout = ref(false)
+// AI 助手设置（V3-2.1）
+const showAiSettings = ref(false)
 
 // 功能入口：直接打开对应界面
 function handleOpenSchemaDiff() {

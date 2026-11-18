@@ -181,6 +181,15 @@
               <component :is="themeIcon" :size="15" />
               <span>{{ t('header.switchTheme') }}</span>
             </button>
+            <button
+              class="tools-item"
+              role="menuitem"
+              :title="t('aiSettings.title')"
+              @click="closeMenus(); emit('openAiSettings')"
+            >
+              <Sparkles :size="15" />
+              <span>{{ t('aiSettings.title') }}</span>
+            </button>
             <div class="tools-divider"></div>
             <button
               class="tools-item"
@@ -282,7 +291,7 @@ import { useUpdaterStore } from '@/stores/updater'
 import { t, locale, toggleLocale } from '@/i18n'
 import { confirmAction } from '@/composables/useConfirm'
 import { capabilitiesOf, normalizeDriver, type DriverKind } from '@/utils/driver'
-import { Menu, Plug, FileCode, Moon, Sun, PanelRight, Terminal, RefreshCw, GitCompare, Activity, Languages, Network, HardDrive, Search, LayoutDashboard, Wrench, Settings, ChevronDown, Info, History, Github, Minus, Square, Copy, X } from 'lucide-vue-next'
+import { Menu, Plug, FileCode, Moon, Sun, PanelRight, Terminal, RefreshCw, GitCompare, Activity, Languages, Network, HardDrive, Search, LayoutDashboard, Wrench, Settings, ChevronDown, Info, History, Github, Minus, Square, Copy, X, Sparkles } from 'lucide-vue-next'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 
@@ -333,6 +342,7 @@ const emit = defineEmits<{
   openBackup: []
   openGlobalSearch: []
   openAbout: []
+  openAiSettings: []
   openHistory: []
 }>()
 
@@ -416,6 +426,7 @@ type ToolEvent =
   | 'openGlobalSearch'
   | 'openNewConsoleTab'
   | 'openAbout'
+  | 'openAiSettings'
   | 'openHistory'
 
 const toolActions: Record<ToolEvent, () => void> = {
@@ -427,6 +438,7 @@ const toolActions: Record<ToolEvent, () => void> = {
   openGlobalSearch: () => emit('openGlobalSearch'),
   openNewConsoleTab: () => emit('openNewConsoleTab'),
   openAbout: () => emit('openAbout'),
+  openAiSettings: () => emit('openAiSettings'),
   openHistory: () => emit('openHistory')
 }
 
