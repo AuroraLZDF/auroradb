@@ -33,6 +33,10 @@
       <button class="erm-btn" :disabled="!modelStore.current" @click="exportModel">
         <Download :size="14" /> {{ t('erModel.export') }}
       </button>
+      <span class="erm-divider"></span>
+      <button class="erm-btn primary" :disabled="!modelStore.current || modelStore.current.tables.length === 0" @click="openDdlDialog">
+        <FileCode :size="14" /> {{ t('erModel.generateDdl') }}
+      </button>
       <span class="erm-spacer"></span>
       <div class="erm-stats" v-if="modelStore.current">
         <span>{{ t('erDiagram.tables', { count: modelStore.current.tables.length }) }}</span>
@@ -263,18 +267,44 @@
 
     <!-- 缩放指示 -->
     <div class="erm-zoom">{{ Math.round(scale * 100) }}%</div>
+
+    <!-- DDL 预览弹窗（V3-3.2） -->
+    <div v-if="ddlOpen" class="erm-dialog-mask" @click.self="ddlOpen = false">
+      <div class="erm-dialog" role="dialog" :aria-label="t('erModel.generateDdl')">
+        <div class="erm-dialog-head">
+          <span>{{ t('erModel.generateDdl') }}</span>
+          <button class="erm-panel-close" :title="t('common.close')" @click="ddlOpen = false">
+            <X :size="14" />
+          </button>
+        </div>
+        <div class="erm-dialog-toolbar">
+          <span class="erm-dialog-label">{{ t('erModel.ddlDialect') }}</span>
+          <Select
+            :model-value="ddlDialect"
+            :options="ddlDialectOptions"
+            size="sm"
+            @update:model-value="ddlDialect = $event as ModelDialect"
+          />
+          <button class="erm-btn" @click="copyDdl">
+            <Copy :size="13" /> {{ ddlCopied ? t('erModel.ddlCopied') : t('common.copy') }}
+          </button>
+        </div>
+        <pre class="erm-dialog-code" data-testid="er-ddl-preview">{{ ddlText }}</pre>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
-import { Plus, Trash2, X, Scan, Download, Upload } from 'lucide-vue-next'
+import { Plus, Trash2, X, Scan, Download, Upload, FileCode, Copy } from 'lucide-vue-next'
 import { invoke } from '@tauri-apps/api/core'
 import Select from '@/components/ui/Select.vue'
 import { useErModelStore, type ModelTable, type ModelColumn } from '@/stores/erModel'
 import { confirmDanger } from '@/composables/useConfirm'
 import { globalToast } from '@/composables/useToast'
 import { t } from '@/i18n'
+import { buildModelDdl, type ModelDialect } from '@/utils/erModelDdl'
 
 // ========== 常量 ==========
 const TABLE_W = 220
@@ -718,6 +748,36 @@ function removeRelation() {
 }
 
 // ========== 导入 / 导出 ==========
+// ========== DDL 预览（V3-3.2） ==========
+const ddlOpen = ref(false)
+const ddlDialect = ref<ModelDialect>('mysql')
+const ddlCopied = ref(false)
+let ddlCopiedTimer: number | undefined
+const ddlDialectOptions = [
+  { value: 'mysql' as ModelDialect, label: 'MySQL' },
+  { value: 'postgres' as ModelDialect, label: 'PostgreSQL' },
+]
+const ddlText = computed(() => {
+  const model = modelStore.current
+  return model ? buildModelDdl(model, ddlDialect.value) : ''
+})
+
+function openDdlDialog() {
+  ddlOpen.value = true
+  ddlCopied.value = false
+}
+
+async function copyDdl() {
+  try {
+    await navigator.clipboard.writeText(ddlText.value)
+    ddlCopied.value = true
+    window.clearTimeout(ddlCopiedTimer)
+    ddlCopiedTimer = window.setTimeout(() => { ddlCopied.value = false }, 2000)
+  } catch {
+    globalToast.error(t('erModel.ddlCopyFailed'))
+  }
+}
+
 function base64FromBytes(bytes: Uint8Array) {
   let binary = ''
   const chunk = 0x8000
@@ -812,6 +872,7 @@ onUnmounted(() => {
   window.removeEventListener('mouseup', onConnectEnd)
   window.clearTimeout(removeModelTimer)
   window.clearTimeout(delTableTimer)
+  window.clearTimeout(ddlCopiedTimer)
 })
 
 // ========== 绘制辅助 ==========
@@ -1162,5 +1223,67 @@ g.dragging .erm-table-bg {
   margin-top: var(--space-3);
   border: 1px solid var(--hairline);
   justify-content: center;
+}
+
+/* DDL 预览弹窗 */
+.erm-dialog-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--overlay);
+}
+
+.erm-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(720px, calc(100% - 48px));
+  max-height: min(560px, calc(100% - 48px));
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xl);
+  overflow: hidden;
+}
+
+.erm-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--hairline);
+  font-weight: 600;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
+.erm-dialog-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.erm-dialog-label {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.erm-dialog-code {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  overflow: auto;
+  background: var(--canvas);
+  color: var(--text-primary);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  white-space: pre;
 }
 </style>

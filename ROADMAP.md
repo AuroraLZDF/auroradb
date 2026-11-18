@@ -237,7 +237,7 @@ V2-7 质量门禁随每批并行推进
 | # | 任务 | 验收标准 | 技术要点 |
 |---|------|----------|----------|
 | V3-3.1 ✅ | **模型设计器** | 可视化编辑表/字段/关系，保存为模型文件（JSON），不连库也能建模 | 新增 erModel store（localStorage 持久化）与 ErModelDesigner 视图：SVG 画布上添加/删除/重命名表、编辑字段（PK/NOT NULL/UNIQUE/默认值/注释）、拖拽建立关系与拖拽定位；模型文件 JSON 导入导出走系统对话框；工具菜单新增入口，无连接也可用 |
-| V3-3.2 | **正向 DDL 生成** | 模型一键生成 CREATE TABLE DDL，MySQL / PostgreSQL 方言可选 | 复用现有方言差异处理；生成前可预览、可复制 |
+| V3-3.2 ✅ | **正向 DDL 生成** | 模型一键生成 CREATE TABLE DDL，MySQL / PostgreSQL 方言可选 | 新增 `utils/erModelDdl.ts`：模型表/字段/关系转换成 `ddl.ts` 的 `TableDdlInput`，复用表设计器同一条方言生成链路（MySQL 内联约束 + ALTER COMMENT，PG CONSTRAINT + COMMENT ON）；建表语句按外键依赖拓扑排序（环引用兜底原序），悬空关系自动过滤；设计器工具栏「生成 DDL」弹窗预览 + 方言切换 + 一键复制 |
 | V3-3.3 | **模型 ↔ 库比对同步** | 模型与实际库结构 Diff，差异一键同步 | 接入现有 Schema Diff 能力，不重复造轮子 |
 
 ## V3-4 前置清理与体积回归
@@ -298,3 +298,4 @@ V3-4.2 包体积回归（随每批验证，不留到最后）
 - 2026-11-18：V3-2.2 NL2SQL 完成 — Rust 端新增 `ai_chat`（OpenAI 兼容 /chat/completions，非流式）；SQL 编辑器新增「AI 生成 SQL」入口，生成前注入当前库 schema 快照精简上下文（限 100 表 × 40 列控制 token），系统提示词限定只读 SELECT 且只用给出的表列；结果先预览（自动剥代码围栏）再插入编辑器，强制人工确认
 - 2026-11-18：V3-2.3 SQL 解释与优化完成 — 复用 `ai_chat`，SQL 编辑器新增「AI 解释/优化」入口：逐句解释 SQL 意图、性能问题清单 + 优化写法建议（提示词按方言组装）；超长 SQL 预览截断，结果可复制；V3-2 AI 助手线收尾
 - 2026-11-18：V3-3.1 模型设计器完成 — 新增 `stores/erModel.ts`（多模型 CRUD，模型 JSON 持久化 localStorage）与 `features/ErModelDesigner.vue`（SVG 画布：拖拽定位、拖拽连线建关系、右侧面板编辑表/字段）；模型文件（.json）导入导出走系统对话框（`read_file_from_dialog` / `save_binary_file_to_dialog`）；工具菜单新增「模型设计器」，不依赖连接离线可用
+- 2026-11-18：V3-3.2 正向 DDL 生成完成 — 新增 `utils/erModelDdl.ts`（复用 `ddl.ts` 方言链路生成 CREATE TABLE：PK/NOT NULL/UNIQUE/默认值/注释/外键，拓扑排序建表顺序，环引用兜底）；设计器工具栏「生成 DDL」弹窗：MySQL/PG 方言切换、预览、一键复制；单测新增 10 条（含拓扑序、约束命名去重、悬空关系过滤）
