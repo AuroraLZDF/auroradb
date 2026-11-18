@@ -13,6 +13,17 @@
       </div>
     </div>
 
+    <!-- AI 解释/优化面板（V3-2.3） -->
+    <div v-if="showAiExplainPanel" class="modal-overlay" role="presentation" @click.self="showAiExplainPanel = false">
+      <div class="modal-content modal-ai-sql" role="dialog" aria-modal="true">
+        <AiSqlExplainPanel
+          :sql="sql"
+          :driver="isPostgres ? 'postgres' : 'mysql'"
+          @close="showAiExplainPanel = false"
+        />
+      </div>
+    </div>
+
     <!-- 工具栏 -->
     <div class="toolbar">
       <div class="toolbar-left">
@@ -35,6 +46,10 @@
         <button @click="showAiPanel = true" :title="t('aiSql.title')" class="btn-format">
           <Sparkles :size="14" />
           {{ t('aiSql.title') }}
+        </button>
+        <button @click="showAiExplainPanel = true" :disabled="!sql.trim()" :title="t('aiExplain.title')" class="btn-format">
+          <MessageSquareText :size="14" />
+          {{ t('aiExplain.title') }}
         </button>
         <button @click="clearEditor" :disabled="!sql.trim()" class="btn-clear">
           <Trash2 :size="14" />
@@ -291,10 +306,11 @@ import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useConnectionStore } from '@/stores/connection'
 import { resolveTabConnectionId } from '@/utils/tabConnection'
 import AiSqlPanel from '@/components/AiSqlPanel.vue'
+import AiSqlExplainPanel from '@/components/AiSqlExplainPanel.vue'
 import { useDataBrowserStore } from '@/stores/dataBrowser'
 import { useEditorTabsStore } from '@/stores/editorTabs'
 import { useQueryLibraryStore } from '@/stores/queryLibrary'
-import { Play, FileText, Trash2, Download, XCircle, CheckCircle, Loader2, Square, Cpu, Sparkles } from 'lucide-vue-next'
+import { Play, FileText, Trash2, Download, XCircle, CheckCircle, Loader2, Square, Cpu, Sparkles, MessageSquareText } from 'lucide-vue-next'
 import { t } from '@/i18n'
 import { findDangerousStatements, formatSql, quoteIdentifier } from '@/utils/sql'
 import { formatSqlValue } from '@/utils/tableChanges'
@@ -976,8 +992,9 @@ function clearEditor() {
   editorApi?.focus()
 }
 
-// ---- AI 生成 SQL（V3-2.2）----
+// ---- AI 生成 SQL（V3-2.2）/ AI 解释与优化（V3-2.3）----
 const showAiPanel = ref(false)
+const showAiExplainPanel = ref(false)
 
 /** 把 AI 生成的 SQL 追加到编辑器末尾并聚焦 */
 function insertAiSql(generated: string) {
