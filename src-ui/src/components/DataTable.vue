@@ -423,6 +423,7 @@
       v-if="currentTableData && chartView"
       :columns="currentTableData.columns"
       :rows="filteredRows"
+      @pushdown="copyChartPushdownSql"
     />
 
     <!-- 分页 / 游标续页 -->
@@ -606,6 +607,7 @@ import DataGeneratorDialog from '@/components/DataGeneratorDialog.vue'
 import ImportDialog from '@/components/datatable/ImportDialog.vue'
 import ExportDialog from '@/components/datatable/ExportDialog.vue'
 import ResultChart from '@/components/ResultChart.vue'
+import { globalToast } from '@/composables/useToast'
 
 interface TableTab {
   id: string
@@ -1819,6 +1821,30 @@ function qualifiedTableName(table: string): string {
   return database
     ? `${quoteIdentifier(database, driver)}.${quoteIdentifier(table, driver)}`
     : quoteIdentifier(table, driver)
+}
+
+/** 图表原始数据超限时，按当前映射生成聚合下推 SQL 并复制到剪贴板（V3-1.2） */
+async function copyChartPushdownSql(cfg: { dimension: string; measures: string[]; agg: string; group: string }) {
+  const driver = driverKind.value
+  const dim = quoteIdentifier(cfg.dimension, driver)
+  const selectParts = [dim]
+  for (const m of cfg.measures) {
+    const qm = quoteIdentifier(m, driver)
+    selectParts.push(`${cfg.agg.toUpperCase()}(${qm}) AS ${qm}`)
+  }
+  const groupParts = [dim]
+  if (cfg.group) {
+    const qg = quoteIdentifier(cfg.group, driver)
+    selectParts.push(qg)
+    groupParts.push(qg)
+  }
+  const sql = `SELECT ${selectParts.join(', ')}\nFROM ${qualifiedTableName(currentTab.value?.tableName ?? '')}\nGROUP BY ${groupParts.join(', ')}\nORDER BY ${cfg.group ? '1, ' : ''}2 DESC\nLIMIT 200;`
+  try {
+    await navigator.clipboard.writeText(sql)
+    globalToast.success(t('dataTable.chartPushdownCopied'))
+  } catch {
+    // 剪贴板不可用时静默失败
+  }
 }
 
 /** 查询引用了当前单元格所在列的外键（子表），供右键菜单展示 */
