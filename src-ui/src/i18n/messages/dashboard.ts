@@ -32,6 +32,7 @@ export default {
     'dashboard.intervalOff': '关闭',
     'dashboard.intervalSec': '{n} 秒',
     'dashboard.intervalMin': '{n} 分钟',
+    'dashboard.resizeHint': '拖动调整卡片大小；拖动卡片标题区域可换位',
   },
   'en-US': {
     'dashboard.title': 'Dashboard',
@@ -66,5 +67,6 @@ export default {
     'dashboard.intervalOff': 'Off',
     'dashboard.intervalSec': '{n}s',
     'dashboard.intervalMin': '{n}m',
+    'dashboard.resizeHint': 'Drag to resize; drag the card header area to reorder',
   },
 } as const

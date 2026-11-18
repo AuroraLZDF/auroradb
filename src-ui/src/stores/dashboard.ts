@@ -14,6 +14,10 @@ export interface DashboardCard {
   config: ChartConfig
   /** 自动刷新间隔秒数，0 或缺省为关闭（V3-1.4） */
   refresh_sec?: number
+  /** 网格跨列数 1~4，缺省 1（V3-1.5） */
+  w?: number
+  /** 网格跨行数 1~3，缺省 1（V3-1.5） */
+  h?: number
 }
 
 export interface Dashboard {
@@ -138,6 +142,29 @@ export const useDashboardStore = defineStore('dashboard', {
       const d = this.dashboards.find((x) => x.id === dashboardId)
       if (d) {
         d.cards = d.cards.filter((c) => c.id !== cardId)
+        this.persist()
+      }
+    },
+
+    /** 拖拽换位：把 fromId 的卡片移到 toId 卡片当前位置（V3-1.5） */
+    reorderCard(dashboardId: string, fromId: string, toId: string) {
+      const d = this.dashboards.find((x) => x.id === dashboardId)
+      if (!d || fromId === toId) return
+      const from = d.cards.findIndex((c) => c.id === fromId)
+      const to = d.cards.findIndex((c) => c.id === toId)
+      if (from < 0 || to < 0) return
+      const [moved] = d.cards.splice(from, 1)
+      if (moved) {
+        d.cards.splice(to, 0, moved)
+        this.persist()
+      }
+    },
+
+    resizeCard(dashboardId: string, cardId: string, w: number, h: number) {
+      const card = this.dashboards.find((x) => x.id === dashboardId)?.cards.find((c) => c.id === cardId)
+      if (card) {
+        card.w = w
+        card.h = h
         this.persist()
       }
     },

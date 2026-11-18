@@ -46,7 +46,19 @@
     <div v-if="!dashStore.current" class="dashboard-empty">{{ t('dashboard.select') }}</div>
     <div v-else-if="dashStore.current.cards.length === 0" class="dashboard-empty">{{ t('dashboard.empty') }}</div>
     <div v-else class="dashboard-grid">
-      <div v-for="card in dashStore.current.cards" :key="card.id" class="dash-card">
+      <div
+        v-for="card in dashStore.current.cards"
+        :key="card.id"
+        class="dash-card"
+        :class="{ dragging: dragId === card.id, 'drop-target': dragOverId === card.id && dragId !== card.id }"
+        :style="cardStyle(card)"
+        draggable="true"
+        @dragstart="onDragStart(card.id, $event)"
+        @dragover.prevent="dragOverId = card.id"
+        @dragleave="onDragLeave(card.id)"
+        @drop.prevent="onDrop(card.id)"
+        @dragend="dragId = ''; dragOverId = ''"
+      >
         <div class="dash-card-head">
           <span class="dash-card-title" :title="card.title">{{ card.title }}</span>
           <span v-if="errorOf(card.id)" class="dash-card-error" :title="errorOf(card.id)">{{ t('dashboard.cardNoData') }}</span>
@@ -71,6 +83,11 @@
           <div v-else-if="!hasData(card.id)" class="dash-card-empty">{{ t('dashboard.cardNoData') }}</div>
           <ChartRenderer v-else :columns="dataOf(card.id).columns" :rows="dataOf(card.id).rows" :config="card.config" />
         </div>
+        <div
+          class="dash-resize-handle"
+          :title="t('dashboard.resizeHint')"
+          @pointerdown.prevent="onResizeStart(card, $event)"
+        ></div>
       </div>
     </div>
 
@@ -332,6 +349,71 @@ function removeCard(cardId: string) {
   }
 }
 
+// ---- 卡片拖拽换位（V3-1.5，HTML5 DnD）----
+const GRID_MAX_W = 4
+const GRID_MAX_H = 3
+
+const dragId = ref('')
+const dragOverId = ref('')
+
+function onDragStart(id: string, e: DragEvent) {
+  dragId.value = id
+  if (e.dataTransfer) {
+    e.dataTransfer.setData('text/plain', id)
+    e.dataTransfer.effectAllowed = 'move'
+  }
+}
+
+function onDrop(toId: string) {
+  if (dragId.value && dashStore.current) dashStore.reorderCard(dashStore.current.id, dragId.value, toId)
+}
+
+function onDragLeave(id: string) {
+  if (dragOverId.value === id) dragOverId.value = ''
+}
+
+// ---- 手柄缩放（V3-1.5）：按指针位移换算网格跨列/跨行，松手提交 ----
+const resizeWip = ref<{ id: string; w: number; h: number } | null>(null)
+
+function cardStyle(card: { id: string; w?: number; h?: number }): Record<string, string> {
+  const wip = resizeWip.value
+  const w = wip && wip.id === card.id ? wip.w : Math.min(card.w ?? 1, GRID_MAX_W)
+  const h = wip && wip.id === card.id ? wip.h : Math.min(card.h ?? 1, GRID_MAX_H)
+  return { gridColumn: `span ${w}`, gridRow: `span ${h}` }
+}
+
+function onResizeStart(card: { id: string; w?: number; h?: number }, e: PointerEvent) {
+  const handle = e.currentTarget as HTMLElement
+  const grid = handle.closest('.dashboard-grid') as HTMLElement | null
+  const cardEl = handle.closest('.dash-card') as HTMLElement | null
+  if (!grid || !cardEl) return
+  const colsCss = getComputedStyle(grid).gridTemplateColumns.split(' ')
+  const colWidth = parseFloat(colsCss[0] ?? '360')
+  const colGap = parseFloat(getComputedStyle(grid).columnGap || '12')
+  const rowHeight = parseFloat(getComputedStyle(grid).gridAutoRows || '280')
+  const rowGap = parseFloat(getComputedStyle(grid).rowGap || String(colGap))
+  const startX = e.clientX
+  const startY = e.clientY
+  const origW = cardEl.offsetWidth
+  const origH = cardEl.offsetHeight
+  const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
+
+  const move = (ev: PointerEvent) => {
+    const w = clamp(Math.round((origW + ev.clientX - startX + colGap + colWidth / 2) / (colWidth + colGap)), 1, GRID_MAX_W)
+    const h = clamp(Math.round((origH + ev.clientY - startY + rowGap + rowHeight / 2) / (rowHeight + rowGap)), 1, GRID_MAX_H)
+    resizeWip.value = { id: card.id, w, h }
+  }
+  const up = () => {
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', up)
+    const wip = resizeWip.value
+    if (wip && dashStore.current) dashStore.resizeCard(dashStore.current.id, card.id, wip.w, wip.h)
+    resizeWip.value = null
+  }
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', up)
+}
+
 // ---- 添加卡片 ----
 const editorOpen = ref(false)
 const editorTitle = ref('')
@@ -520,20 +602,56 @@ defineExpose({ runAllCards })
   min-height: 0;
   overflow: auto;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  /* 固定列数 + grid-auto-rows：卡片按跨列/跨行缩放（V3-1.5） */
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-auto-rows: 280px;
+  grid-auto-flow: dense;
   gap: var(--space-3);
   padding: var(--space-3);
   align-content: start;
 }
 
+@media (max-width: 1200px) {
+  .dashboard-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 760px) {
+  .dashboard-grid { grid-template-columns: 1fr; }
+}
+
 .dash-card {
   display: flex;
   flex-direction: column;
-  height: 280px;
+  position: relative;
   border: 1px solid var(--hairline);
   border-radius: var(--radius-md);
   background: var(--raised);
   overflow: hidden;
+}
+
+.dash-card.dragging {
+  opacity: 0.45;
+}
+
+.dash-card.drop-target {
+  border-color: var(--brand-600);
+  box-shadow: 0 0 0 1px var(--brand-600);
+}
+
+.dash-resize-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+  border-right: 2px solid var(--hairline);
+  border-bottom: 2px solid var(--hairline);
+  border-bottom-right-radius: var(--radius-md);
+}
+
+.dash-resize-handle:hover {
+  border-color: var(--brand-600);
 }
 
 .dash-card-head {
