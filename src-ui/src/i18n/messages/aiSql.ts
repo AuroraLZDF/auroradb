@@ -1,0 +1,26 @@
+export default {
+  'zh-CN': {
+    'aiSql.title': 'AI 生成 SQL',
+    'aiSql.placeholder': '用自然语言描述你要查什么，例如：统计每个分类的订单总金额，按金额降序',
+    'aiSql.generate': '生成 SQL',
+    'aiSql.generating': '生成中…',
+    'aiSql.schemaHint': '将注入数据库「{database}」的表结构作为上下文',
+    'aiSql.insert': '插入编辑器',
+    'aiSql.reviewHint': '生成结果仅供参考，执行前请检查',
+    'aiSql.emptyResult': '模型未返回有效 SQL，请换个说法重试',
+    'aiSql.copied': 'SQL 已复制到剪贴板',
+    'aiSql.copyFailed': '复制失败',
+  },
+  'en-US': {
+    'aiSql.title': 'AI Generate SQL',
+    'aiSql.placeholder': 'Describe what you want in natural language, e.g. total order amount per category, descending',
+    'aiSql.generate': 'Generate SQL',
+    'aiSql.generating': 'Generating…',
+    'aiSql.schemaHint': "Schema of database '{database}' will be injected as context",
+    'aiSql.insert': 'Insert to editor',
+    'aiSql.reviewHint': 'Generated for reference — review before executing',
+    'aiSql.emptyResult': 'Model returned no valid SQL, try rephrasing',
+    'aiSql.copied': 'SQL copied to clipboard',
+    'aiSql.copyFailed': 'Copy failed',
+  },
+} as const

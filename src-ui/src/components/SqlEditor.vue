@@ -1,5 +1,18 @@
 <template>
   <div class="sql-editor" @click="closeResultCellMenu">
+    <!-- AI 生成 SQL 面板（V3-2.2） -->
+    <div v-if="showAiPanel" class="modal-overlay" role="presentation" @click.self="showAiPanel = false">
+      <div class="modal-content modal-ai-sql" role="dialog" aria-modal="true">
+        <AiSqlPanel
+          :connection-id="resolveTabConnectionId({ connectionId: props.connectionId }, connStore.currentConnection?.id)"
+          :database="selectedDatabase"
+          :driver="isPostgres ? 'postgres' : 'mysql'"
+          @close="showAiPanel = false"
+          @insert="insertAiSql"
+        />
+      </div>
+    </div>
+
     <!-- 工具栏 -->
     <div class="toolbar">
       <div class="toolbar-left">
@@ -18,6 +31,10 @@
         <button @click="handleFormatSql" :disabled="!sql.trim()" class="btn-format">
           <FileText :size="14" />
           {{ t('sqlEditor.format') }}
+        </button>
+        <button @click="showAiPanel = true" :title="t('aiSql.title')" class="btn-format">
+          <Sparkles :size="14" />
+          {{ t('aiSql.title') }}
         </button>
         <button @click="clearEditor" :disabled="!sql.trim()" class="btn-clear">
           <Trash2 :size="14" />
@@ -273,10 +290,11 @@
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useConnectionStore } from '@/stores/connection'
 import { resolveTabConnectionId } from '@/utils/tabConnection'
+import AiSqlPanel from '@/components/AiSqlPanel.vue'
 import { useDataBrowserStore } from '@/stores/dataBrowser'
 import { useEditorTabsStore } from '@/stores/editorTabs'
 import { useQueryLibraryStore } from '@/stores/queryLibrary'
-import { Play, FileText, Trash2, Download, XCircle, CheckCircle, Loader2, Square, Cpu } from 'lucide-vue-next'
+import { Play, FileText, Trash2, Download, XCircle, CheckCircle, Loader2, Square, Cpu, Sparkles } from 'lucide-vue-next'
 import { t } from '@/i18n'
 import { findDangerousStatements, formatSql, quoteIdentifier } from '@/utils/sql'
 import { formatSqlValue } from '@/utils/tableChanges'
@@ -956,6 +974,24 @@ function clearEditor() {
   activeStatementIndex.value = 0
   if (props.tabId) editorTabs.markClean(props.tabId)
   editorApi?.focus()
+}
+
+// ---- AI 生成 SQL（V3-2.2）----
+const showAiPanel = ref(false)
+
+/** 把 AI 生成的 SQL 追加到编辑器末尾并聚焦 */
+function insertAiSql(generated: string) {
+  const view = editorApi?.view
+  if (view) {
+    const prefix = sql.value.trim() ? '\n\n' : ''
+    const text = prefix + generated
+    const pos = view.state.doc.length
+    view.dispatch({ changes: { from: pos, insert: text }, selection: { anchor: pos + text.length } })
+    editorApi?.focus()
+  } else {
+    sql.value = generated
+  }
+  showAiPanel.value = false
 }
 
 // 格式化单元格显示
@@ -2003,5 +2039,32 @@ onUnmounted(() => {
   border-radius: 4px;
   padding: 6px 14px;
   cursor: pointer;
+}
+
+/* AI 生成 SQL 面板弹窗（V3-2.2） */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(var(--bg-primary-rgb, 30, 30, 30), 0.45);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal-content.modal-ai-sql {
+  width: 560px;
+  max-width: calc(100vw - 48px);
+  max-height: 80vh;
+  overflow: auto;
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg, 10px);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.2);
+  padding: var(--space-4);
 }
 </style>

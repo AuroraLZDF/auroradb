@@ -111,6 +111,73 @@ pub fn ai_save_config(
     Ok(())
 }
 
+/// AI 对话补全（V3-2.2 NL2SQL）：POST {base_url}/chat/completions，
+/// 非流式返回 choices[0].message.content；system 由前端按方言组装。
+#[tauri::command]
+pub async fn ai_chat(
+    app: tauri::AppHandle,
+    prompt: String,
+    system: Option<String>,
+) -> Result<String, String> {
+    let config = load_config(&app);
+    let key = read_api_key()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "尚未配置 API Key，请先在设置 → AI 助手中配置".to_string())?;
+    let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
+
+    let mut messages = Vec::with_capacity(2);
+    if let Some(sys) = system.filter(|s| !s.trim().is_empty()) {
+        messages.push(serde_json::json!({ "role": "system", "content": sys }));
+    }
+    messages.push(serde_json::json!({ "role": "user", "content": prompt }));
+
+    let body = serde_json::json!({
+        "model": config.model,
+        "messages": messages,
+        "temperature": 0.2,
+    });
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
+        .post(&url)
+        .bearer_auth(&key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("请求失败：{e}"))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        let brief = text.chars().take(200).collect::<String>();
+        return Err(format!("端点返回 {status}：{brief}"));
+    }
+    #[derive(Deserialize)]
+    struct ChatResp {
+        choices: Vec<ChatChoice>,
+    }
+    #[derive(Deserialize)]
+    struct ChatChoice {
+        message: ChatMessage,
+    }
+    #[derive(Deserialize)]
+    struct ChatMessage {
+        content: Option<String>,
+    }
+    let parsed: ChatResp = resp
+        .json()
+        .await
+        .map_err(|e| format!("响应解析失败（确认是 OpenAI 兼容端点）：{e}"))?;
+    parsed
+        .choices
+        .into_iter()
+        .next()
+        .and_then(|c| c.message.content)
+        .map(|c| c.trim().to_string())
+        .ok_or_else(|| "端点返回了空响应".to_string())
+}
+
 /// 连通性测试：GET {base_url}/models，返回模型 id 列表。
 /// api_key 传空则使用已保存的 Key。
 #[tauri::command]

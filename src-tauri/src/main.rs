@@ -164,6 +164,7 @@ fn main() {
             commands::ai::ai_get_config,
             commands::ai::ai_save_config,
             commands::ai::ai_test_connection,
+            commands::ai::ai_chat,
         ])
         // 首次启动就带文件参数（文件关联双击）：先入队，等前端挂载后取走
         .setup(|app| {
