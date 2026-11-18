@@ -21,4 +21,5 @@ export const FeatureUi = {
   GlobalSearchDialog: pick('GlobalSearchDialog'),
   ExplainTree: pick('ExplainTree'),
   DashboardView: pick('DashboardView'),
+  ErModelDesigner: pick('ErModelDesigner'),
 }

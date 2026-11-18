@@ -1,7 +1,8 @@
 <template>
   <div class="main-content-wrapper" :style="{ width: width + 'px' }">
     <div class="main-content">
-      <template v-if="currentConnection">
+      <!-- 模型设计器不依赖连接（V3-3.1），没有连接也要能看到它的 tab -->
+      <template v-if="currentConnection || erModelTabs.length > 0">
         <!-- Tab 栏 -->
         <div class="tab-bar" role="tablist" :aria-label="t('layout.objectsTab')">
           <!-- 对象列表 Tab（始终存在） -->
@@ -169,6 +170,36 @@
               <X :size="12" />
             </span>
           </div>
+
+          <!-- 模型设计器 Tab（V3-3.1） -->
+          <div
+            v-for="tab in erModelTabs"
+            :key="tab.id"
+            class="tab-item"
+            role="tab"
+            tabindex="0"
+            :aria-selected="activeTab?.id === tab.id"
+            :class="{ active: activeTab?.id === tab.id }"
+            @click="switchTab(tab.id)"
+            @keydown.enter.prevent="switchTab(tab.id)"
+            @keydown.delete.prevent="closeTab(tab.id)"
+            @mousedown.middle="closeTab(tab.id)"
+          >
+            <Shapes :size="14" />
+            <span class="tab-title">{{ t('header.erModel') }}</span>
+            <span
+              class="tab-close"
+              role="button"
+              tabindex="0"
+              :title="t('common.close')"
+              :aria-label="t('common.close')"
+              @click.stop="closeTab(tab.id)"
+              @keydown.enter.stop.prevent="closeTab(tab.id)"
+              @keydown.space.stop.prevent="closeTab(tab.id)"
+            >
+              <X :size="12" />
+            </span>
+          </div>
         </div>
 
         <!-- 内容区域 -->
@@ -247,6 +278,11 @@
             <FeatureUi.DashboardView :selected-database="selectedDatabase" />
           </div>
 
+          <!-- 模型设计器视图（V3-3.1） -->
+          <div v-else-if="activeTab?.type === 'erModel' && FeatureUi.ErModelDesigner" class="er-view">
+            <FeatureUi.ErModelDesigner />
+          </div>
+
           <!-- 空状态 -->
           <div v-else-if="activeTab?.type !== 'table'" class="empty-view">
             <h2>{{ t('layout.welcomeTitle') }}</h2>
@@ -277,7 +313,7 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue'
-import { Database, Table2, FileCode, X, Terminal, Network, Plus, LayoutDashboard } from 'lucide-vue-next'
+import { Database, Table2, FileCode, X, Terminal, Network, Plus, LayoutDashboard, Shapes } from 'lucide-vue-next'
 import DataTable from '@/components/DataTable.vue'
 import SqlEditor from '@/components/SqlEditor.vue'
 import Console from '@/components/Console.vue'
@@ -334,7 +370,13 @@ interface DashboardTab {
   type: 'dashboard'
 }
 
-type Tab = ObjectsTab | TableTab | SqlTab | ConsoleTab | ErTab | DashboardTab
+/** 模型设计器：全局单例 tab（V3-3.1），不依赖连接 */
+interface ErModelTab {
+  id: 'er-model'
+  type: 'erModel'
+}
+
+type Tab = ObjectsTab | TableTab | SqlTab | ConsoleTab | ErTab | DashboardTab | ErModelTab
 
 interface Props {
   width: number
@@ -405,6 +447,10 @@ const erTabs = computed(() => {
 
 const dashboardTabs = computed(() => {
   return tabs.value.filter(t => t.type === 'dashboard') as DashboardTab[]
+})
+
+const erModelTabs = computed(() => {
+  return tabs.value.filter(t => t.type === 'erModel') as ErModelTab[]
 })
 
 // 当前数据库的表对象（含自增值、修改时间、占用空间，供对象列表展示）
@@ -732,6 +778,18 @@ function openDashboardTab() {
   setActiveTab('dashboard')
 }
 
+// 打开模型设计器 tab（全局单例，V3-3.1，不依赖连接）
+function openErModelTab() {
+  const existingTab = tabs.value.find(t => t.id === 'er-model')
+  if (existingTab) {
+    setActiveTab('er-model')
+    return
+  }
+  const newTab: ErModelTab = { id: 'er-model', type: 'erModel' }
+  tabs.value.push(newTab)
+  setActiveTab('er-model')
+}
+
 // 启动时从 localStorage 恢复上次未关闭的 SQL tab（P0-3 草稿自动保存）
 function restoreDrafts() {
   if (!props.currentConnection) return
@@ -836,6 +894,7 @@ defineExpose({
   newConsole,
   openErDiagramTab,
   openDashboardTab,
+  openErModelTab,
   closeTab,
   closeDatabaseTabs,
   closeConnectionTabs,

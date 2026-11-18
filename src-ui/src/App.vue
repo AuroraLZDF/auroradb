@@ -12,6 +12,7 @@
       @open-dashboard="handleOpenDashboard"
       @open-ai-settings="showAiSettings = true"
       @open-er-diagram="handleOpenErDiagram"
+      @open-er-model="handleOpenErModel"
       @open-monitor="handleOpenMonitor"
       @open-backup="handleOpenBackup"
       @open-global-search="handleOpenGlobalSearch"
@@ -640,6 +641,11 @@ function handleOpenErDiagram() {
 // 仪表盘（V3-1.3）
 function handleOpenDashboard() {
   mainContentRef.value?.openDashboardTab()
+}
+
+// 模型设计器（V3-3.1）：不依赖连接，离线可建模
+function handleOpenErModel() {
+  mainContentRef.value?.openErModelTab()
 }
 
 function handleOpenMonitor() {
