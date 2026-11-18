@@ -8,10 +8,7 @@
  * ResultChart（结果集图表）与 DashboardView（仪表盘卡片）共用。
  */
 import { onMounted, onUnmounted, ref, watch } from 'vue'
-import * as echarts from 'echarts/core'
-import { BarChart, LineChart, PieChart, ScatterChart } from 'echarts/charts'
-import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components'
-import { CanvasRenderer } from 'echarts/renderers'
+import type * as echarts from 'echarts/core'
 import { useThemeStore } from '@/stores/theme'
 import {
   CHART_MAX_CATEGORIES, CHART_MAX_SERIES, CHART_PALETTE, CHART_ROW_LIMIT,
@@ -19,7 +16,13 @@ import {
   type ChartConfig,
 } from '@/utils/chart'
 
-echarts.use([BarChart, LineChart, PieChart, ScatterChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
+// echarts 动态加载（V3-4.2 包体积回归）：经 utils/echarts 单一动态入口懒加载，
+// 不进主包；按需注册用到的图表类型与组件
+let echartsReady: Promise<typeof import('@/utils/echarts')['default']> | null = null
+function loadEcharts(): Promise<typeof import('@/utils/echarts')['default']> {
+  if (!echartsReady) echartsReady = import('@/utils/echarts').then((m) => m.default)
+  return echartsReady
+}
 
 const props = defineProps<{
   columns: { name: string; data_type?: string }[]
@@ -172,8 +175,9 @@ function buildOption(): echarts.EChartsCoreOption | null {
   }
 }
 
-function render() {
+async function render() {
   if (!chartEl.value) return
+  const echarts = await loadEcharts()
   if (!chart) chart = echarts.init(chartEl.value)
   const option = buildOption()
   if (option) chart.setOption(option, { notMerge: true })
