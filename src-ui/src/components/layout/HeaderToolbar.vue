@@ -53,6 +53,16 @@
             <button
               class="tools-item"
               role="menuitem"
+              :title="toolTitle('openDashboard')"
+              :disabled="toolDisabled('openDashboard')"
+              @click="openTool('openDashboard')"
+            >
+              <LayoutDashboard :size="15" />
+              <span>{{ t('header.dashboard') }}</span>
+            </button>
+            <button
+              class="tools-item"
+              role="menuitem"
               :title="toolTitle('openSchemaDiff')"
               :disabled="toolDisabled('openSchemaDiff')"
               @click="openTool('openSchemaDiff')"
@@ -272,7 +282,7 @@ import { useUpdaterStore } from '@/stores/updater'
 import { t, locale, toggleLocale } from '@/i18n'
 import { confirmAction } from '@/composables/useConfirm'
 import { capabilitiesOf, normalizeDriver, type DriverKind } from '@/utils/driver'
-import { Menu, Plug, FileCode, Moon, Sun, PanelRight, Terminal, RefreshCw, GitCompare, Activity, Languages, Network, HardDrive, Search, Wrench, Settings, ChevronDown, Info, History, Github, Minus, Square, Copy, X } from 'lucide-vue-next'
+import { Menu, Plug, FileCode, Moon, Sun, PanelRight, Terminal, RefreshCw, GitCompare, Activity, Languages, Network, HardDrive, Search, LayoutDashboard, Wrench, Settings, ChevronDown, Info, History, Github, Minus, Square, Copy, X } from 'lucide-vue-next'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 
@@ -317,6 +327,7 @@ const emit = defineEmits<{
   openNewQueryTab: []
   openNewConsoleTab: []
   openSchemaDiff: []
+  openDashboard: []
   openErDiagram: []
   openMonitor: []
   openBackup: []
@@ -334,9 +345,10 @@ const toolDriver = computed<DriverKind>(() =>
 )
 const toolCaps = computed(() => capabilitiesOf(toolDriver.value))
 
-type ProTool = 'openSchemaDiff' | 'openErDiagram' | 'openMonitor' | 'openBackup' | 'openGlobalSearch'
+type ProTool = 'openDashboard' | 'openSchemaDiff' | 'openErDiagram' | 'openMonitor' | 'openBackup' | 'openGlobalSearch'
 
 const PRO_TOOL_LABEL: Record<ProTool, string> = {
+  openDashboard: 'header.dashboard',
   openSchemaDiff: 'header.schemaDiff',
   openErDiagram: 'header.erDiagram',
   openMonitor: 'header.monitor',
@@ -345,6 +357,7 @@ const PRO_TOOL_LABEL: Record<ProTool, string> = {
 }
 
 const PRO_TOOL_HINT: Record<ProTool, string> = {
+  openDashboard: 'header.dashboardHint',
   openSchemaDiff: 'header.schemaDiffHint',
   openErDiagram: 'header.erDiagramHint',
   openMonitor: 'header.monitorHint',
@@ -355,6 +368,8 @@ const PRO_TOOL_HINT: Record<ProTool, string> = {
 function toolDisabled(tool: ProTool): boolean {
   if (!hasActiveConnection.value) return true
   switch (tool) {
+    // 仪表盘不依赖驱动特有能力，任何已激活连接都可用
+    case 'openDashboard': return false
     case 'openSchemaDiff': return !toolCaps.value.proTools.schemaDiff
     case 'openErDiagram': return !toolCaps.value.proTools.erDiagram
     case 'openMonitor': return !toolCaps.value.proTools.monitor
@@ -393,6 +408,7 @@ function closeMenus() {
 }
 
 type ToolEvent =
+  | 'openDashboard'
   | 'openSchemaDiff'
   | 'openErDiagram'
   | 'openMonitor'
@@ -403,6 +419,7 @@ type ToolEvent =
   | 'openHistory'
 
 const toolActions: Record<ToolEvent, () => void> = {
+  openDashboard: () => emit('openDashboard'),
   openSchemaDiff: () => emit('openSchemaDiff'),
   openErDiagram: () => emit('openErDiagram'),
   openMonitor: () => emit('openMonitor'),

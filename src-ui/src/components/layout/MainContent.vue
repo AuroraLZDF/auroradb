@@ -139,6 +139,36 @@
               <X :size="12" />
             </span>
           </div>
+
+          <!-- 仪表盘 Tab（V3-1.3） -->
+          <div
+            v-for="tab in dashboardTabs"
+            :key="tab.id"
+            class="tab-item"
+            role="tab"
+            tabindex="0"
+            :aria-selected="activeTab?.id === tab.id"
+            :class="{ active: activeTab?.id === tab.id }"
+            @click="switchTab(tab.id)"
+            @keydown.enter.prevent="switchTab(tab.id)"
+            @keydown.delete.prevent="closeTab(tab.id)"
+            @mousedown.middle="closeTab(tab.id)"
+          >
+            <LayoutDashboard :size="14" />
+            <span class="tab-title">{{ t('dashboard.title') }}</span>
+            <span
+              class="tab-close"
+              role="button"
+              tabindex="0"
+              :title="t('common.close')"
+              :aria-label="t('common.close')"
+              @click.stop="closeTab(tab.id)"
+              @keydown.enter.stop.prevent="closeTab(tab.id)"
+              @keydown.space.stop.prevent="closeTab(tab.id)"
+            >
+              <X :size="12" />
+            </span>
+          </div>
         </div>
 
         <!-- 内容区域 -->
@@ -212,6 +242,11 @@
             />
           </div>
 
+          <!-- 仪表盘视图（V3-1.3） -->
+          <div v-else-if="activeTab?.type === 'dashboard' && FeatureUi.DashboardView" class="er-view">
+            <FeatureUi.DashboardView :selected-database="selectedDatabase" />
+          </div>
+
           <!-- 空状态 -->
           <div v-else-if="activeTab?.type !== 'table'" class="empty-view">
             <h2>{{ t('layout.welcomeTitle') }}</h2>
@@ -242,7 +277,7 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue'
-import { Database, Table2, FileCode, X, Terminal, Network, Plus } from 'lucide-vue-next'
+import { Database, Table2, FileCode, X, Terminal, Network, Plus, LayoutDashboard } from 'lucide-vue-next'
 import DataTable from '@/components/DataTable.vue'
 import SqlEditor from '@/components/SqlEditor.vue'
 import Console from '@/components/Console.vue'
@@ -293,7 +328,13 @@ interface ErTab {
   database: string
 }
 
-type Tab = ObjectsTab | TableTab | SqlTab | ConsoleTab | ErTab
+/** 仪表盘：全局单例 tab（V3-1.3） */
+interface DashboardTab {
+  id: 'dashboard'
+  type: 'dashboard'
+}
+
+type Tab = ObjectsTab | TableTab | SqlTab | ConsoleTab | ErTab | DashboardTab
 
 interface Props {
   width: number
@@ -360,6 +401,10 @@ const tabColorStyle = (connectionId: string): Record<string, string> | undefined
 
 const erTabs = computed(() => {
   return tabs.value.filter(t => t.type === 'er') as ErTab[]
+})
+
+const dashboardTabs = computed(() => {
+  return tabs.value.filter(t => t.type === 'dashboard') as DashboardTab[]
 })
 
 // 当前数据库的表对象（含自增值、修改时间、占用空间，供对象列表展示）
@@ -675,6 +720,18 @@ function openErDiagramTab(database: string) {
   setActiveTab(tabId)
 }
 
+// 打开仪表盘 tab（全局单例，V3-1.3）
+function openDashboardTab() {
+  const existingTab = tabs.value.find(t => t.id === 'dashboard')
+  if (existingTab) {
+    setActiveTab('dashboard')
+    return
+  }
+  const newTab: DashboardTab = { id: 'dashboard', type: 'dashboard' }
+  tabs.value.push(newTab)
+  setActiveTab('dashboard')
+}
+
 // 启动时从 localStorage 恢复上次未关闭的 SQL tab（P0-3 草稿自动保存）
 function restoreDrafts() {
   if (!props.currentConnection) return
@@ -778,6 +835,7 @@ defineExpose({
   openSqlWithContent,
   newConsole,
   openErDiagramTab,
+  openDashboardTab,
   closeTab,
   closeDatabaseTabs,
   closeConnectionTabs,

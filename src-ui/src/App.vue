@@ -9,6 +9,7 @@
       @open-new-query-tab="openNewQueryTab"
       @open-new-console-tab="openNewConsoleTab"
       @open-schema-diff="handleOpenSchemaDiff"
+      @open-dashboard="handleOpenDashboard"
       @open-er-diagram="handleOpenErDiagram"
       @open-monitor="handleOpenMonitor"
       @open-backup="handleOpenBackup"
@@ -623,6 +624,11 @@ function handleOpenErDiagram() {
     return
   }
   mainContentRef.value?.openErDiagramTab(selectedDatabase.value)
+}
+
+// 仪表盘（V3-1.3）
+function handleOpenDashboard() {
+  mainContentRef.value?.openDashboardTab()
 }
 
 function handleOpenMonitor() {

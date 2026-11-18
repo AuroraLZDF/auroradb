@@ -424,6 +424,7 @@
       :columns="currentTableData.columns"
       :rows="filteredRows"
       @pushdown="copyChartPushdownSql"
+      @save-dashboard="saveChartToDashboard"
     />
 
     <!-- 分页 / 游标续页 -->
@@ -608,6 +609,7 @@ import ImportDialog from '@/components/datatable/ImportDialog.vue'
 import ExportDialog from '@/components/datatable/ExportDialog.vue'
 import ResultChart from '@/components/ResultChart.vue'
 import { globalToast } from '@/composables/useToast'
+import { useDashboardStore } from '@/stores/dashboard'
 
 interface TableTab {
   id: string
@@ -634,6 +636,7 @@ interface NewRow {
 
 const browserStore = useDataBrowserStore()
 const connectionStore = useConnectionStore()
+const dashStore = useDashboardStore()
 
 // 表标签真正关闭后通知外层，保证外层 Tab 与内部表状态同步
 const emit = defineEmits<{
@@ -1823,8 +1826,8 @@ function qualifiedTableName(table: string): string {
     : quoteIdentifier(table, driver)
 }
 
-/** 图表原始数据超限时，按当前映射生成聚合下推 SQL 并复制到剪贴板（V3-1.2） */
-async function copyChartPushdownSql(cfg: { dimension: string; measures: string[]; agg: string; group: string }) {
+/** 按图表映射与方言生成聚合 SQL；超限时下推复制用 200 行上限，存入仪表盘用 1000 */
+function buildChartAggregateSql(cfg: { dimension: string; measures: string[]; agg: string; group: string }, limit: number): string {
   const driver = driverKind.value
   const dim = quoteIdentifier(cfg.dimension, driver)
   const selectParts = [dim]
@@ -1838,13 +1841,38 @@ async function copyChartPushdownSql(cfg: { dimension: string; measures: string[]
     selectParts.push(qg)
     groupParts.push(qg)
   }
-  const sql = `SELECT ${selectParts.join(', ')}\nFROM ${qualifiedTableName(currentTab.value?.tableName ?? '')}\nGROUP BY ${groupParts.join(', ')}\nORDER BY ${cfg.group ? '1, ' : ''}2 DESC\nLIMIT 200;`
+  return `SELECT ${selectParts.join(', ')}\nFROM ${qualifiedTableName(currentTab.value?.tableName ?? '')}\nGROUP BY ${groupParts.join(', ')}\nORDER BY ${cfg.group ? '1, ' : ''}2 DESC\nLIMIT ${limit};`
+}
+
+/** 图表原始数据超限时，复制聚合下推 SQL 到剪贴板（V3-1.2） */
+async function copyChartPushdownSql(cfg: { dimension: string; measures: string[]; agg: string; group: string }) {
+  const sql = buildChartAggregateSql(cfg, 200)
   try {
     await navigator.clipboard.writeText(sql)
     globalToast.success(t('dataTable.chartPushdownCopied'))
   } catch {
     // 剪贴板不可用时静默失败
   }
+}
+
+/** 图表一键存入仪表盘：以聚合查询形式保存为卡片（V3-1.3） */
+function saveChartToDashboard(cfg: { dimension: string; measures: string[]; agg: string; group: string }) {
+  const tab = currentTab.value
+  if (!tab?.connectionId) return
+  const dash = dashStore.ensureFor(tab.connectionId, tab.database ?? '')
+  if (!dash) return
+  dashStore.addCard(dash.id, {
+    title: `${tab.tableName} · ${cfg.dimension}`,
+    sql: buildChartAggregateSql(cfg, 1000),
+    config: {
+      type: 'bar',
+      dimension: cfg.dimension,
+      measures: cfg.measures,
+      agg: (cfg.agg === 'raw' ? 'sum' : cfg.agg) as 'sum',
+      group: cfg.group,
+    },
+  })
+  globalToast.success(t('dashboard.savedToDashboard', { name: dash.name }))
 }
 
 /** 查询引用了当前单元格所在列的外键（子表），供右键菜单展示 */
