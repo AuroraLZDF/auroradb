@@ -114,6 +114,14 @@
       </div>
       <div class="toolbar-right">
         <button
+          :class="{ active: chartView }"
+          :title="t('dataTable.chartToggle')"
+          @click="chartView = !chartView"
+        >
+          <BarChart3 :size="14" />
+          {{ t('dataTable.chartToggle') }}
+        </button>
+        <button
           :class="{ active: showFilterPanel || activeFilters.length > 0 }"
           :title="t('dataTable.filterToggle')"
           @click="showFilterPanel = !showFilterPanel"
@@ -207,7 +215,7 @@
     </div>
 
     <!-- 数据表格 -->
-    <div class="table-container" v-if="currentTableData" ref="tableContainer" @scroll="handleScroll">
+    <div class="table-container" v-if="currentTableData && !chartView" ref="tableContainer" @scroll="handleScroll">
       <table>
         <thead>
           <tr>
@@ -410,6 +418,13 @@
       </table>
     </div>
 
+    <!-- 结果集图表视图：与表格共享同一份 rows（V3-1.1） -->
+    <ResultChart
+      v-if="currentTableData && chartView"
+      :columns="currentTableData.columns"
+      :rows="filteredRows"
+    />
+
     <!-- 分页 / 游标续页 -->
     <PaginationBar
       :table-data="currentTableData"
@@ -584,12 +599,13 @@ import {
   X,
   AlignHorizontalDistributeCenter
 } from '@/components/icons'
-import { Calendar, Columns3, Filter, Wand2 } from 'lucide-vue-next'
+import { BarChart3, Calendar, Columns3, Filter, Wand2 } from 'lucide-vue-next'
 import Select from '@/components/ui/Select.vue'
 import PaginationBar from '@/components/datatable/PaginationBar.vue'
 import DataGeneratorDialog from '@/components/DataGeneratorDialog.vue'
 import ImportDialog from '@/components/datatable/ImportDialog.vue'
 import ExportDialog from '@/components/datatable/ExportDialog.vue'
+import ResultChart from '@/components/ResultChart.vue'
 
 interface TableTab {
   id: string
@@ -870,6 +886,9 @@ const tableForeignKeys = ref<Record<string, ForeignKeyMeta[]>>({})
 /** 每张表当前勾选要查询的列 */
 const selectedColumns = ref<Record<string, string[]>>({})
 const showColumnSelector = ref(false)
+
+/** 结果集图表视图开关：打开后以图表展示当前结果集（V3-1.1） */
+const chartView = ref(false)
 
 // 列选择菜单 Teleport 到 body 后按按钮位置固定定位，不受工具栏 overflow 裁剪
 const columnSelectorBtn = ref<HTMLElement | null>(null)
