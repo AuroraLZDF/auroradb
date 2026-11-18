@@ -105,8 +105,12 @@ jobs:
           mkdir -p src-ui/dist
           echo '<!doctype html><html><body>ci stub</body></html>' > src-ui/dist/index.html
 
+      # 固定 Rust 版本：最新 stable 的类型推导变化（rustc #148922）会导致
+      # sqlx-postgres 0.7.4 编译失败（!: Decode trait bound）。与本地 1.94.1 对齐；
+      # 待 sqlx 升级到 0.8+ 后可解除固定。
       - uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: "1.94.1"
           components: clippy
 
       - uses: Swatinem/rust-cache@v2

@@ -127,13 +127,16 @@ jobs:
           cache: npm
           cache-dependency-path: src-ui/package-lock.json
 
+      # 固定 Rust 版本：最新 stable 的类型推导变化会导致 sqlx-postgres 0.7.4 编译失败，
+      # 与本地 1.94.1 对齐（详见 ci.yml 内注释）
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94.1"
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: . -> target
 
-      # 预编译的 cargo-tauri（build/linux.sh 内部用的是 `cargo tauri build`）
       # 预编译 cargo-tauri；安装失败不致命——build 脚本检测不到 `cargo tauri` 时会
       # 自己 `cargo install tauri-cli --locked`（慢，但能兜住）
       - uses: taiki-e/install-action@v2
@@ -237,6 +240,8 @@ jobs:
           cache-dependency-path: src-ui/package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94.1"
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -341,6 +346,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: "1.94.1"
           targets: aarch64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
