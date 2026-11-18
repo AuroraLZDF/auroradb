@@ -43,12 +43,6 @@
         :title="t('dataTable.chartPushdownTitle')"
         @click="emit('pushdown', pushdownConfig)"
       >{{ t('dataTable.chartPushdown') }}</button>
-      <button
-        v-if="canSave"
-        class="chart-pushdown"
-        :title="t('dataTable.chartSaveTitle')"
-        @click="emit('save-dashboard', pushdownConfig)"
-      >{{ t('dashboard.saveToDashboard') }}</button>
     </div>
     <div v-if="measureChoices.length === 0" class="chart-empty">{{ t('dataTable.chartNoNumeric') }}</div>
     <ChartRenderer v-else class="chart-canvas" :columns="columns" :rows="rows" :config="chartConfig" />
@@ -74,7 +68,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   pushdown: [config: { dimension: string; measures: string[]; agg: string; group: string }]
-  'save-dashboard': [config: { dimension: string; measures: string[]; agg: string; group: string }]
 }>()
 
 const CHART_TYPES: ChartType[] = ['bar', 'line', 'pie', 'scatter']
@@ -119,9 +112,8 @@ const truncatedText = computed(() =>
     : t('dataTable.chartCategoriesTruncated', { limit: 200 }),
 )
 
-/** 原始模式截断时：可下推数据库 / 存入仪表盘（卡片本身就是聚合查询） */
+/** 原始模式截断时：可下推数据库（卡片本身就是聚合查询） */
 const canPushdown = computed(() => config.agg === 'raw' && props.rows.length > CHART_ROW_LIMIT && config.measures.length > 0)
-const canSave = computed(() => props.rows.length > CHART_ROW_LIMIT && config.measures.length > 0)
 const pushdownConfig = computed(() => ({
   dimension: config.dimension,
   measures: config.measures.slice(0, 1),

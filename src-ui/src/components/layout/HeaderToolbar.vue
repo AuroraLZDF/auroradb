@@ -53,16 +53,6 @@
             <button
               class="tools-item"
               role="menuitem"
-              :title="toolTitle('openDashboard')"
-              :disabled="toolDisabled('openDashboard')"
-              @click="openTool('openDashboard')"
-            >
-              <LayoutDashboard :size="15" />
-              <span>{{ t('header.dashboard') }}</span>
-            </button>
-            <button
-              class="tools-item"
-              role="menuitem"
               :title="toolTitle('openSchemaDiff')"
               :disabled="toolDisabled('openSchemaDiff')"
               @click="openTool('openSchemaDiff')"
@@ -73,30 +63,12 @@
             <button
               class="tools-item"
               role="menuitem"
-              :title="toolTitle('openLineage')"
-              @click="openTool('openLineage')"
-            >
-              <Workflow :size="15" />
-              <span>{{ t('header.lineage') }}</span>
-            </button>
-            <button
-              class="tools-item"
-              role="menuitem"
               :title="toolTitle('openErDiagram')"
               :disabled="toolDisabled('openErDiagram')"
               @click="openTool('openErDiagram')"
             >
               <Network :size="15" />
               <span>{{ t('header.erDiagram') }}</span>
-            </button>
-            <button
-              class="tools-item"
-              role="menuitem"
-              :title="toolTitle('openErModel')"
-              @click="openTool('openErModel')"
-            >
-              <Shapes :size="15" />
-              <span>{{ t('header.erModel') }}</span>
             </button>
             <button
               class="tools-item"
@@ -309,7 +281,7 @@ import { useUpdaterStore } from '@/stores/updater'
 import { t, locale, toggleLocale } from '@/i18n'
 import { confirmAction } from '@/composables/useConfirm'
 import { capabilitiesOf, normalizeDriver, type DriverKind } from '@/utils/driver'
-import { Menu, Plug, FileCode, Moon, Sun, PanelRight, Terminal, RefreshCw, GitCompare, Activity, Languages, Network, HardDrive, Search, LayoutDashboard, Wrench, Settings, ChevronDown, Info, History, Github, Minus, Square, Copy, X, Sparkles, Shapes, Workflow } from 'lucide-vue-next'
+import { Menu, Plug, FileCode, Moon, Sun, PanelRight, Terminal, RefreshCw, GitCompare, Activity, Languages, Network, HardDrive, Search, Wrench, Settings, ChevronDown, Info, History, Github, Minus, Square, Copy, X, Sparkles } from 'lucide-vue-next'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 
@@ -354,10 +326,7 @@ const emit = defineEmits<{
   openNewQueryTab: []
   openNewConsoleTab: []
   openSchemaDiff: []
-  openLineage: []
-  openDashboard: []
   openErDiagram: []
-  openErModel: []
   openMonitor: []
   openBackup: []
   openGlobalSearch: []
@@ -375,37 +344,27 @@ const toolDriver = computed<DriverKind>(() =>
 )
 const toolCaps = computed(() => capabilitiesOf(toolDriver.value))
 
-type ProTool = 'openDashboard' | 'openSchemaDiff' | 'openLineage' | 'openErDiagram' | 'openErModel' | 'openMonitor' | 'openBackup' | 'openGlobalSearch'
+type ProTool = 'openSchemaDiff' | 'openErDiagram' | 'openMonitor' | 'openBackup' | 'openGlobalSearch'
 
 const PRO_TOOL_LABEL: Record<ProTool, string> = {
-  openDashboard: 'header.dashboard',
   openSchemaDiff: 'header.schemaDiff',
-  openLineage: 'header.lineage',
   openErDiagram: 'header.erDiagram',
-  openErModel: 'header.erModel',
   openMonitor: 'header.monitor',
   openBackup: 'header.backup',
   openGlobalSearch: 'header.globalSearch'
 }
 
 const PRO_TOOL_HINT: Record<ProTool, string> = {
-  openDashboard: 'header.dashboardHint',
   openSchemaDiff: 'header.schemaDiffHint',
-  openLineage: 'header.lineageHint',
   openErDiagram: 'header.erDiagramHint',
-  openErModel: 'header.erModelHint',
   openMonitor: 'header.monitorHint',
   openBackup: 'header.backupHint',
   openGlobalSearch: 'header.globalSearchHint'
 }
 
 function toolDisabled(tool: ProTool): boolean {
-  // 模型设计器与血缘分析不依赖连接，离线也能用（V3-3.1 / V3-5.1）
-  if (tool === 'openErModel' || tool === 'openLineage') return false
   if (!hasActiveConnection.value) return true
   switch (tool) {
-    // 仪表盘不依赖驱动特有能力，任何已激活连接都可用
-    case 'openDashboard': return false
     case 'openSchemaDiff': return !toolCaps.value.proTools.schemaDiff
     case 'openErDiagram': return !toolCaps.value.proTools.erDiagram
     case 'openMonitor': return !toolCaps.value.proTools.monitor
@@ -444,11 +403,8 @@ function closeMenus() {
 }
 
 type ToolEvent =
-  | 'openDashboard'
   | 'openSchemaDiff'
-  | 'openLineage'
   | 'openErDiagram'
-  | 'openErModel'
   | 'openMonitor'
   | 'openBackup'
   | 'openGlobalSearch'
@@ -458,11 +414,8 @@ type ToolEvent =
   | 'openHistory'
 
 const toolActions: Record<ToolEvent, () => void> = {
-  openDashboard: () => emit('openDashboard'),
   openSchemaDiff: () => emit('openSchemaDiff'),
-  openLineage: () => emit('openLineage'),
   openErDiagram: () => emit('openErDiagram'),
-  openErModel: () => emit('openErModel'),
   openMonitor: () => emit('openMonitor'),
   openBackup: () => emit('openBackup'),
   openGlobalSearch: () => emit('openGlobalSearch'),

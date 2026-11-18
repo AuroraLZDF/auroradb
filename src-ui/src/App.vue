@@ -9,11 +9,8 @@
       @open-new-query-tab="openNewQueryTab"
       @open-new-console-tab="openNewConsoleTab"
       @open-schema-diff="handleOpenSchemaDiff"
-      @open-lineage="showLineageDialog = true"
-      @open-dashboard="handleOpenDashboard"
       @open-ai-settings="showAiSettings = true"
       @open-er-diagram="handleOpenErDiagram"
-      @open-er-model="handleOpenErModel"
       @open-monitor="handleOpenMonitor"
       @open-backup="handleOpenBackup"
       @open-global-search="handleOpenGlobalSearch"
@@ -158,18 +155,7 @@
       </div>
     </div>
 
-    <!-- 数据血缘分析弹窗 -->
-    <div v-if="showLineageDialog" class="modal-overlay" role="presentation">
-      <div class="modal-content modal-large" role="dialog" aria-modal="true">
-        <component
-          :is="FeatureUi.LineageDialog"
-          v-if="FeatureUi.LineageDialog"
-          :initial-dialect="currentConnection?.driver"
-          :initial-database="selectedDatabase"
-          @close="showLineageDialog = false"
-        />
-      </div>
-    </div>
+    <!-- 数据血缘分析弹窗（V3-5 入口已隐藏，恢复时还原此块与 showLineageDialog） -->
 
     <!-- 实例监控与审计弹窗 -->
     <div v-if="showMonitor" class="modal-overlay" role="presentation">
@@ -644,8 +630,8 @@ function handleOpenSchemaDiff() {
   showSchemaDiff.value = true
 }
 
-// 数据血缘分析（V3-5.1）：纯文本解析，不依赖连接
-const showLineageDialog = ref(false)
+// 数据血缘分析（V3-5.1）：纯文本解析，不依赖连接 —— 入口已隐藏（决策 D6），
+// 恢复时还原 showLineageDialog、弹窗块与 HeaderToolbar @open-lineage 绑定
 
 function handleOpenErDiagram() {
   if (!selectedDatabase.value) {
@@ -655,15 +641,8 @@ function handleOpenErDiagram() {
   mainContentRef.value?.openErDiagramTab(selectedDatabase.value)
 }
 
-// 仪表盘（V3-1.3）
-function handleOpenDashboard() {
-  mainContentRef.value?.openDashboardTab()
-}
-
-// 模型设计器（V3-3.1）：不依赖连接，离线可建模
-function handleOpenErModel() {
-  mainContentRef.value?.openErModelTab()
-}
+// 仪表盘（V3-1.3）与模型设计器（V3-3.1）入口已隐藏（决策 D6），恢复时还原
+// handleOpenDashboard / handleOpenErModel 与 MainContent 的 openDashboardTab / openErModelTab
 
 function handleOpenMonitor() {
   showMonitor.value = true
@@ -695,7 +674,6 @@ const databaseDesignerData = ref({
 const hasOpenModal = computed(() =>
   showConnectionForm.value ||
   showSchemaDiff.value ||
-  showLineageDialog.value ||
   showMonitor.value ||
   showBackup.value ||
   showGlobalSearch.value ||
@@ -1992,7 +1970,6 @@ function onGlobalKeydown(e: KeyboardEvent) {
       [showBackup.value, () => (showBackup.value = false)],
       [showMonitor.value, () => (showMonitor.value = false)],
       [showSchemaDiff.value, () => (showSchemaDiff.value = false)],
-      [showLineageDialog.value, () => (showLineageDialog.value = false)],
       [showAbout.value, () => (showAbout.value = false)],
       [showConnectionForm.value, () => (showConnectionForm.value = false)]
     ]
