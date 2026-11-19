@@ -609,22 +609,23 @@ function columnAnchorY(node: PositionedTable, colName?: string): number {
   return y
 }
 
-// 三次贝塞尔：从 (x1,y1) 平滑连到 (x2,y2)
+// 直角折线：从 (x1,y1) 经中点竖直段折到 (x2,y2)
 function bezier(x1: number, y1: number, x2: number, y2: number): string {
   const midX = (x1 + x2) / 2
-  return `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`
+  return `M ${x1} ${y1} L ${midX} ${y1} L ${midX} ${y2} L ${x2} ${y2}`
 }
 
+// 折线几何复用 Curve 的四个锚点：(x1,y1) → 拐点1(c1x,c1y) → 拐点2(c2x,c2y) → (x2,y2)
 function curveToPath(c: Curve): string {
-  return `M ${c.x1} ${c.y1} C ${c.c1x} ${c.c1y}, ${c.c2x} ${c.c2y}, ${c.x2} ${c.y2}`
+  return `M ${c.x1} ${c.y1} L ${c.c1x} ${c.c1y} L ${c.c2x} ${c.c2y} L ${c.x2} ${c.y2}`
 }
 
-// 三次贝塞尔曲线在 t=0.5 处的点，用于放置删除按钮
+// 折线中点：落在中间竖直段上（水平直线时取横向中点），用于放置删除按钮
 function curveMidpoint(c: Curve) {
-  return {
-    x: (c.x1 + 3 * c.c1x + 3 * c.c2x + c.x2) / 8,
-    y: (c.y1 + 3 * c.c1y + 3 * c.c2y + c.y2) / 8,
+  if (Math.abs(c.y1 - c.y2) < 1) {
+    return { x: (c.x1 + c.x2) / 2, y: c.y1 }
   }
+  return { x: c.c1x, y: (c.y1 + c.y2) / 2 }
 }
 
 // ========== 手动关联（用户拖拽建立，按连接 + 数据库保存在本地） ==========
