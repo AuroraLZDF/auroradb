@@ -20,7 +20,4 @@ export const FeatureUi = {
   ErDiagram: pick('ErDiagram'),
   GlobalSearchDialog: pick('GlobalSearchDialog'),
   ExplainTree: pick('ExplainTree'),
-  DashboardView: pick('DashboardView'),
-  ErModelDesigner: pick('ErModelDesigner'),
-  LineageDialog: pick('LineageDialog'),
 }

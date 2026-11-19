@@ -1,6 +1,6 @@
 /**
  * 图表共享类型与推断/聚合工具（V3-1.1~V3-1.3）。
- * ResultChart（结果集图表）、ChartRenderer（渲染层）、DashboardView（仪表盘）共用。
+ * ResultChart（结果集图表）与 ChartRenderer（渲染层）共用。
  */
 
 export type ChartType = 'bar' | 'line' | 'pie' | 'scatter'

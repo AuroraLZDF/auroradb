@@ -1,7 +1,5 @@
 //! SQL 文本工具类命令（无连接参与，纯前端辅助能力）
 
-use auroradb_core::connection::driver::DriverKind;
-use auroradb_core::sql::lineage::LineageAnalysis;
 use sqlformat::{FormatOptions, Indent, QueryParams};
 
 /// 前端传来的格式化参数
@@ -31,25 +29,4 @@ pub fn format_sql(sql: String, args: Option<FormatSqlArgs>) -> Result<String, St
     };
 
     Ok(sqlformat::format(&sql, &QueryParams::default(), &options))
-}
-
-/// 表级数据血缘分析（V3-5.1）：解析 SQL，推导「源表 → 目标表」依赖。
-/// `dialect` 取 "mysql" / "postgresql" / "sqlite"，决定解析方言。
-#[tauri::command]
-pub fn analyze_sql_lineage(
-    sql: String,
-    dialect: String,
-    default_database: Option<String>,
-) -> Result<LineageAnalysis, String> {
-    let driver = match dialect.as_str() {
-        "mysql" => DriverKind::MySql,
-        "postgresql" => DriverKind::Postgres,
-        "sqlite" => DriverKind::Sqlite,
-        other => return Err(format!("unsupported dialect: {other}")),
-    };
-    Ok(auroradb_core::sql::lineage::analyze_lineage(
-        &sql,
-        driver,
-        default_database.as_deref(),
-    ))
 }

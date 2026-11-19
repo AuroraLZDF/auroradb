@@ -5,7 +5,7 @@
 <script setup lang="ts">
 /**
  * 纯图表渲染层（V3-1.3）：输入列/行/字段映射，输出 ECharts 画布。
- * ResultChart（结果集图表）与 DashboardView（仪表盘卡片）共用。
+ * ResultChart（结果集图表）共用。
  */
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import type * as echarts from 'echarts/core'

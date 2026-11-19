@@ -1,7 +1,6 @@
 //! SQL 文本处理模块
 //! 纯文本函数：表名重写与语句分割，无连接/状态依赖。
 
-pub mod lineage;
 pub mod safety;
 
 use crate::connection::driver::DriverKind;

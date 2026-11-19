@@ -213,7 +213,7 @@ V2-7 质量门禁随每批并行推进
 | D3 | **ER 图/建模** | **补正向能力：模型设计器 → DDL 生成 → Schema Diff 比对同步** | 反向 ER 已有，正向补齐形成建模闭环 |
 | D4 | **免费/Pro 归属** | **全部免费** | 2026-11-04 起已全量开源，无 Pro 边界问题 |
 | D5 | **图表库选型** | **ECharts 按需引入** | 图表类型全、生态好；AppImage 体积敏感，必须 tree-shaking（`echarts/core` 只注册所用图表） |
-| D6 | **后续排期原则（2026-11-18 补充拍板）** | **个人 SQL 工作台日常功能优先** | v3.0 四条线（BI / AI / ER / 血缘）均已收尾；评审结论：BI 仪表盘、ER 建模、血缘分析属低频治理类工具，与个人日常使用场景不匹配。下一阶段优先编辑器/查询体验本身（查询历史管理、结果集导出、连接管理增强等日常功能）；治理类功能及 follow-up（如视图列展开）冻结排期，已完成功能保留不砍 |
+| D6 | **后续排期原则（2026-11-18 补充拍板）** | **个人 SQL 工作台日常功能优先** | v3.0 四条线（BI / AI / ER / 血缘）均已收尾；评审结论：BI 仪表盘、ER 建模、血缘分析属低频治理类工具，与个人日常使用场景不匹配。下一阶段优先编辑器/查询体验本身（查询历史管理、结果集导出、连接管理增强等日常功能）；治理类功能及 follow-up（如视图列展开）冻结排期，已完成功能保留不砍（2026-11-19 起升级为彻底删除，见变更日志） |
 
 ## V3-1 数据可视化 BI（主线）
 
@@ -315,3 +315,4 @@ V3-5.1 表级血缘（纯文本解析，不依赖连接）
 - 2026-11-18：V3-5.2 列级血缘完成，V3-5 数据血缘线收尾 — `lineage.rs` 新增 `ColumnLineage`（目标列 ← 源列列表）：INSERT/REPLACE 列清单与 SELECT 投影按位置对齐、无列清单时投影名/别名作目标列名、UPDATE 赋值右侧表达式列引用（别名映射、无限定列仅单表归属、`SET a = a` 自赋值跳过）、CTAS / CREATE VIEW 投影名对齐；子查询内列引用、`SELECT *`、UNION 主体、CTE 中间层不解析（fail-open），Rust 单测 22 → 45 条；前端 `buildColumnLineageGraph`（单测 9 → 16 条）、LineageDialog 表级/列级视图切换 + 语句明细列级映射；命令与调用方签名不变；前端单测 180 → 187 条
 - 2026-11-18：v3.0 复盘后补充决策 D6「后续排期原则」— 评审认为 BI 仪表盘 / ER 建模 / 血缘分析属低频治理类功能，与个人日常使用场景不匹配；下一阶段优先编辑器 / 查询体验日常功能，治理类功能与 follow-up（视图列展开等）冻结排期，已完成功能保留不砍
 - 2026-11-18：决策 D6 落地 — 隐藏仪表盘 / 血缘分析 / 模型设计器三个功能入口：HeaderToolbar 工具菜单移除三项（openDashboard / openLineage / openErModel），ResultChart 移除「存入仪表盘」按钮，App.vue 移除对应弹窗与处理函数；DashboardView / LineageDialog / ErModelDesigner 组件、store 与单测全部保留，入口可随时恢复；前端门禁全绿（type-check / lint / 187 单测 / 5 e2e）
+- 2026-11-19：决策 D6 升级为彻底删除 — 移除仪表盘（V3-1）/ ER 模型设计器（V3-3）/ 数据血缘（V3-5）三个功能：删除 DashboardView / ErModelDesigner / LineageDialog 组件、dashboard / erModel store、lineageGraph / erModelDdl / erModelSync 工具及其 41 条单测、对应 i18n 词条；MainContent 移除 dashboard / erModel tab 类型与视图分支；后端删除 `sql/lineage.rs`（45 条单测）与 `analyze_sql_lineage` 命令注册；结果集图表（ResultChart / ChartRenderer / utils/chart.ts）与逆向 ER 图（V2）不受影响；前端单测 187 → 146 条，Rust workspace check / test / clippy 全绿，e2e 5 条通过

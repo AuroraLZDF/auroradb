@@ -155,7 +155,7 @@
       </div>
     </div>
 
-    <!-- 数据血缘分析弹窗（V3-5 入口已隐藏，恢复时还原此块与 showLineageDialog） -->
+    <!-- 数据血缘分析已移除（决策 D6）：组件、store、后端命令一并删除 -->
 
     <!-- 实例监控与审计弹窗 -->
     <div v-if="showMonitor" class="modal-overlay" role="presentation">
@@ -630,9 +630,6 @@ function handleOpenSchemaDiff() {
   showSchemaDiff.value = true
 }
 
-// 数据血缘分析（V3-5.1）：纯文本解析，不依赖连接 —— 入口已隐藏（决策 D6），
-// 恢复时还原 showLineageDialog、弹窗块与 HeaderToolbar @open-lineage 绑定
-
 function handleOpenErDiagram() {
   if (!selectedDatabase.value) {
     showError(t('erDiagram.needsDatabase'))
@@ -640,9 +637,6 @@ function handleOpenErDiagram() {
   }
   mainContentRef.value?.openErDiagramTab(selectedDatabase.value)
 }
-
-// 仪表盘（V3-1.3）与模型设计器（V3-3.1）入口已隐藏（决策 D6），恢复时还原
-// handleOpenDashboard / handleOpenErModel 与 MainContent 的 openDashboardTab / openErModelTab
 
 function handleOpenMonitor() {
   showMonitor.value = true
