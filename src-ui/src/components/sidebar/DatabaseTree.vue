@@ -230,12 +230,17 @@ function isCategoryExpanded(dbName: string, categoryType: string): boolean {
 }
 
 .database-item.opened > .database-header {
-  /* 展开的数据库不再铺选中色块（避免与真正选中的库混淆），仅靠字重与子节点缩进区分 */
-  background: transparent;
+  /* 展开的数据库：亮蓝色背景（区别于选中态的 selected-fill） */
+  background: var(--brand-500);
+  color: #fff;
+}
+
+.database-item.opened > .database-header:hover {
+  background: var(--brand-400, #6badff);
 }
 
 .database-item.opened > .database-header .database-name {
-  color: var(--text-primary);
+  color: #fff;
   font-weight: var(--font-medium);
 }
 
@@ -278,6 +283,11 @@ function isCategoryExpanded(dbName: string, categoryType: string): boolean {
 .database-icon {
   color: var(--text-tertiary);
   flex-shrink: 0;
+}
+
+/* 展开的数据库底色为亮蓝，图标随白色文字 */
+.database-item.opened > .database-header .database-icon {
+  color: #fff;
 }
 
 .database-name {
