@@ -230,7 +230,8 @@ function isCategoryExpanded(dbName: string, categoryType: string): boolean {
 }
 
 .database-item.opened > .database-header {
-  background: var(--selected-fill);
+  /* 展开的数据库不再铺选中色块（避免与真正选中的库混淆），仅靠字重与子节点缩进区分 */
+  background: transparent;
 }
 
 .database-item.opened > .database-header .database-name {
