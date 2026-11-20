@@ -72,6 +72,13 @@ fn main() {
     #[cfg(target_os = "linux")]
     configure_webkit_env();
 
+    // rustls 0.23 + reqwest(rustls-no-provider) 要求进程内先装好 crypto provider，
+    // 否则任何 reqwest::Client::build() 直接 panic——此前只在 update.rs 懒安装，
+    // AI 助手等更早发起的 HTTPS 请求会因此永久挂起（panic 使 invoke Promise 不 settle）
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+
     let _log_guard = init_tracing();
     tracing::info!("AuroraDB v{} starting", env!("CARGO_PKG_VERSION"));
 

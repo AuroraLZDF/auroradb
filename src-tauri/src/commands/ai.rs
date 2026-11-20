@@ -123,7 +123,7 @@ pub async fn ai_chat(
     let key = read_api_key()
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "尚未配置 API Key，请先在设置 → AI 助手中配置".to_string())?;
-    let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
+    let url = format!("{}/chat/completions", normalize_base_url(&config.base_url));
 
     let mut messages = Vec::with_capacity(2);
     if let Some(sys) = system.filter(|s| !s.trim().is_empty()) {
@@ -178,6 +178,15 @@ pub async fn ai_chat(
         .ok_or_else(|| "端点返回了空响应".to_string())
 }
 
+/// 归一化 Base URL：去尾部 `/` 与用户多粘贴的 `/chat/completions` 后缀
+fn normalize_base_url(base_url: &str) -> String {
+    base_url
+        .trim()
+        .trim_end_matches('/')
+        .trim_end_matches("/chat/completions")
+        .to_string()
+}
+
 /// 连通性测试：POST {base_url}/chat/completions 发送 1 条 ping 消息。
 /// 不用 GET /models——部分 OpenAI 兼容端点（如火山方舟）只实现了
 /// chat/completions，/models 不存在或挂起，会导致测试永远转圈。
@@ -199,7 +208,7 @@ pub async fn ai_test_connection(
     if model.is_empty() {
         return Err("请填写模型名称".to_string());
     }
-    let url = format!("{}/chat/completions", base_url.trim_end().trim_end_matches('/'));
+    let url = format!("{}/chat/completions", normalize_base_url(&base_url));
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .build()
