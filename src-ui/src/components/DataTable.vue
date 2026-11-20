@@ -2795,8 +2795,8 @@ th {
 .frozen-row-number,
 .frozen-col {
   position: sticky !important;
-  /* 不透明背景：水平滚动时阻止下面单元格穿透 */
-  background: inherit;
+  /* 底色交给各元素既有规则（表头 surface-default、行号 canvas、tbody 冻结列 canvas），
+     不再 inherit：行本身无背景时 inherit 等于透明，横向滚动时下层列会穿透 */
 }
 
 /* thead 里的冻结列：同时 top + left 双向 sticky，层级要盖过普通表头(z-index:1)和普通冻结 td(z-index:2) */
@@ -2805,10 +2805,14 @@ thead .frozen-col {
   z-index: 3;
 }
 
-/* 普通冻结单元格：高于默认 td、低于表头冻结 */
+/* 普通冻结单元格：高于默认 td、低于表头冻结；不透明底色阻止横向滚动时下层列穿透 */
 .frozen-row-number,
 tbody .frozen-col {
   z-index: 2;
+}
+
+tbody .frozen-col {
+  background-color: var(--canvas);
 }
 
 /* 冻结列右边缘阴影，水平滚动时视觉分隔更清晰 */
@@ -2817,10 +2821,27 @@ tbody .frozen-col {
   box-shadow: 4px 0 6px -4px rgba(0, 0, 0, 0.35);
 }
 
-/* 选中行里的冻结单元格保持选中背景（tr.selected 里的 td 背景色） */
-tr.selected .frozen-row-number,
-tr.selected .frozen-col {
-  /* 背景色会由 tr.selected 里的 td 规则设定，z-index 仍保持 2 */
+/* 行状态叠加：hover/选中/新增/删除都是半透明色，用 background-image 叠在不透明底色上，
+   不能写成 background-color（会把底色顶掉，重新出现穿透） */
+tbody tr:hover .frozen-col {
+  background-image: linear-gradient(var(--hover-fill), var(--hover-fill));
+}
+
+tbody tr.selected .frozen-col {
+  background-image: linear-gradient(var(--selected-fill), var(--selected-fill));
+}
+
+tbody tr.new-row .frozen-col {
+  background-image: linear-gradient(rgba(16, 185, 129, 0.08), rgba(16, 185, 129, 0.08));
+}
+
+tbody tr.deleted-row .frozen-col {
+  background-image: linear-gradient(rgba(239, 68, 68, 0.08), rgba(239, 68, 68, 0.08));
+}
+
+/* 冻结列里的已修改单元格：底色保持不透明，修改高亮用叠加 */
+tbody td.modified.frozen-col {
+  background-image: linear-gradient(rgba(245, 158, 11, 0.08), rgba(245, 158, 11, 0.08));
 }
 
 .th-content {
