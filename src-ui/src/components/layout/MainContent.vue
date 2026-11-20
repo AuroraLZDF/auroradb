@@ -148,8 +148,8 @@
             <DataTable ref="dataTableRef" @table-closed="onTableClosed" @open-sql="openSqlWithContent" />
           </div>
 
-          <!-- 对象列表视图 -->
-          <div v-if="activeTab?.type === 'objects'" class="objects-view">
+          <!-- 对象列表视图（常驻挂载 v-show：打开表/切视图再回来时保留滚动位置；数据由响应式 store 驱动，挂载期间同样保持更新） -->
+          <div v-show="activeTab?.type === 'objects'" class="objects-view">
             <div class="objects-header">
     <h3>{{ selectedDatabase ? selectedDatabase.split('.').pop() : t('layout.noDatabaseSelected') }}</h3>
   </div>
@@ -193,7 +193,7 @@
           </div>
 
           <!-- SQL 编辑器视图 -->
-          <div v-else-if="activeTab?.type === 'sql'" class="sql-view">
+          <div v-if="activeTab?.type === 'sql'" class="sql-view">
             <!-- 用 tab id 作为 key：切换 SQL Tab 时重新初始化编辑器，避免上一个 Tab 的 SQL/结果串到新 Tab -->
             <SqlEditor :key="activeTab.id" :tabId="activeTab.id" :connection-id="(activeTab as SqlTab).connectionId" />
           </div>
@@ -214,8 +214,8 @@
 
           <!-- 仪表盘 / 模型设计器已移除（决策 D6）：组件、store 与 tab 一并删除 -->
 
-          <!-- 空状态 -->
-          <div v-else-if="activeTab?.type !== 'table'" class="empty-view">
+          <!-- 空状态（对象列表已改为常驻 v-show，不参与上面的 v-if 链） -->
+          <div v-else-if="activeTab?.type !== 'table' && activeTab?.type !== 'objects'" class="empty-view">
             <h2>{{ t('layout.welcomeTitle') }}</h2>
             <p>{{ t('layout.welcomeHint') }}</p>
           </div>
