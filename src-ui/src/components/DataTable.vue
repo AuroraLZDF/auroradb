@@ -278,11 +278,13 @@
                 @dblclick.stop="autoFitColumn(index)"
               ></div>
             </th>
+            <!-- 弹性占位列：吸收表格剩余宽度，列总宽不足容器时不再把多余空间均摊回数据列 -->
+            <th class="col-spacer" aria-hidden="true"></th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="currentTableData.rows.length === 0" class="empty-row">
-            <td :colspan="currentTableData.columns.length + 1" class="empty-cell">
+            <td :colspan="currentTableData.columns.length + 2" class="empty-cell">
               {{ activeFilters.length > 0 ? t('dataTable.filterNoMatch') : t('dataTable.tableEmpty') }}
             </td>
           </tr>
@@ -292,7 +294,7 @@
             aria-hidden="true"
           >
             <td
-              :colspan="currentTableData.columns.length + 1"
+              :colspan="currentTableData.columns.length + 2"
               :style="{ height: virtualPaddingTop + 'px', padding: '0', border: 'none' }"
             ></td>
           </tr>
@@ -422,6 +424,7 @@
                 </span>
               </template>
             </td>
+            <td class="col-spacer" aria-hidden="true" @contextmenu.prevent></td>
           </tr>
           <tr
             v-if="virtualEnabled && virtualPaddingBottom > 0"
@@ -429,7 +432,7 @@
             aria-hidden="true"
           >
             <td
-              :colspan="currentTableData.columns.length + 1"
+              :colspan="currentTableData.columns.length + 2"
               :style="{ height: virtualPaddingBottom + 'px', padding: '0', border: 'none' }"
             ></td>
           </tr>
@@ -2772,6 +2775,15 @@ th, td {
 th:last-child,
 td:last-child {
   border-right: none;
+}
+
+/* 尾部弹性占位列：吸收 min-width:100% 产生的剩余宽度，数据列保持用户设定宽度。
+   fixed 布局下未指定宽度的列会吃掉全部剩余空间，数据列不再被均摊拉宽 */
+.col-spacer {
+  width: auto !important;
+  min-width: 24px;
+  border-right: none !important;
+  cursor: default;
 }
 
 td {
