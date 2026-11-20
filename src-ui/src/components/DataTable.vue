@@ -2296,6 +2296,9 @@ let resizingCol = -1
 let startX = 0
 let startWidth = 0
 
+/** 拖拽缩放的最小列宽 */
+const MIN_COLUMN_WIDTH = 20
+
 function startResize(event: MouseEvent, colIndex: number) {
   resizingCol = colIndex
   startX = event.clientX
@@ -2308,7 +2311,7 @@ function startResize(event: MouseEvent, colIndex: number) {
 function handleResize(event: MouseEvent) {
   if (resizingCol === -1) return
   const delta = event.clientX - startX
-  columnWidths.value[resizingCol] = Math.max(80, startWidth + delta)
+  columnWidths.value[resizingCol] = Math.max(MIN_COLUMN_WIDTH, startWidth + delta)
 }
 
 function stopResize() {
