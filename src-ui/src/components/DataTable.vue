@@ -235,7 +235,14 @@
 
     <!-- 数据表格 -->
     <div class="table-container" v-if="currentTableData && !chartView" ref="tableContainer" @scroll="handleScroll">
-      <table>
+      <table :style="{ width: `${tableWidth}px` }">
+        <!-- colgroup 定宽：fixed 布局下 col 宽度是唯一权威，完全无视内容 -->
+        <colgroup>
+          <!-- 首个 col 对应行号列（宽度由 .row-number-header 的 CSS 决定），其后逐一对齐数据列 -->
+          <col />
+          <col v-for="(width, colIndex) in columnWidths" :key="colIndex" :style="{ width: `${width}px` }" />
+          <col class="spacer-col" />
+        </colgroup>
         <thead>
           <tr>
             <th class="row-number-header frozen-row-number" style="left: 0"></th>
@@ -762,6 +769,15 @@ function getColumnWidthByType(dataType: string): number {
 }
 
 const columnWidths = ref<number[]>([])
+
+/**
+ * 表格总宽 = 行号列(32) + 各数据列 + 尾部占位列(≥24)。
+ * 显式像素宽度让 fixed 布局严格按 colgroup 分配；剩余空间由占位列吸收，
+ * 列总宽不足容器时由 min-width: 100% 兜底撑满。
+ */
+const tableWidth = computed(
+  () => 32 + columnWidths.value.reduce((sum, width) => sum + width, 0) + 24,
+)
 
 // 编辑状态
 const editingCell = ref<{ row: number; col: number } | null>(null)
@@ -2732,7 +2748,9 @@ table {
   border-spacing: 0;
   font-size: var(--text-sm);
   table-layout: fixed;
-  width: max-content;
+  /* 宽度由模板内联 style 按列宽求和给出（见 tableWidth computed）。
+     不能用 width: max-content：Chromium 的 sizing 阶段会无视 col/cell 指定宽度，
+     按内容把列顶开（20px 也会被列头文字撑到 60-90px），拖窄完全不生效 */
   min-width: 100%;
 }
 
@@ -2772,6 +2790,9 @@ th, td {
   overflow: hidden;
   text-overflow: ellipsis;
   position: relative;
+  /* 释放 Chromium 在 fixed 布局下按首行单元格内容宽度托底的隐形下限，
+     否则 inline width 再小也会被列头文字（如 int(10) unsigned）撑到 ~60-90px */
+  min-width: 0;
 }
 
 /* 最后一列不再画右边线，避免和容器边缘叠成双线 */
