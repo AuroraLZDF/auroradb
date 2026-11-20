@@ -203,20 +203,21 @@
      下拉/日期面板渲染成白底黑字 —— Chromium 只认 color-scheme 不认 CSS 变量 */
   color-scheme: light;
 
-  /* Layer - 语义层级（canvas 内容 / panel 侧栏 chrome / raised 浮起 / overlay 浮层） */
-  --canvas: #FDFDFE;
-  --panel: #F4F4F5;
+  /* Layer - 语义层级（canvas 内容 / panel 侧栏 chrome / raised 浮起 / overlay 浮层）
+     浅色层级整体提亮并加入冷调：纯白 canvas + 蓝灰 panel，避免纯中性灰的沉闷感 */
+  --canvas: #FFFFFF;
+  --panel: #F6F8FB;
   --raised: #FFFFFF;
   --overlay: #FFFFFF;
-  --hairline: #E2E2E5;
-  --hairline-strong: #D3D3D7;
-  --hover-fill: rgba(0, 0, 0, 0.05);
-  --selected-fill: rgba(0, 0, 0, 0.08);
+  --hairline: #E4E8EF;
+  --hairline-strong: #D5DBE4;
+  --hover-fill: rgba(35, 64, 104, 0.06);
+  --selected-fill: rgba(35, 64, 104, 0.09);
 
   /* Background */
   --bg-primary: var(--canvas);
   --bg-secondary: var(--panel);
-  --bg-tertiary: #EBEBED;
+  --bg-tertiary: #EDF1F7;
   --bg-elevated: var(--raised);
   --bg-overlay: rgba(0, 0, 0, 0.4);
 
@@ -224,7 +225,7 @@
   --surface-default: var(--panel);
   --surface-secondary: var(--raised);
   --surface-canvas: var(--canvas);
-  --surface-subtle: #EBEBED;
+  --surface-subtle: #EDF1F7;
   --surface-hover: var(--hover-fill);
   --surface-active: rgba(76, 154, 255, 0.10);
   --surface-selected: rgba(76, 154, 255, 0.09);
@@ -232,14 +233,14 @@
   /* Border（hairline 弱化） */
   --border-default: var(--hairline-strong);
   --border-subtle: var(--hairline);
-  --border-strong: #B9B9BF;
+  --border-strong: #B4BCC9;
   --border-focus: var(--brand-500);
 
   /* Text */
-  --text-primary: #232326;
-  --text-secondary: #5A5A60;
-  --text-tertiary: #8A8A90;
-  --text-disabled: #B9B9BF;
+  --text-primary: #22252B;
+  --text-secondary: #575F6B;
+  --text-tertiary: #87909C;
+  --text-disabled: #B4BCC9;
   --text-inverse: #FFFFFF;
 
   /* Accent - 强调色（仅语义用途：状态点/链接/选中指示） */

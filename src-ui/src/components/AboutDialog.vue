@@ -17,7 +17,6 @@
         </div>
         <div class="brand-text">
           <div class="brand-name">AuroraDB</div>
-          <span class="version-badge">{{ versionLabel }}</span>
         </div>
       </div>
 
@@ -148,15 +147,6 @@ onMounted(async () => {
   font-size: var(--text-xl);
   font-weight: var(--font-bold);
   color: var(--text-primary);
-}
-
-.version-badge {
-  padding: 2px var(--space-2);
-  border-radius: var(--radius-full, 999px);
-  background: var(--surface-hover);
-  color: var(--text-secondary);
-  font-size: var(--text-xs);
-  font-weight: var(--font-medium);
 }
 
 .description {
