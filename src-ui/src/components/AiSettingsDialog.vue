@@ -91,13 +91,13 @@ async function runTest() {
   testing.value = true
   testMessage.value = ''
   try {
-    const models = await invoke<string[]>('ai_test_connection', {
+    await invoke('ai_test_connection', {
       baseUrl: baseUrl.value,
+      model: model.value,
       apiKey: apiKey.value.trim() || null,
     })
     testOk.value = true
-    const preview = models.slice(0, 5).join(', ')
-    testMessage.value = t('aiSettings.testOk', { count: models.length, preview })
+    testMessage.value = t('aiSettings.testOk')
   } catch (e) {
     testOk.value = false
     testMessage.value = String(e)

@@ -178,27 +178,42 @@ pub async fn ai_chat(
         .ok_or_else(|| "端点返回了空响应".to_string())
 }
 
-/// 连通性测试：GET {base_url}/models，返回模型 id 列表。
-/// api_key 传空则使用已保存的 Key。
+/// 连通性测试：POST {base_url}/chat/completions 发送 1 条 ping 消息。
+/// 不用 GET /models——部分 OpenAI 兼容端点（如火山方舟）只实现了
+/// chat/completions，/models 不存在或挂起，会导致测试永远转圈。
+/// 只要返回 2xx 即视为连通（不解析内容，推理型模型可能返回空 content）。
+/// api_key 传空则使用已保存的 Key；model 用对话框当前填写的模型名。
 #[tauri::command]
 pub async fn ai_test_connection(
     base_url: String,
+    model: String,
     api_key: Option<String>,
-) -> Result<Vec<String>, String> {
+) -> Result<(), String> {
     let key = match api_key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty()) {
         Some(k) => k,
         None => read_api_key()
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "尚未配置 API Key".to_string())?,
     };
-    let url = format!("{}/models", base_url.trim_end().trim_end_matches('/'));
+    let model = model.trim();
+    if model.is_empty() {
+        return Err("请填写模型名称".to_string());
+    }
+    let url = format!("{}/chat/completions", base_url.trim_end().trim_end_matches('/'));
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|e| e.to_string())?;
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [{ "role": "user", "content": "ping" }],
+        "max_tokens": 16,
+        "stream": false,
+    });
     let resp = client
-        .get(&url)
+        .post(&url)
         .bearer_auth(&key)
+        .json(&body)
         .send()
         .await
         .map_err(|e| format!("请求失败：{e}"))?;
@@ -208,19 +223,5 @@ pub async fn ai_test_connection(
         let brief = body.chars().take(200).collect::<String>();
         return Err(format!("端点返回 {status}：{brief}"));
     }
-    #[derive(Deserialize)]
-    struct ModelsResp {
-        data: Vec<ModelItem>,
-    }
-    #[derive(Deserialize)]
-    struct ModelItem {
-        id: String,
-    }
-    let parsed: ModelsResp = resp
-        .json()
-        .await
-        .map_err(|e| format!("响应解析失败（确认是 OpenAI 兼容端点）：{e}"))?;
-    let mut ids: Vec<String> = parsed.data.into_iter().map(|m| m.id).collect();
-    ids.sort();
-    Ok(ids)
+    Ok(())
 }
