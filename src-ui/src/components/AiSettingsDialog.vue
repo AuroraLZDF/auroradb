@@ -1,7 +1,7 @@
 <template>
   <div class="ai-settings">
     <header class="ai-settings-head">
-      <h2>{{ t('aiSettings.title') }}</h2>
+      <h2><Bot :size="18" class="head-icon" />{{ t('aiSettings.title') }}</h2>
       <button class="ai-settings-close" :title="t('common.close')" :aria-label="t('common.close')" @click="emit('close')">
         <X :size="16" />
       </button>
@@ -52,7 +52,7 @@
  * Key 存系统密钥环（沿用连接密码方案），端点请求直连用户配置，不经中间服务。
  */
 import { onMounted, ref } from 'vue'
-import { PlugZap, X } from 'lucide-vue-next'
+import { PlugZap, Bot, X } from 'lucide-vue-next'
 import { invoke } from '@tauri-apps/api/core'
 import { globalToast } from '@/composables/useToast'
 import { t } from '@/i18n'
@@ -131,6 +131,8 @@ async function save() {
   flex-direction: column;
   gap: var(--space-3);
   min-height: 0;
+  /* modal-content 不带内边距，各弹窗自行撑开 */
+  padding: var(--space-4) var(--space-5);
 }
 
 .ai-settings-head {
@@ -140,9 +142,16 @@ async function save() {
 }
 
 .ai-settings-head h2 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   margin: 0;
   font-size: var(--text-lg);
   color: var(--text-primary);
+}
+
+.head-icon {
+  color: var(--brand-500);
 }
 
 .ai-settings-close {
@@ -181,18 +190,28 @@ async function save() {
   color: var(--text-secondary);
 }
 
+.ai-field > span:first-child {
+  font-weight: var(--font-medium);
+}
+
 .ai-field input {
-  padding: 6px var(--space-2);
+  padding: 8px 10px;
   border: 1px solid var(--hairline);
   border-radius: var(--radius-sm);
   background: var(--panel);
   color: var(--text-primary);
   font-size: var(--text-sm);
+  transition: border-color var(--duration-fast, 0.15s) ease, box-shadow var(--duration-fast, 0.15s) ease;
+}
+
+.ai-field input::placeholder {
+  color: var(--text-tertiary);
 }
 
 .ai-field input:focus {
   outline: none;
-  border-color: var(--brand-600);
+  border-color: var(--brand-500);
+  box-shadow: 0 0 0 3px rgba(76, 154, 255, 0.15);
 }
 
 .ai-field-hint {
@@ -225,6 +244,9 @@ async function save() {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--hairline);
 }
 
 .ai-foot-spacer {
@@ -242,6 +264,7 @@ async function save() {
   color: var(--text-secondary);
   font-size: var(--text-sm);
   cursor: pointer;
+  transition: background var(--duration-fast, 0.15s) ease, border-color var(--duration-fast, 0.15s) ease;
 }
 
 .ai-btn:hover:not(:disabled) {
@@ -254,7 +277,13 @@ async function save() {
 }
 
 .ai-btn.primary {
-  color: var(--brand-600);
+  background: var(--brand-500);
+  color: #fff;
+  border-color: var(--brand-500);
+}
+
+.ai-btn.primary:hover:not(:disabled) {
+  background: var(--brand-600);
   border-color: var(--brand-600);
 }
 
