@@ -2414,7 +2414,9 @@ function autoFitColumnFromMenu() {
 }
 
 // ========== 冻结列 ==========
-const ROW_NUMBER_WIDTH = 40
+/** 行号列实际渲染宽度，须与 CSS `.row-number-header/.row-number` 的 width 保持一致，
+    否则冻结列的 sticky left 整体多出偏移（40 时代曾向右错位 8px） */
+const ROW_NUMBER_WIDTH = 32
 /** 冻结数据列数（不包含行号列） */
 const frozenCount = ref(0)
 
