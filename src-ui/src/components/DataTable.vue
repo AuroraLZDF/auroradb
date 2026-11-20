@@ -1165,6 +1165,22 @@ watch(() => currentTableData.value?.columns, (columns) => {
 onMounted(() => {
   document.addEventListener('keydown', handleKeyDown)
   document.addEventListener('click', handleColumnSelectorDocClick)
+
+  // v-show 切走再切回时，display:none 期间的 scrollTop 已被浏览器清零；
+  // 用 IntersectionObserver 感知表格重新可见，从记忆恢复上次浏览位置
+  const el = tableContainer.value
+  if (el && typeof IntersectionObserver !== 'undefined') {
+    tableViewObserver = new IntersectionObserver((entries) => {
+      if (entries.some(entry => entry.isIntersecting)) {
+        restoreSavedScroll(scrollMemoryKey(
+          browserStore.currentDatabase ?? '',
+          browserStore.currentTable ?? '',
+          connectionStore.currentConnection?.id ?? ''
+        ))
+      }
+    }, { threshold: 0 })
+    tableViewObserver.observe(el)
+  }
 })
 
 onUnmounted(() => {
@@ -1175,6 +1191,8 @@ onUnmounted(() => {
   document.removeEventListener('mouseup', stopResize)
   clearPendingEdit()
   if (toastTimer) clearTimeout(toastTimer)
+  tableViewObserver?.disconnect()
+  tableViewObserver = null
 })
 
 function handleKeyDown(e: KeyboardEvent) {
@@ -1308,11 +1326,7 @@ async function activateTab(tab: TableTab) {
   // 恢复该表上次的浏览位置（关闭重开/切回不再回到顶部）
   await nextTick()
   if (currentTab.value?.id !== tab.id) return
-  const saved = tableScrollMemory.get(scrollMemoryKey(tab.database, tab.tableName, tab.connectionId))
-  const el = tableContainer.value
-  if (el && saved) {
-    el.scrollTop = Math.min(saved, Math.max(0, el.scrollHeight - el.clientHeight))
-  }
+  restoreSavedScroll(scrollMemoryKey(tab.database, tab.tableName, tab.connectionId))
 }
 
 // 关闭标签页：立即关闭返回 true；有未保存修改时弹确认框并返回 false，由确认结果收尾
@@ -1552,6 +1566,17 @@ function scrollTableToTop() {
   const el = tableContainer.value
   if (el) el.scrollTop = 0
 }
+
+/** 从记忆恢复指定表的滚动位置（钳制在当前可滚动范围内） */
+function restoreSavedScroll(key: string) {
+  const saved = tableScrollMemory.get(key)
+  const el = tableContainer.value
+  if (!el || !saved || Math.abs(el.scrollTop - saved) < 1) return
+  el.scrollTop = Math.min(saved, Math.max(0, el.scrollHeight - el.clientHeight))
+}
+
+/** 表格容器可见性观察器：v-show 重新显示时恢复浏览位置（见 onMounted） */
+let tableViewObserver: IntersectionObserver | null = null
 
 // 分页
 function firstPage() {
