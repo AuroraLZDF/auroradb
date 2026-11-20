@@ -113,6 +113,17 @@
         </div>
       </div>
       <div class="toolbar-right">
+        <!-- 排序指示：横向滚动表头出视野后仍能看到当前排序（点击清除） -->
+        <button
+          v-if="sortColumn"
+          class="sort-chip"
+          :title="t('dataTable.sortChipHint', { column: sortColumn, direction: sortDirection === 'Asc' ? t('dataTable.sortAsc') : t('dataTable.sortDesc') })"
+          @click="clearSort"
+        >
+          <ArrowUpDown :size="12" />
+          {{ sortColumn }}{{ sortDirection === 'Asc' ? ' ↑' : ' ↓' }}
+          <X :size="10" class="chip-clear" />
+        </button>
         <button
           :class="{ active: chartView }"
           :title="t('dataTable.chartToggle')"
@@ -600,7 +611,7 @@ import {
   X,
   AlignHorizontalDistributeCenter
 } from '@/components/icons'
-import { BarChart3, Calendar, Columns3, Filter, Wand2 } from 'lucide-vue-next'
+import { ArrowUpDown, BarChart3, Calendar, Columns3, Filter, Wand2 } from 'lucide-vue-next'
 import Select from '@/components/ui/Select.vue'
 import PaginationBar from '@/components/datatable/PaginationBar.vue'
 import DataGeneratorDialog from '@/components/DataGeneratorDialog.vue'
@@ -1293,6 +1304,15 @@ async function activateTab(tab: TableTab) {
   // 等待期间可能已切换到别的表，过期的激活不再发请求
   if (currentTab.value?.id !== tab.id) return
   await loadData()
+
+  // 恢复该表上次的浏览位置（关闭重开/切回不再回到顶部）
+  await nextTick()
+  if (currentTab.value?.id !== tab.id) return
+  const saved = tableScrollMemory.get(scrollMemoryKey(tab.database, tab.tableName, tab.connectionId))
+  const el = tableContainer.value
+  if (el && saved) {
+    el.scrollTop = Math.min(saved, Math.max(0, el.scrollHeight - el.clientHeight))
+  }
 }
 
 // 关闭标签页：立即关闭返回 true；有未保存修改时弹确认框并返回 false，由确认结果收尾
@@ -1495,15 +1515,42 @@ watch(debouncedSearchText, async (value) => {
   await loadData()
 })
 
-// 排序
-function sort(column: string) {
+// 排序：首次点击降序、再次点击切换升/降。
+// 首次点击用降序是因为表格默认按主键升序展示，升序结果与默认视图一致，看起来像「点了没反应」；
+// 同时回到第一页并滚回顶部，避免停在第 N 页看排序结果误判为失效。
+async function sort(column: string) {
   if (sortColumn.value === column) {
     sortDirection.value = sortDirection.value === 'Asc' ? 'Desc' : 'Asc'
   } else {
     sortColumn.value = column
-    sortDirection.value = 'Asc'
+    sortDirection.value = 'Desc'
   }
-  loadData()
+  browserStore.setPage(1)
+  await loadData()
+  scrollTableToTop()
+}
+
+// 清除排序：恢复默认（主键）顺序
+async function clearSort() {
+  if (!sortColumn.value) return
+  sortColumn.value = ''
+  sortDirection.value = 'Asc'
+  browserStore.setPage(1)
+  await loadData()
+  scrollTableToTop()
+}
+
+// 滚动记忆：按「连接:库:表」记住浏览位置，关闭/切换后重开时恢复（不再回到顶部）。
+// 表默认按主键序展示，位置语义稳定；排序被复位后仍按默认序恢复，偏差可接受。
+const tableScrollMemory = new Map<string, number>()
+
+function scrollMemoryKey(database: string, table: string, connectionId: string): string {
+  return `${connectionId}:${database}:${table}`
+}
+
+function scrollTableToTop() {
+  const el = tableContainer.value
+  if (el) el.scrollTop = 0
 }
 
 // 分页
@@ -2358,6 +2405,10 @@ function handleScroll() {
 
   // 触底预取：滚动到接近底部时自动续页（距底部 120px 内触发）
   const el = tableContainer.value
+  // 记录浏览位置，供关闭重开/切回时恢复
+  if (el) {
+    tableScrollMemory.set(scrollMemoryKey(browserStore.currentDatabase ?? '', browserStore.currentTable ?? '', connectionStore.currentConnection?.id ?? ''), el.scrollTop)
+  }
   if (el && canLoadMore.value) {
     const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 120
     if (nearBottom) loadMore()
@@ -2515,6 +2566,35 @@ defineExpose({
   align-items: center;
   gap: 4px;
   transition: var(--transition-colors);
+}
+
+/* 排序指示 chip：横向滚动表头出视野后仍能看到当前排序 */
+.sort-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 220px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--brand-500);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--brand-500);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.sort-chip:hover {
+  background: var(--brand-500);
+  color: var(--text-on-brand, #fff);
+}
+
+.chip-clear {
+  flex-shrink: 0;
+  opacity: 0.7;
 }
 
 .toolbar-right > button:hover {
