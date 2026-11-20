@@ -47,7 +47,9 @@ jobs:
 
   backend:
     name: Backend (clippy / cargo test)
-    runs-on: ubuntu-latest
+    # 钉 24.04：ubuntu-latest 已升 26.04（resolute），其源里没有
+    # postgresql-client-16，且默认 pg_dump=18 与 16 服务容器不匹配
+    runs-on: ubuntu-24.04
     # 单测里的 mysql_* / pg_* 用例是 #[ignore] 的真实库回归，只有提供
     # AURORADB_TEST_* 环境变量才会执行。此处起两个 service 容器，让
     # 「真实 MySQL / PostgreSQL 链路」在每次 CI 都被覆盖——否则多驱动改造
