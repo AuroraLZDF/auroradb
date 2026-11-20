@@ -95,7 +95,14 @@ jobs:
             libdbus-1-dev \
             libssl-dev \
             patchelf \
-            pkg-config
+            pkg-config \
+            postgresql-client-16
+
+      # 钉住 PG16 客户端：runner 的默认 pg_dump 已漂移到 ≥17，其 dump 头部
+      # 带 `SET transaction_timeout = 0`（PG 17 新参数），还原进 postgres:16
+      # 服务容器会报 unrecognized configuration parameter；与容器大版本对齐
+      - name: Pin PostgreSQL client to 16 (match service container)
+        run: echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
 
       # tauri::generate_context!() 在编译期硬检查 frontendDist 路径存在。
       # runner 是干净环境没跑过前端 build，所以 stub 一个空 dist 目录
