@@ -73,6 +73,14 @@
               </div>
             </Teleport>
           </div>
+          <!-- 固定主键列：把主键（及前置列）冻结在左侧，横向滚动不消失 -->
+          <button
+            :class="{ active: pkFrozen }"
+            :title="t('dataTable.pkPinHint')"
+            @click="pkFrozen = !pkFrozen"
+          >
+            <Pin :size="14" /> {{ t('dataTable.pkPin') }}
+          </button>
           <button
             @click="showGenerator = true"
             :disabled="loading || !currentTab"
@@ -611,7 +619,7 @@ import {
   X,
   AlignHorizontalDistributeCenter
 } from '@/components/icons'
-import { ArrowUpDown, BarChart3, Calendar, Columns3, Filter, Wand2 } from 'lucide-vue-next'
+import { ArrowUpDown, BarChart3, Calendar, Columns3, Filter, Pin, Wand2 } from 'lucide-vue-next'
 import Select from '@/components/ui/Select.vue'
 import PaginationBar from '@/components/datatable/PaginationBar.vue'
 import DataGeneratorDialog from '@/components/DataGeneratorDialog.vue'
@@ -2423,6 +2431,32 @@ function freezeColumnFromMenu() {
   if (colIndex >= 0) toggleFreezeBeforeCol(colIndex)
   hideContextMenu()
 }
+
+// ========== 固定主键列 ==========
+// 全局开关（localStorage 持久化）：开启时把主键列冻结在左侧，横向滚动始终可见。
+// sticky 冻结要求前缀列，主键不在首列时连同其前面的列一起冻结。
+const PK_PIN_STORAGE_KEY = 'auroradb.dataTable.pinPk'
+const pkFrozen = ref(localStorage.getItem(PK_PIN_STORAGE_KEY) === '1')
+
+function applyPkFrozen() {
+  if (!pkFrozen.value) {
+    frozenCount.value = 0
+    return
+  }
+  const cols = currentTableData.value?.columns ?? []
+  const lastPkIndex = cols.reduce((last, col, index) => (col.is_primary ? index : last), -1)
+  frozenCount.value = lastPkIndex >= 0 ? lastPkIndex + 1 : 0
+}
+
+watch(pkFrozen, () => {
+  localStorage.setItem(PK_PIN_STORAGE_KEY, pkFrozen.value ? '1' : '0')
+  applyPkFrozen()
+})
+
+// 换表 / 列元数据按需加载完成后按新表的主键重新应用
+watch(() => currentTableData.value?.columns, () => {
+  if (pkFrozen.value) applyPkFrozen()
+})
 
 function handleScroll() {
   hideContextMenu()
