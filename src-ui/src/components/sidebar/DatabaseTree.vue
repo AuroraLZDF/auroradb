@@ -226,17 +226,18 @@ function isCategoryExpanded(dbName: string, categoryType: string): boolean {
 }
 
 .database-item.active > .database-header {
-  background: var(--selected-fill);
+  background: var(--surface-subtle);
 }
 
 .database-item.opened > .database-header {
-  /* 展开的数据库：亮蓝色背景（区别于选中态的 selected-fill） */
+  /* 展开的数据库：深蓝底白字，硬朗方形 */
   background: var(--brand-500);
   color: #fff;
+  border-radius: 0;
 }
 
 .database-item.opened > .database-header:hover {
-  background: var(--brand-400, #6badff);
+  background: var(--brand-600);
 }
 
 .database-item.opened > .database-header .database-name {
@@ -249,17 +250,17 @@ function isCategoryExpanded(dbName: string, categoryType: string): boolean {
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-1) var(--space-2);
-  border-radius: var(--radius-sm);
+  border-radius: 0;
   cursor: pointer;
   font-size: var(--text-sm);
-  transition: var(--transition-colors);
+  transition: background var(--duration-fast);
   /* 双击展开数据库时不要选中库名文字 */
   user-select: none;
   -webkit-user-select: none;
 }
 
 .database-header:hover {
-  background: var(--hover-fill);
+  background: var(--surface-hover);
 }
 
 /* 新建数据库入口：弱化为次要操作 */
@@ -268,15 +269,15 @@ function isCategoryExpanded(dbName: string, categoryType: string): boolean {
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-2);
-  border-radius: var(--radius-md);
+  border-radius: 0;
   cursor: pointer;
   font-size: var(--text-sm);
   color: var(--text-tertiary);
-  transition: var(--transition-colors);
+  transition: background var(--duration-fast);
 }
 
 .new-database:hover {
-  background: var(--hover-fill);
+  background: var(--surface-hover);
   color: var(--brand-500);
 }
 
@@ -311,12 +312,12 @@ function isCategoryExpanded(dbName: string, categoryType: string): boolean {
   gap: var(--space-1);
   padding: var(--space-1);
   cursor: pointer;
-  border-radius: var(--radius-sm);
-  transition: var(--transition-colors);
+  border-radius: 0;
+  transition: background var(--duration-fast);
 }
 
 .category-header:hover {
-  background: var(--hover-fill);
+  background: var(--surface-hover);
 }
 
 .category-icon {
@@ -339,17 +340,17 @@ function isCategoryExpanded(dbName: string, categoryType: string): boolean {
   gap: var(--space-1);
   padding: var(--space-1) var(--space-2);
   cursor: pointer;
-  border-radius: var(--radius-sm);
+  border-radius: 0;
   font-size: var(--text-xs);
-  transition: var(--transition-colors);
+  transition: background var(--duration-fast);
 }
 
 .object-item:hover {
-  background: var(--hover-fill);
+  background: var(--surface-hover);
 }
 
 .object-item.active {
-  background: var(--selected-fill);
+  background: var(--surface-subtle);
   color: var(--text-primary);
 }
 

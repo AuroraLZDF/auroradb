@@ -137,9 +137,9 @@ function onKeydown(e: KeyboardEvent) {
 .context-menu {
   position: fixed;
   background: var(--overlay);
-  border: 1px solid var(--hairline-strong);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-lg);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-sm);
   z-index: var(--z-popover);
   min-width: 160px;
   padding: var(--space-1) 0;
@@ -150,11 +150,9 @@ function onKeydown(e: KeyboardEvent) {
 @keyframes menu-enter {
   from {
     opacity: 0;
-    transform: scale(0.95);
   }
   to {
     opacity: 1;
-    transform: scale(1);
   }
 }
 
@@ -171,7 +169,7 @@ function onKeydown(e: KeyboardEvent) {
 
 .menu-item:hover,
 .menu-item-active {
-  background: var(--hover-fill);
+  background: var(--surface-hover);
 }
 
 .menu-item-danger {
@@ -191,7 +189,7 @@ function onKeydown(e: KeyboardEvent) {
 
 .menu-divider {
   height: 1px;
-  background: var(--hairline);
+  background: var(--hairline-strong);
   margin: var(--space-1) 0;
 }
 </style>

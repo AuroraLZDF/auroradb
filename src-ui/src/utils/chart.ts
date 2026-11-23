@@ -23,7 +23,7 @@ export const CHART_MAX_SERIES = 20
 /** 聚合后的类别（X 轴去重值）上限 */
 export const CHART_MAX_CATEGORIES = 200
 
-export const CHART_PALETTE = ['#4C9AFF', '#34D399', '#F59E0B', '#F87171', '#A78BFA', '#22D3EE', '#F472B6', '#84CC16']
+export const CHART_PALETTE = ['#1B6AF0', '#34D399', '#F59E0B', '#F87171', '#A78BFA', '#22D3EE', '#F472B6', '#84CC16']
 
 const NUMERIC_TYPE_RE = /int|decimal|numeric|float|double|real|number|money|serial/i
 

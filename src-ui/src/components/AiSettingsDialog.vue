@@ -211,7 +211,7 @@ async function save() {
 .ai-field input:focus {
   outline: none;
   border-color: var(--brand-500);
-  box-shadow: 0 0 0 3px rgba(76, 154, 255, 0.15);
+  box-shadow: 0 0 0 1px var(--brand-500);
 }
 
 .ai-field-hint {

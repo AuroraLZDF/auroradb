@@ -2659,10 +2659,10 @@ defineExpose({
   max-width: 220px;
   height: 24px;
   padding: 0 8px;
-  border: 1px solid var(--brand-500);
-  border-radius: 12px;
-  background: transparent;
-  color: var(--brand-500);
+  border: 1px solid var(--border-default);
+  border-radius: 2px;
+  background: var(--surface-hover);
+  color: var(--text-primary);
   font-size: var(--text-xs);
   white-space: nowrap;
   overflow: hidden;
@@ -2782,19 +2782,41 @@ table {
   color: var(--text-tertiary);
 }
 
+/* ========== 表格字段边框 (Professional Hard-edged) ========== */
 th, td {
   padding: 0 var(--space-2);
   text-align: left;
-  border-bottom: 1px solid var(--hairline);
-  /* 列分隔线：只留 hairline 一级，保证多列时不至于把字段粘在一起 */
-  border-right: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--border-default);
+  border-right: 1px solid var(--border-default);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   position: relative;
-  /* 释放 Chromium 在 fixed 布局下按首行单元格内容宽度托底的隐形下限，
-     否则 inline width 再小也会被列头文字（如 int(10) unsigned）撑到 ~60-90px */
   min-width: 0;
+  /* 单元格是非交互容器，不应出现全局 focus-visible 的蓝色 outline */
+  outline: none;
+  /* 点选单元格时禁止浏览器原生文字选中高亮 */
+  user-select: none;
+}
+
+td:focus,
+th:focus,
+td:focus-visible,
+th:focus-visible {
+  outline: none;
+  box-shadow: none;
+  border-color: var(--border-default);
+}
+
+/* 整行选中态：保持默认灰色网格线，禁止主题色边框 */
+tr.selected td,
+tr.selected th {
+  border-color: var(--border-default);
+}
+
+/* 第一列表头顶部也有边框，让整张表格有硬派外框感 */
+thead tr:first-child th {
+  border-top: 1px solid var(--border-default);
 }
 
 /* 最后一列不再画右边线，避免和容器边缘叠成双线 */
@@ -2851,12 +2873,6 @@ tbody .frozen-col {
 
 tbody .frozen-col {
   background-color: var(--canvas);
-}
-
-/* 冻结列右边缘阴影，水平滚动时视觉分隔更清晰 */
-.frozen-row-number,
-.frozen-col {
-  box-shadow: 4px 0 6px -4px rgba(0, 0, 0, 0.35);
 }
 
 /* 行状态叠加：hover/选中/新增/删除都是半透明色，用 background-image 叠在不透明底色上，
@@ -2917,19 +2933,26 @@ tbody td.modified.frozen-col {
   pointer-events: none;
 }
 
+/* 列宽拖拽手柄 (Professional Hard-edged — 与外部 resizer 风格统一) */
 .resize-handle {
   position: absolute;
   right: 0;
   top: 0;
   bottom: 0;
-  width: 4px;
+  width: 3px;
   cursor: col-resize;
   background: transparent;
   transition: background var(--duration-fast);
 }
 
 .resize-handle:hover {
-  background: var(--brand-500);
+  background: var(--border-strong);
+}
+
+/* 冻结列右边缘阴影 (Professional Hard-edged — 锐利 1px 线条替代弥散阴影) */
+.frozen-row-number,
+.frozen-col {
+  box-shadow: 1px 0 0 0 var(--border-default);
 }
 
 /* 数据行 */
@@ -2938,7 +2961,7 @@ tr:hover {
 }
 
 tr.selected {
-  background: var(--selected-fill) !important;
+  background: var(--surface-subtle) !important;
 }
 
 tr.new-row {
@@ -2996,24 +3019,24 @@ td.is-null {
   color: var(--text-primary);
 }
 
-/* 编辑输入框 */
+/* 编辑输入框 (Professional Hard-edged — 中性灰边框，不再主题色) */
 .edit-input {
   width: 100%;
   height: 100%;
-  border: 1px solid var(--brand-500);
+  border: 1px solid var(--border-default);
   padding: var(--space-2);
   font-size: var(--text-sm);
   outline: none;
   background: var(--canvas);
   box-sizing: border-box;
   color: var(--text-primary);
-  box-shadow: 0 0 0 3px rgba(76, 154, 255, 0.2), 0 4px 12px rgba(0, 0, 0, 0.15);
-  transition: all 0.15s ease;
+  transition: border-color var(--duration-fast);
+  /* 编辑态允许选中文本（覆盖 td 的 user-select: none） */
+  user-select: text;
 }
 
 .edit-input:focus {
-  border-color: var(--brand-600);
-  box-shadow: 0 0 0 4px rgba(76, 154, 255, 0.25), 0 6px 16px rgba(0, 0, 0, 0.2);
+  border-color: var(--border-strong);
 }
 
 /* 编辑器包装器 */
@@ -3042,7 +3065,7 @@ td.is-null {
   padding: 2px;
   background: var(--canvas);
   border: 1px solid var(--brand-500);
-  box-shadow: 0 0 0 3px rgba(76, 154, 255, 0.2), 0 4px 12px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 0 0 1px var(--brand-500);
 }
 
 .datetime-editor-container .edit-input {
@@ -3298,19 +3321,11 @@ td.is-null {
 
 td.editing {
   padding: 2px;
-  background: var(--hover-fill);
+  background: var(--surface-subtle);
 }
 
 td.editing::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  border: 2px solid var(--brand-500);
-  pointer-events: none;
-  z-index: 1;
+  display: none;
 }
 
 /* 右键菜单 */

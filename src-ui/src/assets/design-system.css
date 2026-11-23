@@ -10,18 +10,18 @@
 
 :root {
   /* ----------------------------------------
-     Brand Colors - 品牌色
+     Brand Colors - 品牌色 (Professional Hard-edged WPS 蓝)
      ---------------------------------------- */
-  --brand-50: #EBF3FF;
-  --brand-100: #CDE1FF;
-  --brand-200: #A9C9FF;
-  --brand-300: #85B6FF;
-  --brand-400: #6EA8FF;
-  --brand-500: #4C9AFF;
-  --brand-600: #3B87F0;
-  --brand-700: #2F7AE0;
-  --brand-800: #2667BD;
-  --brand-900: #1E5296;
+  --brand-50: #E8F0FE;
+  --brand-100: #C9DBFC;
+  --brand-200: #A5C2F8;
+  --brand-300: #7CA3F4;
+  --brand-400: #4C85F0;
+  --brand-500: #1B6AF0;
+  --brand-600: #1659CC;
+  --brand-700: #1247A3;
+  --brand-800: #0F3880;
+  --brand-900: #0A2962;
 
   /* ----------------------------------------
      Semantic Colors - 语义色
@@ -119,15 +119,16 @@
   --space-16: 64px;
 
   /* ----------------------------------------
-     Border Radius - 圆角
+     Border Radius - 圆角 (Professional Hard-edged)
+     大部分可点击元素统一 2px，仅弹层保留 4px 过渡
      ---------------------------------------- */
   --radius-none: 0;
-  --radius-xs: 3px;
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
-  --radius-xl: 12px;
-  --radius-2xl: 16px;
+  --radius-xs: 1px;
+  --radius-sm: 2px;
+  --radius-md: 2px;
+  --radius-lg: 2px;
+  --radius-xl: 4px;
+  --radius-2xl: 4px;
   --radius-full: 9999px;
 
   /* ----------------------------------------
@@ -145,16 +146,17 @@
   --icon-md: 16px;
 
   /* ----------------------------------------
-     Shadows - 阴影 (Light)
+     Shadows - 阴影 (Professional Hard-edged — 去弥散)
+     大 blur 全部换成 1-4px 的锐利阴影，层级感靠 1px 边框而非大阴影
      ---------------------------------------- */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
-  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1),
-               0 2px 4px -1px rgba(0, 0, 0, 0.06);
-  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1),
-               0 4px 6px -2px rgba(0, 0, 0, 0.05);
-  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1),
-               0 10px 10px -5px rgba(0, 0, 0, 0.04);
-  --shadow-focus: 0 0 0 3px rgba(76, 154, 255, 0.25);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.08);
+  --shadow-md: 0 1px 3px rgba(0, 0, 0, 0.10),
+               0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 1px 3px rgba(0, 0, 0, 0.14),
+               0 2px 6px rgba(0, 0, 0, 0.08);
+  --shadow-xl: 0 2px 4px rgba(0, 0, 0, 0.16),
+               0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-focus: 0 0 0 1px var(--brand-500);
 
   /* ----------------------------------------
      Transitions - 过渡
@@ -171,9 +173,8 @@
   --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
 
-  --transition-colors: color var(--duration-fast) var(--ease-in-out),
-                       background-color var(--duration-fast) var(--ease-in-out),
-                       border-color var(--duration-fast) var(--ease-in-out);
+  --transition-colors: background-color var(--duration-fast),
+                       border-color var(--duration-fast);
   --transition-transform: transform var(--duration-normal) var(--ease-out);
   --transition-opacity: opacity var(--duration-fast) var(--ease-in-out);
   --transition-shadow: box-shadow var(--duration-fast) var(--ease-in-out);
@@ -211,8 +212,8 @@
   --overlay: #FFFFFF;
   --hairline: #E4E8EF;
   --hairline-strong: #D5DBE4;
-  --hover-fill: rgba(35, 64, 104, 0.06);
-  --selected-fill: rgba(35, 64, 104, 0.09);
+  --hover-fill: rgba(0, 0, 0, 0.04);
+  --selected-fill: rgba(0, 0, 0, 0.08);
 
   /* Background */
   --bg-primary: var(--canvas);
@@ -227,8 +228,8 @@
   --surface-canvas: var(--canvas);
   --surface-subtle: #EDF1F7;
   --surface-hover: var(--hover-fill);
-  --surface-active: rgba(76, 154, 255, 0.10);
-  --surface-selected: rgba(76, 154, 255, 0.09);
+  --surface-active: rgba(27, 106, 240, 0.08);
+  --surface-selected: rgba(27, 106, 240, 0.06);
 
   /* Border（hairline 弱化） */
   --border-default: var(--hairline-strong);
@@ -291,7 +292,7 @@
   --surface-canvas: var(--canvas);
   --surface-subtle: var(--raised);
   --surface-hover: var(--hover-fill);
-  --surface-active: rgba(76, 154, 255, 0.14);
+  --surface-active: rgba(27, 106, 240, 0.14);
   --surface-selected: var(--selected-fill);
 
   /* Border（hairline 弱化，仅剩可见的行分隔） */
@@ -324,13 +325,13 @@
   --status-error: var(--error-400);
 
   /* Shadows */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
-  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.3),
-               0 2px 4px -1px rgba(0, 0, 0, 0.2);
-  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.4),
-               0 4px 6px -2px rgba(0, 0, 0, 0.2);
-  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.5),
-               0 10px 10px -5px rgba(0, 0, 0, 0.3);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-md: 0 1px 3px rgba(0, 0, 0, 0.35),
+               0 1px 2px rgba(0, 0, 0, 0.20);
+  --shadow-lg: 0 1px 3px rgba(0, 0, 0, 0.45),
+               0 2px 6px rgba(0, 0, 0, 0.25);
+  --shadow-xl: 0 2px 4px rgba(0, 0, 0, 0.55),
+               0 4px 12px rgba(0, 0, 0, 0.30);
 }
 
 /* ========================================
@@ -365,7 +366,7 @@
     --surface-canvas: var(--canvas);
     --surface-subtle: var(--raised);
     --surface-hover: var(--hover-fill);
-    --surface-active: rgba(76, 154, 255, 0.14);
+    --surface-active: rgba(27, 106, 240, 0.14);
     --surface-selected: var(--selected-fill);
 
     /* Border */
@@ -398,13 +399,13 @@
     --status-error: var(--error-400);
 
     /* Shadows */
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
-    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.3),
-                 0 2px 4px -1px rgba(0, 0, 0, 0.2);
-    --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.4),
-                 0 4px 6px -2px rgba(0, 0, 0, 0.2);
-    --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.5),
-                 0 10px 10px -5px rgba(0, 0, 0, 0.3);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25);
+    --shadow-md: 0 1px 3px rgba(0, 0, 0, 0.35),
+                 0 1px 2px rgba(0, 0, 0, 0.20);
+    --shadow-lg: 0 1px 3px rgba(0, 0, 0, 0.45),
+                 0 2px 6px rgba(0, 0, 0, 0.25);
+    --shadow-xl: 0 2px 4px rgba(0, 0, 0, 0.55),
+                 0 4px 12px rgba(0, 0, 0, 0.30);
   }
 }
 
@@ -419,7 +420,7 @@
    新代码请直接使用语义 token，不要再新增别名。
    ======================================== */
 :root {
-  --brand-500-rgb: 76, 154, 255;
+  --brand-500-rgb: 27, 106, 240;
 }
 
 /* ========================================
@@ -603,15 +604,14 @@ input:-webkit-autofill:focus {
    FORM ANIMATIONS
    ======================================== */
 
-/* Input focus animation */
+/* Input focus animation (Professional Hard-edged — 去掉 outer glow) */
 .input-animated {
-  transition: border-color var(--duration-fast), box-shadow var(--duration-fast);
+  transition: border-color var(--duration-fast);
 }
 
 .input-animated:focus {
   outline: none;
   border-color: var(--brand-500);
-  box-shadow: 0 0 0 3px rgba(76, 154, 255, 0.2);
 }
 
 /* Input error shake animation */
@@ -621,7 +621,7 @@ input:-webkit-autofill:focus {
 }
 
 .input-error:focus {
-  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.15);
+  border-color: var(--error-500);
 }
 
 @keyframes input-shake {
@@ -638,7 +638,7 @@ input:-webkit-autofill:focus {
 }
 
 .input-success:focus {
-  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.15);
+  border-color: var(--success-500);
 }
 
 /* Label float animation */
@@ -1195,10 +1195,10 @@ img[data-loading="false"] {
    ACCESSIBILITY ENHANCEMENTS
    ======================================== */
 
-/* Focus visible styles */
+/* Focus visible styles (Professional Hard-edged — 细描边、0 偏移) */
 :focus-visible {
-  outline: 2px solid var(--brand-500);
-  outline-offset: 2px;
+  outline: 1px solid var(--brand-500);
+  outline-offset: 0;
 }
 
 /* Skip link */
@@ -1273,7 +1273,7 @@ img[data-loading="false"] {
 }
 
 [aria-invalid="true"]:focus {
-  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.15);
+  border-color: var(--error-500);
 }
 
 /* Success state */
@@ -1282,7 +1282,7 @@ img[data-loading="false"] {
 }
 
 [aria-invalid="false"]:focus {
-  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.15);
+  border-color: var(--success-500);
 }
 
 /* ========================================
@@ -1295,9 +1295,9 @@ img[data-loading="false"] {
 [role="menuitem"]:focus-visible,
 [role="button"]:focus-visible,
 [tabindex]:not(input):not(textarea):not(select):focus-visible {
-  outline: 2px solid var(--brand-500);
-  outline-offset: -2px;
-  border-radius: var(--radius-sm);
+  outline: 1px solid var(--brand-500);
+  outline-offset: -1px;
+  border-radius: 0;
 }
 
 /* 树项在获得焦点时给出与 hover 一致的视觉反馈 */

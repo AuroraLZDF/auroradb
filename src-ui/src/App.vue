@@ -2100,34 +2100,34 @@ body {
   overflow: hidden;
 }
 
-/* 左侧边栏 */
+/* 左侧边栏 (Professional Hard-edged — 硬边框划分区域) */
 .sidebar-left {
   min-width: 200px;
   max-width: 400px;
   width: 240px;
   background: var(--panel);
-  border-right: none;
+  border-right: 1px solid var(--border-default);
   overflow: hidden;
   display: flex;
   flex-direction: column;
 }
 
-/* 右侧信息面板 */
+/* 右侧信息面板 (Professional Hard-edged — 硬边框划分区域) */
 .sidebar-right {
   min-width: 200px;
   max-width: 800px;
   width: 280px;
   background: var(--panel);
-  border-left: none;
+  border-left: 1px solid var(--border-default);
   overflow: hidden;
   display: flex;
   flex-direction: column;
 }
 
-/* 拖拽分隔条 */
+/* 拖拽分隔条 (Professional Hard-edged — 1px 锐利分隔) */
 .resizer {
-  width: 3px;
-  background: transparent;
+  width: 1px;
+  background: var(--border-default);
   cursor: col-resize;
   transition: background var(--duration-fast);
   user-select: none;
@@ -2135,10 +2135,10 @@ body {
 }
 
 .resizer:hover {
-  background: var(--brand-500);
+  background: var(--border-strong);
 }
 
-/* 弹窗 */
+/* 弹窗 (Professional Hard-edged — 细边框 + 极浅锐利阴影) */
 .modal-overlay {
   position: fixed;
   top: 0;
@@ -2155,23 +2155,24 @@ body {
 
 .modal-content {
   background: var(--overlay);
-  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xl);
   box-shadow: var(--shadow-xl);
   max-width: 480px;
   width: 90%;
   max-height: 90vh;
   overflow: auto;
-  animation: modal-enter var(--duration-normal) var(--ease-out);
+  animation: modal-enter var(--duration-fast) var(--ease-out);
 }
 
 @keyframes modal-enter {
   from {
     opacity: 0;
-    transform: scale(0.95) translateY(-10px);
+    transform: translateY(-4px);
   }
   to {
     opacity: 1;
-    transform: scale(1) translateY(0);
+    transform: translateY(0);
   }
 }
 
@@ -2253,7 +2254,7 @@ body {
 /* Tablet styles */
 @media (max-width: 1023px) {
 
-  /* Info panel as drawer */
+  /* Info panel as drawer (Professional Hard-edged — 用硬边框替代大阴影) */
   .sidebar-right {
     position: fixed;
     right: 0;
@@ -2263,13 +2264,13 @@ body {
     min-width: 320px !important;
     z-index: var(--z-modal);
     transform: translateX(100%);
-    transition: transform var(--duration-normal);
-    box-shadow: none;
+    transition: transform var(--duration-fast);
+    border-left: 1px solid var(--border-default);
   }
 
   .app-body.panel-open .sidebar-right {
     transform: translateX(0);
-    box-shadow: var(--shadow-xl);
+    box-shadow: none;
   }
 
   /* Add backdrop for panel */
@@ -2284,10 +2285,5 @@ body {
 
 /* Touch device optimizations */
 
-/* High DPI screens */
-@media (-webkit-min-device-pixel-ratio: 2), (min-resolution: 192dpi) {
-  .resizer {
-    width: 2px;
-  }
-}
+/* High DPI screens — resizer 基础已是 1px，无需额外缩小 */
 </style>

@@ -509,7 +509,7 @@ async function handleUpdateClick() {
   height: var(--header-height);
   flex-shrink: 0;
   background: var(--panel);
-  border-bottom: none;
+  border-bottom: 1px solid var(--border-default);
   display: flex;
   align-items: center;
   padding: 0 var(--space-3);
@@ -576,18 +576,18 @@ async function handleUpdateClick() {
   pointer-events: none;
 }
 
-/* 应用内标题栏的窗口控制按钮 */
+/* 应用内标题栏的窗口控制按钮 (Professional Hard-edged — Windows 风格扁平) */
 .window-controls-divider {
   width: 1px;
-  height: 14px;
-  background: var(--hairline);
+  height: 16px;
+  background: var(--hairline-strong);
   margin: 0 var(--space-1);
 }
 
-/* 应用内标题栏的窗口控制按钮：macOS 风格圆形灰底 */
+/* 应用内标题栏的窗口控制按钮：Windows 风格方形扁平 */
 .window-btn {
-  background: var(--bg-tertiary);
-  border-radius: 50%;
+  background: transparent;
+  border-radius: 0;
 }
 
 .window-btn:hover:not(:disabled) {
@@ -600,7 +600,7 @@ async function handleUpdateClick() {
   color: #fff;
 }
 
-/* 「工具」下拉菜单 */
+/* 「工具」下拉菜单 (Professional Hard-edged) */
 .tools-menu {
   position: relative;
   display: flex;
@@ -608,7 +608,7 @@ async function handleUpdateClick() {
 
 .tools-chevron {
   flex-shrink: 0;
-  transition: transform 0.15s ease;
+  transition: transform 0.1s ease;
 }
 
 .tools-chevron.open {
@@ -617,16 +617,16 @@ async function handleUpdateClick() {
 
 .tools-dropdown {
   position: absolute;
-  top: calc(100% + 6px);
+  top: calc(100% + 4px);
   left: 0;
   min-width: 180px;
   padding: var(--space-1);
   display: flex;
   flex-direction: column;
   background: var(--overlay);
-  border: 1px solid var(--hairline-strong);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-lg);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
   z-index: 200;
 }
 
@@ -636,18 +636,18 @@ async function handleUpdateClick() {
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
   border: none;
-  border-radius: var(--radius-sm);
+  border-radius: 0;
   background: transparent;
   color: var(--text-secondary);
   font-size: var(--text-sm);
   text-align: left;
   white-space: nowrap;
   cursor: pointer;
-  transition: var(--transition-colors);
+  transition: background var(--duration-fast);
 }
 
 .tools-item:hover:not(:disabled) {
-  background: var(--hover-fill);
+  background: var(--surface-hover);
   color: var(--text-primary);
 }
 
@@ -676,12 +676,12 @@ async function handleUpdateClick() {
   height: var(--control-height-sm);
   padding: 0 var(--space-2);
   border: none;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text-secondary);
   font-size: var(--text-sm);
   cursor: pointer;
-  transition: var(--transition-colors);
+  transition: background var(--duration-fast);
   /* 禁止按钮文案换行：英文文案较长时换行会把导航栏撑高、按钮高度不一致 */
   white-space: nowrap;
   flex-shrink: 0;
@@ -692,8 +692,12 @@ async function handleUpdateClick() {
 }
 
 .header-btn:hover:not(:disabled) {
-  background: var(--hover-fill);
+  background: var(--surface-hover);
   color: var(--text-primary);
+}
+
+.header-btn:active:not(:disabled) {
+  background: var(--surface-subtle);
 }
 
 .header-btn:disabled {
@@ -702,7 +706,7 @@ async function handleUpdateClick() {
 }
 
 .header-btn.active {
-  background: var(--selected-fill);
+  background: var(--surface-subtle);
   color: var(--text-primary);
 }
 

@@ -72,10 +72,10 @@ const iconSize = computed(() => {
 const rippleColor = computed(() => {
   const colors = {
     primary: 'rgba(255, 255, 255, 0.3)',
-    secondary: 'rgba(76, 154, 255, 0.15)',
+    secondary: 'rgba(27, 106, 240, 0.15)',
     danger: 'rgba(255, 255, 255, 0.3)',
-    ghost: 'rgba(76, 154, 255, 0.15)',
-    text: 'rgba(76, 154, 255, 0.15)'
+    ghost: 'rgba(27, 106, 240, 0.15)',
+    text: 'rgba(27, 106, 240, 0.15)'
   }
   return colors[props.variant]
 })
@@ -95,10 +95,10 @@ function handleClick(event: MouseEvent) {
   justify-content: center;
   gap: var(--space-2);
   border: 1px solid transparent;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   font-weight: var(--font-medium);
   cursor: pointer;
-  transition: var(--transition-all);
+  transition: background-color var(--duration-fast), border-color var(--duration-fast);
   overflow: hidden;
   user-select: none;
 }
@@ -144,13 +144,13 @@ function handleClick(event: MouseEvent) {
 }
 
 .btn--secondary {
-  background: var(--hover-fill);
+  background: var(--surface-hover);
   border-color: transparent;
   color: var(--text-primary);
 }
 
 .btn--secondary:hover:not(:disabled) {
-  background: var(--selected-fill);
+  background: var(--surface-subtle);
 }
 
 .btn--danger {
@@ -170,7 +170,7 @@ function handleClick(event: MouseEvent) {
 }
 
 .btn--ghost:hover:not(:disabled) {
-  background: var(--hover-fill);
+  background: var(--surface-hover);
   color: var(--text-primary);
 }
 
@@ -183,7 +183,7 @@ function handleClick(event: MouseEvent) {
 }
 
 .btn--text:hover:not(:disabled) {
-  background: var(--hover-fill);
+  background: var(--surface-hover);
 }
 
 /* Loading state */

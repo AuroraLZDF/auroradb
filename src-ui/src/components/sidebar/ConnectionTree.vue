@@ -43,7 +43,7 @@
           @contextmenu.prevent="emit('showSavedConnectionMenu', $event, item.saved!)"
           :title="t('tree.openSavedHint')"
         >
-          <StatusDot status="offline" :size="8" />
+          <StatusDot status="offline" :size="7" />
           <div class="connection-info">
             <span class="name">
               <span class="name-text">{{ item.name }}</span>
@@ -93,7 +93,7 @@
             <span class="expand-icon" @click.stop="emit('toggleConnection', item.active!.id)">
               <component :is="expandedConnections.has(item.active!.id) ? ChevronDown : ChevronRight" :size="12" />
             </span>
-            <StatusDot :status="getConnectionStatus(item.active!.state)" :size="8" />
+            <StatusDot :status="getConnectionStatus(item.active!.state)" :size="7" />
             <div class="connection-info">
               <span class="name">
                 <span class="name-text">{{ item.name }}</span>
@@ -335,17 +335,17 @@ function getConnectionStatus(state: string): 'online' | 'offline' | 'reconnectin
   font-size: var(--text-xs);
   color: var(--text-primary);
   background: var(--raised);
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
   outline: none;
-  transition: var(--transition-colors);
+  transition: border-color var(--duration-fast);
   user-select: text;
   -webkit-user-select: text;
 }
 
 .filter-input:focus {
   background: var(--canvas);
-  border-color: var(--brand-500);
+  border-color: var(--border-strong);
 }
 
 .filter-input::placeholder {
@@ -388,12 +388,12 @@ function getConnectionStatus(state: string): 'online' | 'offline' | 'reconnectin
   align-items: center;
   gap: var(--space-2);
   min-height: var(--tree-row-height);
-  padding: 2px var(--space-2);
-  border-radius: var(--radius-sm);
+  padding: 1px var(--space-2);
+  border-radius: 0;
   cursor: pointer;
   background: transparent;
   border: none;
-  transition: var(--transition-colors);
+  transition: background var(--duration-fast);
 }
 
 .connection-item.saved {
@@ -452,7 +452,7 @@ function getConnectionStatus(state: string): 'online' | 'offline' | 'reconnectin
 .mode-badge {
   flex: none;
   padding: 0 4px;
-  border-radius: 3px;
+  border-radius: 1px;
   font-size: 10px;
   font-weight: 500;
   line-height: 1.5;

@@ -1063,11 +1063,11 @@ function buildExportSvg(): { svg: string; width: number; height: number } {
   const tableBg = cssVar('--raised', '#232325')
   const border = cssVar('--hairline-strong', '#343436')
   const headerBg = cssVar('--hover-fill', 'rgba(255,255,255,0.055)')
-  const selectedBg = cssVar('--selected-fill', 'rgba(76,154,255,0.16)')
+  const selectedBg = cssVar('--selected-fill', 'rgba(27,106,240,0.08)')
   const textPrimary = cssVar('--text-primary', '#1a1a1a')
   const textSecondary = cssVar('--text-secondary', '#444444')
   const textTertiary = cssVar('--text-tertiary', '#6F6F75')
-  const brand = cssVar('--brand-500', '#4C9AFF')
+  const brand = cssVar('--brand-500', '#1B6AF0')
   const linkColor = cssVar('--hairline-strong', '#5A5A60')
   const fontFamily = "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif"
 

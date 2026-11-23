@@ -159,8 +159,7 @@ defineExpose({
   padding: var(--space-3) var(--space-4);
   background: var(--surface-default);
   border: 1px solid var(--border-default);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-lg);
+  border-radius: var(--radius-sm);
   min-width: 280px;
   max-width: 400px;
   pointer-events: auto;
@@ -237,9 +236,9 @@ defineExpose({
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--radius-sm);
+  border-radius: 0;
   opacity: 0;
-  transition: var(--transition-all);
+  transition: opacity var(--duration-fast), background var(--duration-fast);
 }
 
 .toast:hover .toast-action,
@@ -262,9 +261,9 @@ defineExpose({
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--radius-sm);
+  border-radius: 0;
   opacity: 0;
-  transition: var(--transition-all);
+  transition: opacity var(--duration-fast), background var(--duration-fast);
 }
 
 .toast:hover .toast-close {
