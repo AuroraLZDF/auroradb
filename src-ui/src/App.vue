@@ -687,7 +687,7 @@ const leftWidth = ref(280)
 const rightWidth = ref(280)
 const middleWidth = computed(() => {
   // 中间区域宽度 = 总宽度 - 左 - 右
-  return Math.max(400, window.innerWidth - leftWidth.value - rightWidth.value - 8) // 8px for resizers
+  return Math.max(400, window.innerWidth - leftWidth.value - rightWidth.value - 12) // 两个 resizer 各 6px
 })
 
 // 右侧信息面板状态
@@ -2124,18 +2124,36 @@ body {
   flex-direction: column;
 }
 
-/* 拖拽分隔条 (Professional Hard-edged — 1px 锐利分隔) */
+/* 拖拽分隔条 — 6px 隐形热区 + 中间 1px 可见分隔线，保证可点击 */
 .resizer {
-  width: 1px;
-  background: var(--border-default);
+  position: relative;
+  width: 6px;
+  flex-shrink: 0;
   cursor: col-resize;
-  transition: background var(--duration-fast);
   user-select: none;
   -webkit-user-select: none;
 }
 
-.resizer:hover {
-  background: var(--border-strong);
+.resizer::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 1px;
+  background: var(--border-default);
+  transition:
+    background var(--duration-fast),
+    width var(--duration-fast),
+    box-shadow var(--duration-fast);
+}
+
+.resizer:hover::before,
+.resizer:active::before {
+  width: 2px;
+  background: var(--brand-500);
+  box-shadow: 0 0 3px rgba(var(--brand-500-rgb), 0.4);
 }
 
 /* 弹窗 (Professional Hard-edged — 细边框 + 极浅锐利阴影) */

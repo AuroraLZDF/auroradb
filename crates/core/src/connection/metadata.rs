@@ -12,14 +12,11 @@ use sqlx::Row;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-/// 元数据缓存 TTL：对象树/表结构在 TTL 内命中缓存，不重复查询 INFORMATION_SCHEMA
-const METADATA_CACHE_TTL: Duration = Duration::from_secs(30);
+/// 元数据缓存 TTL：远程数据库命中率优先，本地连接按需刷新
+const METADATA_CACHE_TTL: Duration = Duration::from_secs(120);
 
-/// 元数据查询兜底超时：单条 INFORMATION_SCHEMA 查询的上限，防止异常网络/高负载下无限挂起
-const METADATA_QUERY_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// INFORMATION_SCHEMA.TABLES 的一行：表名、自增值、最后修改时间、占用空间
-type TableMetaRow = (String, Option<i64>, Option<String>, Option<i64>);
+/// 元数据查询兜底超时：远程数据库 RTT 普遍 50-200ms，5s 已足够覆盖正常查询 + 缓冲
+const METADATA_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// 引用外键查询的一行：约束名、子表、子表列、DELETE_RULE、UPDATE_RULE
 type ReferencingFkRow = (String, String, String, Option<String>, Option<String>);
@@ -468,22 +465,74 @@ impl ConnectionManager {
         let mut objects = vec![];
 
         if let Some(db) = database {
-            // 获取表 - 按字母顺序排序，顺带取自增值/修改时间/占用空间供中间面板展示
-            let tables: Vec<TableMetaRow> = with_metadata_timeout(
-                sqlx::query_as(
-                    "SELECT TABLE_NAME,
-                            CAST(AUTO_INCREMENT AS SIGNED),
-                            CAST(UPDATE_TIME AS CHAR),
-                            CAST(COALESCE(DATA_LENGTH, 0) + COALESCE(INDEX_LENGTH, 0) AS SIGNED)
-                     FROM INFORMATION_SCHEMA.TABLES
-                     WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'
+            // 5 次元数据查询无依赖关系，并行发出；表/视图失败直接返回错误，其他对象（存储过程/触发器/事件）缺权限时降级为空
+            let (tables, views, routines, triggers, events) = tokio::try_join!(
+                // 表 — 按字母排序，顺带取自增值/修改时间/占用空间
+                with_metadata_timeout(
+                    sqlx::query_as(
+                        "SELECT TABLE_NAME,
+                                CAST(AUTO_INCREMENT AS SIGNED),
+                                CAST(UPDATE_TIME AS CHAR),
+                                CAST(COALESCE(DATA_LENGTH, 0) + COALESCE(INDEX_LENGTH, 0) AS SIGNED)
+                         FROM INFORMATION_SCHEMA.TABLES
+                         WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'
+                         ORDER BY TABLE_NAME ASC",
+                    )
+                    .bind(db)
+                    .fetch_all(pool),
+                ),
+                // 视图
+                with_metadata_timeout(
+                    sqlx::query_as(
+                        "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES 
+                     WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'VIEW'
                      ORDER BY TABLE_NAME ASC",
-                )
-                .bind(db)
-                .fetch_all(pool),
-            )
-            .await?;
+                    )
+                    .bind(db)
+                    .fetch_all(pool),
+                ),
+                // 存储过程 / 函数（缺权限时降级为空）
+                async {
+                    sqlx::query_as::<_, (String, String)>(
+                        "SELECT ROUTINE_NAME, ROUTINE_TYPE FROM INFORMATION_SCHEMA.ROUTINES
+                         WHERE ROUTINE_SCHEMA = ?
+                         ORDER BY ROUTINE_NAME ASC",
+                    )
+                    .bind(db)
+                    .fetch_all(pool)
+                    .await
+                    .map(Ok)
+                    .unwrap_or(Ok(vec![]))
+                },
+                // 触发器
+                async {
+                    sqlx::query_as::<_, (String,)>(
+                        "SELECT TRIGGER_NAME FROM INFORMATION_SCHEMA.TRIGGERS
+                         WHERE TRIGGER_SCHEMA = ?
+                         ORDER BY TRIGGER_NAME ASC",
+                    )
+                    .bind(db)
+                    .fetch_all(pool)
+                    .await
+                    .map(Ok)
+                    .unwrap_or(Ok(vec![]))
+                },
+                // 定时事件（缺 EVENT 权限时降级为空）
+                async {
+                    sqlx::query_as::<_, (String,)>(
+                        "SELECT EVENT_NAME FROM INFORMATION_SCHEMA.EVENTS
+                         WHERE EVENT_SCHEMA = ?
+                         ORDER BY EVENT_NAME ASC",
+                    )
+                    .bind(db)
+                    .fetch_all(pool)
+                    .await
+                    .map(Ok)
+                    .unwrap_or(Ok(vec![]))
+                },
+            )?;
 
+            // 组装对象树 — 保持表 → 视图 → 存储过程/函数 → 触发器 → 事件的视觉顺序
             for (table_name, auto_increment, updated_at, size_bytes) in tables {
                 objects.push(DatabaseObject {
                     id: format!("{}.{}", db, table_name),
@@ -496,19 +545,6 @@ impl ConnectionManager {
                     size_bytes,
                 });
             }
-
-            // 获取视图 - 按字母顺序排序
-            let views: Vec<(String,)> = with_metadata_timeout(
-                sqlx::query_as(
-                    "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES 
-                 WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'VIEW'
-                 ORDER BY TABLE_NAME ASC",
-                )
-                .bind(db)
-                .fetch_all(pool),
-            )
-            .await?;
-
             for (view_name,) in views {
                 objects.push(DatabaseObject {
                     id: format!("{}.{}", db, view_name),
@@ -521,29 +557,13 @@ impl ConnectionManager {
                     size_bytes: None,
                 });
             }
-
-            // 存储过程 / 函数：缺少权限时返回空列表而不是让整棵树失败
-            let routines: Vec<(String, String)> = sqlx::query_as(
-                "SELECT ROUTINE_NAME, ROUTINE_TYPE FROM INFORMATION_SCHEMA.ROUTINES
-                 WHERE ROUTINE_SCHEMA = ?
-                 ORDER BY ROUTINE_NAME ASC",
-            )
-            .bind(db)
-            .fetch_all(pool)
-            .await
-            .unwrap_or_default();
-
             for (routine_name, routine_type) in routines {
                 let object_type = if routine_type.eq_ignore_ascii_case("FUNCTION") {
                     ObjectType::Function
                 } else {
                     ObjectType::Procedure
                 };
-                let prefix = if object_type == ObjectType::Function {
-                    "func"
-                } else {
-                    "proc"
-                };
+                let prefix = if object_type == ObjectType::Function { "func" } else { "proc" };
                 objects.push(DatabaseObject {
                     id: format!("{}:{}.{}", prefix, db, routine_name),
                     name: routine_name,
@@ -555,18 +575,6 @@ impl ConnectionManager {
                     size_bytes: None,
                 });
             }
-
-            // 触发器
-            let triggers: Vec<(String,)> = sqlx::query_as(
-                "SELECT TRIGGER_NAME FROM INFORMATION_SCHEMA.TRIGGERS
-                 WHERE TRIGGER_SCHEMA = ?
-                 ORDER BY TRIGGER_NAME ASC",
-            )
-            .bind(db)
-            .fetch_all(pool)
-            .await
-            .unwrap_or_default();
-
             for (trigger_name,) in triggers {
                 objects.push(DatabaseObject {
                     id: format!("trigger:{}.{}", db, trigger_name),
@@ -579,18 +587,6 @@ impl ConnectionManager {
                     size_bytes: None,
                 });
             }
-
-            // 定时事件（需要 EVENT 权限，缺少时同样降级为空列表）
-            let events: Vec<(String,)> = sqlx::query_as(
-                "SELECT EVENT_NAME FROM INFORMATION_SCHEMA.EVENTS
-                 WHERE EVENT_SCHEMA = ?
-                 ORDER BY EVENT_NAME ASC",
-            )
-            .bind(db)
-            .fetch_all(pool)
-            .await
-            .unwrap_or_default();
-
             for (event_name,) in events {
                 objects.push(DatabaseObject {
                     id: format!("event:{}.{}", db, event_name),
@@ -680,54 +676,78 @@ impl ConnectionManager {
             Some(db) => {
                 let pool = self.pg_pool_for(connection_id, db).await?;
 
-                // table_type 分两段查询，保持「表在前、视图在后」的顺序
-                let tables: Vec<(String, String)> = with_metadata_timeout(
-                    sqlx::query_as(
-                        "SELECT table_schema, table_name FROM information_schema.tables
-                     WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
-                       AND table_schema NOT LIKE 'pg\\_%'
-                       AND table_type = 'BASE TABLE'
-                     ORDER BY (table_schema = 'public') DESC, table_schema ASC, table_name ASC",
-                    )
-                    .fetch_all(&pool),
-                )
-                .await?;
+                // 4 次 PG 元数据查询无依赖关系，并行发出
+                let (tables, views, routines, triggers): (
+                    Vec<(String, String)>,
+                    Vec<(String, String)>,
+                    Vec<(String, String, String)>,
+                    Vec<(String, String, String)>,
+                ) = tokio::try_join!(
+                    // 表
+                    with_metadata_timeout(
+                        sqlx::query_as(
+                            "SELECT table_schema, table_name FROM information_schema.tables
+                         WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+                           AND table_schema NOT LIKE 'pg\\_%'
+                           AND table_type = 'BASE TABLE'
+                         ORDER BY (table_schema = 'public') DESC, table_schema ASC, table_name ASC",
+                        )
+                        .fetch_all(&pool),
+                    ),
+                    // 视图
+                    with_metadata_timeout(
+                        sqlx::query_as(
+                            "SELECT table_schema, table_name FROM information_schema.tables
+                         WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+                           AND table_schema NOT LIKE 'pg\\_%'
+                           AND table_type = 'VIEW'
+                         ORDER BY (table_schema = 'public') DESC, table_schema ASC, table_name ASC",
+                        )
+                        .fetch_all(&pool),
+                    ),
+                    // 存储过程 / 函数（同名重载只展示一个节点；权限不够降级为空）
+                    async {
+                        sqlx::query_as::<_, (String, String, String)>(
+                            "SELECT DISTINCT ON (n.nspname, p.proname)
+                                    n.nspname, p.proname,
+                                    CASE WHEN p.prokind = 'p' THEN 'PROCEDURE' ELSE 'FUNCTION' END
+                             FROM pg_proc p
+                             JOIN pg_namespace n ON n.oid = p.pronamespace
+                             WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+                               AND n.nspname NOT LIKE 'pg\\_%'
+                             ORDER BY n.nspname, p.proname",
+                        )
+                        .fetch_all(&pool)
+                        .await
+                        .map(Ok)
+                        .unwrap_or(Ok(vec![]))
+                    },
+                    // 触发器（展示为「表.触发器」；缺权限降级为空）
+                    async {
+                        sqlx::query_as::<_, (String, String, String)>(
+                            "SELECT n.nspname, c.relname, t.tgname
+                             FROM pg_trigger t
+                             JOIN pg_class c ON c.oid = t.tgrelid
+                             JOIN pg_namespace n ON n.oid = c.relnamespace
+                             WHERE NOT t.tgisinternal
+                               AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+                               AND n.nspname NOT LIKE 'pg\\_%'
+                             ORDER BY n.nspname, c.relname, t.tgname",
+                        )
+                        .fetch_all(&pool)
+                        .await
+                        .map(Ok)
+                        .unwrap_or(Ok(vec![]))
+                    },
+                )?;
 
+                // 按视觉顺序组装：表 → 视图 → 存储过程/函数 → 触发器
                 for (schema, table_name) in tables {
                     objects.push(pg_object(db, &schema, &table_name, ObjectType::Table));
                 }
-
-                let views: Vec<(String, String)> = with_metadata_timeout(
-                    sqlx::query_as(
-                        "SELECT table_schema, table_name FROM information_schema.tables
-                     WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
-                       AND table_schema NOT LIKE 'pg\\_%'
-                       AND table_type = 'VIEW'
-                     ORDER BY (table_schema = 'public') DESC, table_schema ASC, table_name ASC",
-                    )
-                    .fetch_all(&pool),
-                )
-                .await?;
-
                 for (schema, view_name) in views {
                     objects.push(pg_object(db, &schema, &view_name, ObjectType::View));
                 }
-
-                // 存储过程 / 函数（同名重载只展示一个节点）
-                let routines: Vec<(String, String, String)> = sqlx::query_as(
-                    "SELECT DISTINCT ON (n.nspname, p.proname)
-                            n.nspname, p.proname,
-                            CASE WHEN p.prokind = 'p' THEN 'PROCEDURE' ELSE 'FUNCTION' END
-                     FROM pg_proc p
-                     JOIN pg_namespace n ON n.oid = p.pronamespace
-                     WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
-                       AND n.nspname NOT LIKE 'pg\\_%'
-                     ORDER BY n.nspname, p.proname",
-                )
-                .fetch_all(&pool)
-                .await
-                .unwrap_or_default();
-
                 for (schema, routine_name, routine_type) in routines {
                     let object_type = if routine_type == "PROCEDURE" {
                         ObjectType::Procedure
@@ -736,22 +756,6 @@ impl ConnectionManager {
                     };
                     objects.push(pg_object(db, &schema, &routine_name, object_type));
                 }
-
-                // 触发器：展示为「表.触发器」，避免同 schema 下重名冲突
-                let triggers: Vec<(String, String, String)> = sqlx::query_as(
-                    "SELECT n.nspname, c.relname, t.tgname
-                     FROM pg_trigger t
-                     JOIN pg_class c ON c.oid = t.tgrelid
-                     JOIN pg_namespace n ON n.oid = c.relnamespace
-                     WHERE NOT t.tgisinternal
-                       AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-                       AND n.nspname NOT LIKE 'pg\\_%'
-                     ORDER BY n.nspname, c.relname, t.tgname",
-                )
-                .fetch_all(&pool)
-                .await
-                .unwrap_or_default();
-
                 for (schema, table_name, trigger_name) in triggers {
                     objects.push(pg_object(
                         db,
@@ -1264,44 +1268,88 @@ impl ConnectionManager {
             }
         }
 
-        // 获取表的基本信息
-        let table_info = with_metadata_timeout(
-            sqlx::query_as::<
-                _,
-                (
-                    String,
-                    Option<String>,
-                    Option<String>,
-                    Option<String>,
-                    Option<String>,
-                    Option<String>,
-                    String,
-                ),
-            >(
-                "SELECT TABLE_NAME, ENGINE, TABLE_COLLATION, TABLE_COMMENT, 
-             CAST(CREATE_TIME AS CHAR), CAST(UPDATE_TIME AS CHAR), CAST(TABLE_ROWS AS CHAR)
-             FROM INFORMATION_SCHEMA.TABLES
-             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
+        // 6 次元数据查询完全独立（都只依赖 database/table），并行发出，延迟从 N×RTT 降到 ≈1×RTT
+        // FK 规则已合并到 foreign_keys 查询（用 JOIN 替代 N+1 循环），不再串行
+        let (table_info, columns, indexes, foreign_keys, create_stmt) = tokio::try_join!(
+            // 表基本信息（ENGINE / COLLATION / COMMENT / CREATE_TIME / UPDATE_TIME / TABLE_ROWS / DATA_LENGTH / INDEX_LENGTH）
+            with_metadata_timeout(
+                sqlx::query_as::<
+                    _,
+                    (
+                        String,
+                        Option<String>,
+                        Option<String>,
+                        Option<String>,
+                        Option<String>,
+                        Option<String>,
+                        String,
+                        Option<String>,
+                        Option<String>,
+                    ),
+                >(
+                    "SELECT TABLE_NAME, ENGINE, TABLE_COLLATION, TABLE_COMMENT,
+                            CAST(CREATE_TIME AS CHAR), CAST(UPDATE_TIME AS CHAR), CAST(TABLE_ROWS AS CHAR),
+                            CAST(DATA_LENGTH AS CHAR), CAST(INDEX_LENGTH AS CHAR)
+                     FROM INFORMATION_SCHEMA.TABLES
+                     WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
+                )
+                .bind(database)
+                .bind(table)
+                .fetch_one(pool),
+            ),
+            // 列信息
+            with_metadata_timeout(sqlx::query_as::<_, (String, String, String, String, Option<String>, String, Option<String>, String, String)>(
+                "SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT,
+                        EXTRA, COLUMN_COMMENT, CAST(COALESCE(CHARACTER_MAXIMUM_LENGTH, 0) AS CHAR), CAST(ORDINAL_POSITION AS CHAR)
+                 FROM INFORMATION_SCHEMA.COLUMNS
+                 WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+                 ORDER BY ORDINAL_POSITION"
             )
             .bind(database)
             .bind(table)
-            .fetch_one(pool),
-        )
-        .await?;
-
-        // 获取列信息
-        // 使用 CAST 将数值转为字符串，兼容不同 MySQL 版本
-        let columns = with_metadata_timeout(sqlx::query_as::<_, (String, String, String, String, Option<String>, String, Option<String>, String, String)>(
-            "SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT,
-                    EXTRA, COLUMN_COMMENT, CAST(COALESCE(CHARACTER_MAXIMUM_LENGTH, 0) AS CHAR), CAST(ORDINAL_POSITION AS CHAR)
-             FROM INFORMATION_SCHEMA.COLUMNS
-             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
-             ORDER BY ORDINAL_POSITION"
-        )
-        .bind(database)
-        .bind(table)
-        .fetch_all(pool))
-        .await?;
+            .fetch_all(pool)),
+            // 索引信息
+            with_metadata_timeout(
+                sqlx::query_as::<_, (String, String, String, String, i64)>(
+                    "SELECT INDEX_NAME, COLUMN_NAME, INDEX_TYPE, CAST(SEQ_IN_INDEX AS CHAR), NON_UNIQUE
+                 FROM INFORMATION_SCHEMA.STATISTICS
+                 WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+                 ORDER BY INDEX_NAME, SEQ_IN_INDEX",
+                )
+                .bind(database)
+                .bind(table)
+                .fetch_all(pool),
+            ),
+            // 外键 + 规则（一条 JOIN 替代 N+1：同时拿到列引用和 DELETE/UPDATE 规则）
+            with_metadata_timeout(
+                sqlx::query_as::<_, (String, String, String, String, Option<String>, Option<String>)>(
+                    "SELECT kcu.CONSTRAINT_NAME,
+                            kcu.COLUMN_NAME,
+                            kcu.REFERENCED_TABLE_NAME,
+                            kcu.REFERENCED_COLUMN_NAME,
+                            rc.DELETE_RULE,
+                            rc.UPDATE_RULE
+                     FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+                     LEFT JOIN INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS rc
+                       ON rc.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA
+                      AND rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
+                     WHERE kcu.TABLE_SCHEMA = ?
+                       AND kcu.TABLE_NAME = ?
+                       AND kcu.REFERENCED_TABLE_NAME IS NOT NULL",
+                )
+                .bind(database)
+                .bind(table)
+                .fetch_all(pool),
+            ),
+            // 建表语句（format! 先绑定成 let 延长生命周期，避免在 join 里借用临时值）
+            async {
+                let sql = format!("SHOW CREATE TABLE `{}`.`{}`", database, table);
+                with_metadata_timeout(
+                    sqlx::query_as::<_, (String, String)>(&sql).fetch_one(pool),
+                )
+                .await
+            },
+        )?;
 
         let column_info: Vec<TableColumnInfo> = columns
             .iter()
@@ -1354,46 +1402,26 @@ impl ConnectionManager {
             })
             .collect();
 
-        // 获取索引信息
-        // 使用 CAST 将数值转为字符串，兼容不同 MySQL 版本
-        let indexes = with_metadata_timeout(
-            sqlx::query_as::<_, (String, String, String, String, i64)>(
-                "SELECT INDEX_NAME, COLUMN_NAME, INDEX_TYPE, CAST(SEQ_IN_INDEX AS CHAR), NON_UNIQUE
-             FROM INFORMATION_SCHEMA.STATISTICS
-             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
-             ORDER BY INDEX_NAME, SEQ_IN_INDEX",
-            )
-            .bind(database)
-            .bind(table)
-            .fetch_all(pool),
-        )
-        .await?;
-
+        // 索引聚合（已并行发出，这里只做归并）
         let mut index_map: HashMap<String, (String, Vec<String>, bool)> = HashMap::new();
         for idx in &indexes {
             let index_name = idx.0.clone();
             let col_name = idx.1.clone();
             let index_type = idx.2.clone();
-            // NON_UNIQUE = 0 表示唯一索引；主键索引名固定为 PRIMARY
             let is_unique = index_name == "PRIMARY" || idx.4 == 0;
-
             if let Some((_, cols, _)) = index_map.get_mut(&index_name) {
                 cols.push(col_name);
             } else {
                 index_map.insert(index_name, (index_type, vec![col_name], is_unique));
             }
         }
-
         let index_info: Vec<TableIndexInfo> = index_map
             .into_iter()
-            .map(|(name, (ty, cols, unique))| {
-                let name_clone = name.clone();
-                TableIndexInfo {
-                    name,
-                    r#type: ty,
-                    columns: cols,
-                    is_unique: unique || name_clone == "PRIMARY",
-                }
+            .map(|(name, (ty, cols, unique))| TableIndexInfo {
+                name: name.clone(),
+                r#type: ty,
+                columns: cols,
+                is_unique: unique || name == "PRIMARY",
             })
             .collect();
 
@@ -1411,87 +1439,22 @@ impl ConnectionManager {
             }
         }
 
-        // 获取外键信息 - 从 REFERENTIAL_CONSTRAINTS 获取更新/删除规则
-        // REFERENCED_TABLE_NAME IS NOT NULL 已足够识别外键，不再按约束名前缀过滤，
-        // 避免漏掉命名不规范（非 fk_ 前缀）的外键约束。
-        let foreign_keys = with_metadata_timeout(
-            sqlx::query_as::<_, (String, String, String, String)>(
-                "SELECT 
-                kcu.CONSTRAINT_NAME, 
-                kcu.COLUMN_NAME, 
-                kcu.REFERENCED_TABLE_NAME,
-                kcu.REFERENCED_COLUMN_NAME
-             FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
-             WHERE kcu.TABLE_SCHEMA = ? 
-               AND kcu.TABLE_NAME = ?
-               AND kcu.REFERENCED_TABLE_NAME IS NOT NULL",
-            )
-            .bind(database)
-            .bind(table)
-            .fetch_all(pool),
-        )
-        .await?;
+        // 外键（已并行发出；JOIN 已带回 DELETE_RULE / UPDATE_RULE）
+        let fk_info: Vec<TableForeignKeyInfo> = foreign_keys
+            .into_iter()
+            .map(|(name, column, ref_table, ref_column, on_delete, on_update)| TableForeignKeyInfo {
+                name,
+                column,
+                ref_table,
+                ref_column,
+                on_delete: on_delete.unwrap_or_else(|| "RESTRICT".to_string()),
+                on_update: on_update.unwrap_or_else(|| "RESTRICT".to_string()),
+            })
+            .collect();
 
-        // 获取外键的更新/删除规则
-        let mut fk_info: Vec<TableForeignKeyInfo> = Vec::new();
-        for fk in &foreign_keys {
-            // 尝试获取外键约束的详细信息
-            let fk_detail = with_metadata_timeout(
-                sqlx::query_as::<_, (Option<String>, Option<String>)>(
-                    "SELECT rc.DELETE_RULE, rc.UPDATE_RULE
-                 FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS rc
-                 WHERE rc.CONSTRAINT_SCHEMA = ?
-                   AND rc.CONSTRAINT_NAME = ?",
-                )
-                .bind(database)
-                .bind(&fk.0)
-                .fetch_optional(pool),
-            )
-            .await
-            // 不能静默回落 RESTRICT：会把 CASCADE / SET NULL 误报成 RESTRICT
-            .map_err(|e| anyhow!("查询外键 {} 的更新/删除规则失败: {}", fk.0, e))?;
-
-            let (on_delete, on_update) = match fk_detail {
-                Some(d) => (
-                    d.0.unwrap_or_else(|| "RESTRICT".to_string()),
-                    d.1.unwrap_or_else(|| "RESTRICT".to_string()),
-                ),
-                None => ("RESTRICT".to_string(), "RESTRICT".to_string()),
-            };
-
-            fk_info.push(TableForeignKeyInfo {
-                name: fk.0.clone(),
-                column: fk.1.clone(),
-                ref_table: fk.2.clone(),
-                ref_column: fk.3.clone(),
-                on_delete,
-                on_update,
-            });
-        }
-
-        // 获取建表语句 - SHOW CREATE TABLE 返回两列: Table 和 Create Table
-        let create_stmt = with_metadata_timeout(
-            sqlx::query_as::<_, (String, String)>(&format!(
-                "SHOW CREATE TABLE `{}`.`{}`",
-                database, table
-            ))
-            .fetch_one(pool),
-        )
-        .await?;
-
-        // 获取表大小信息
-        // 使用 CAST 将数值转为字符串，兼容不同 MySQL 版本
-        let size_info = with_metadata_timeout(
-            sqlx::query_as::<_, (Option<String>, Option<String>)>(
-                "SELECT CAST(DATA_LENGTH AS CHAR), CAST(INDEX_LENGTH AS CHAR)
-             FROM INFORMATION_SCHEMA.TABLES
-             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
-            )
-            .bind(database)
-            .bind(table)
-            .fetch_one(pool),
-        )
-        .await?;
+        // 表大小已合入 table_info 查询（避免重复 INFORMATION_SCHEMA.TABLES 扫描）
+        let data_size = table_info.7.as_ref().and_then(|s| s.parse::<u64>().ok());
+        let index_size = table_info.8.as_ref().and_then(|s| s.parse::<u64>().ok());
 
         // 解析时间
         let parse_time = |opt: Option<String>| -> Option<String> { opt.filter(|s| !s.is_empty()) };
@@ -1522,8 +1485,8 @@ impl ConnectionManager {
             charset,
             collation: table_info.2.filter(|s| !s.is_empty()),
             row_count,
-            data_size: size_info.0.and_then(|s| s.parse().ok()),
-            index_size: size_info.1.and_then(|s| s.parse().ok()),
+            data_size,
+            index_size,
             create_time: parse_time(table_info.4),
             update_time: parse_time(table_info.5),
         };

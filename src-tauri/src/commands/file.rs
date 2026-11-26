@@ -695,12 +695,17 @@ pub async fn save_file_to_dialog(
     format: String,
 ) -> Result<String, String> {
     // 根据格式设置文件过滤器和扩展名
-    let (filter_name, extensions) = match format.as_str() {
-        "csv" => ("CSV 文件", vec!["csv"]),
-        "sql" => ("SQL 文件", vec!["sql"]),
-        "json" => ("JSON 文件", vec!["json"]),
-        "xlsx" => ("Excel 文件", vec!["xlsx"]),
-        _ => ("文本文件", vec!["txt"]),
+    let (filter_name, extensions): (String, Vec<String>) = match format.as_str() {
+        "csv" => ("CSV 文件".into(), vec!["csv".into()]),
+        "sql" => ("SQL 文件".into(), vec!["sql".into()]),
+        "json" => ("JSON 文件".into(), vec!["json".into()]),
+        "xlsx" => ("Excel 文件".into(), vec!["xlsx".into()]),
+        "md" | "markdown" => ("Markdown 文件".into(), vec!["md".into()]),
+        // 兜底：format 本身就是扩展名（如 txt / yaml / xml / log 等），尊重调用方传入值
+        other => (
+            format!("{} 文件", other.to_uppercase()),
+            vec![other.to_string()],
+        ),
     };
 
     // 确保文件名有正确的扩展名
@@ -712,12 +717,13 @@ pub async fn save_file_to_dialog(
 
     // 使用 Tauri v2 的文件对话框 - 使用通道接收结果
     let (tx, rx) = tokio::sync::oneshot::channel::<Option<FilePath>>();
+    let ext_refs: Vec<&str> = extensions.iter().map(|e| e.as_str()).collect();
 
     window.dialog()
         .file()
         .set_title("保存文件")
         .set_file_name(&default_filename)
-        .add_filter(filter_name, &extensions)
+        .add_filter(filter_name, &ext_refs)
         .add_filter("所有文件", &["*"])
         .save_file(move |path| {
             let _ = tx.send(path);
@@ -795,6 +801,7 @@ pub async fn read_file_from_dialog(
 ) -> Result<(String, String), String> {
     // 根据格式设置文件过滤器
     let (filter_name, extensions) = dialog_filter(&format);
+    let ext_refs: Vec<&str> = extensions.iter().map(|e| e.as_str()).collect();
 
     // 使用 Tauri v2 的文件对话框
     let (tx, rx) = tokio::sync::oneshot::channel::<Option<FilePath>>();
@@ -802,7 +809,7 @@ pub async fn read_file_from_dialog(
     window.dialog()
         .file()
         .set_title("选择要导入的文件")
-        .add_filter(filter_name, &extensions)
+        .add_filter(filter_name, &ext_refs)
         .add_filter("所有文件", &["*"])
         .pick_file(move |path| {
             let _ = tx.send(path);
@@ -844,12 +851,13 @@ pub async fn read_file_from_dialog(
 #[command]
 pub async fn pick_file_path(window: tauri::Window, format: String) -> Result<String, String> {
     let (filter_name, extensions) = dialog_filter(&format);
+    let ext_refs: Vec<&str> = extensions.iter().map(|e| e.as_str()).collect();
 
     let (tx, rx) = tokio::sync::oneshot::channel::<Option<FilePath>>();
     window.dialog()
         .file()
         .set_title("选择要导入的文件")
-        .add_filter(filter_name, &extensions)
+        .add_filter(filter_name, &ext_refs)
         .add_filter("所有文件", &["*"])
         .pick_file(move |path| {
             let _ = tx.send(path);
@@ -883,11 +891,17 @@ pub async fn pick_sqlite_file(window: tauri::Window) -> Result<String, String> {
 }
 
 /// 对话框文件过滤器（名称 + 扩展名）
-fn dialog_filter(format: &str) -> (&'static str, Vec<&'static str>) {
+fn dialog_filter(format: &str) -> (String, Vec<String>) {
     match format {
-        "csv" => ("CSV 文件", vec!["csv"]),
-        "sql" => ("SQL 文件", vec!["sql"]),
-        "json" => ("JSON 文件", vec!["json"]),
-        _ => ("文本文件", vec!["txt", "csv", "sql", "json"]),
+        "csv" => ("CSV 文件".into(), vec!["csv".into()]),
+        "sql" => ("SQL 文件".into(), vec!["sql".into()]),
+        "json" => ("JSON 文件".into(), vec!["json".into()]),
+        "md" | "markdown" => ("Markdown 文件".into(), vec!["md".into()]),
+        "txt" => ("文本文件".into(), vec!["txt".into()]),
+        // 兜底：format 本身就是扩展名，尊重传入值
+        other => (
+            format!("{} 文件", other.to_uppercase()),
+            vec![other.to_string()],
+        ),
     }
 }

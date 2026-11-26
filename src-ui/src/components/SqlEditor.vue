@@ -1676,15 +1676,33 @@ onUnmounted(() => {
   align-items: stretch;
   gap: 0;
   padding: 0 var(--space-2);
-  height: var(--tabbar-height);
+  /* 留给水平滚动条呼吸空间，避免 overlay 滚动条压住标签底部 */
+  padding-bottom: 4px;
+  height: calc(var(--tabbar-height) + 8px);
   overflow-x: auto;
+  overflow-y: hidden;
   background: var(--panel);
   border-bottom: 1px solid var(--hairline);
   flex-shrink: 0;
+  /* Firefox：滚动条始终有占位、不压内容；Webkit 上让滚动条占据底部空隙 */
+  scrollbar-gutter: stable both-edges;
 }
 
 .statement-tabs::-webkit-scrollbar {
-  display: none;
+  height: 6px;
+}
+
+.statement-tabs::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.statement-tabs::-webkit-scrollbar-thumb {
+  background: var(--border-default);
+  border-radius: 3px;
+}
+
+.statement-tabs::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
 }
 
 .statement-tab {

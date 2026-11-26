@@ -199,7 +199,7 @@
             <tbody>
               <tr
                 v-for="(index, idx) in indexes"
-                :key="index.name"
+                :key="index.id"
                 :class="{ selected: selectedIndexIndex === idx }"
                 @click="selectIndex(idx)"
               >
@@ -264,7 +264,7 @@
             <tbody>
               <tr
                 v-for="(fk, idx) in foreignKeys"
-                :key="fk.name"
+                :key="fk.id"
                 :class="{ selected: selectedFkIndex === idx }"
                 @click="selectForeignKey(idx)"
               >
@@ -322,7 +322,7 @@
               <Copy class="icon" :size="16" /> {{ t('common.copy') }}
             </button>
           </div>
-          <pre class="sql-code">{{ generatedSql }}</pre>
+          <div ref="sqlPreviewRef" class="sql-code"></div>
         </div>
       </div>
     </div>
@@ -390,7 +390,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, shallowRef, nextTick } from 'vue'
 import { useDataBrowserStore } from '@/stores/dataBrowser'
 import { useToast } from '@/composables/useToast'
 import { confirmDanger } from '@/composables/useConfirm'
@@ -418,13 +418,37 @@ import { useConnectionStore } from '@/stores/connection'
 import { t } from '@/i18n'
 import Select from '@/components/ui/Select.vue'
 
+// CodeMirror 6 — 只读 SQL 预览高亮
+import { EditorState } from '@codemirror/state'
+import { EditorView } from '@codemirror/view'
+import { syntaxHighlighting, HighlightStyle } from '@codemirror/language'
+import { sql as sqlLanguage, MySQL, PostgreSQL } from '@codemirror/lang-sql'
+import { tags as tcm } from '@lezer/highlight'
+
+/** SQL 预览专用的语法高亮配色（复用编辑器的 CSS 变量，亮暗主题自动适配） */
+const previewHighlightStyle = HighlightStyle.define([
+  { tag: tcm.keyword, color: 'var(--code-keyword)' },
+  { tag: [tcm.string, tcm.special(tcm.string)], color: 'var(--code-string)' },
+  { tag: [tcm.number, tcm.bool, tcm.null], color: 'var(--code-number)' },
+  { tag: [tcm.comment, tcm.lineComment, tcm.blockComment], color: 'var(--text-secondary)', fontStyle: 'italic' },
+  { tag: tcm.operator, color: 'var(--text-secondary)' },
+  { tag: [tcm.punctuation, tcm.separator], color: 'var(--text-primary)' },
+  { tag: [tcm.variableName, tcm.propertyName], color: 'var(--text-primary)' },
+  { tag: [tcm.typeName, tcm.function(tcm.variableName)], color: 'var(--code-function)' },
+])
+
 /** 设计器行需要稳定的 UI key，其余字段与 DDL 生成器的 DdlField 保持一致 */
 interface Field extends DdlField {
   id: string
 }
 
-type Index = DdlIndex
-type ForeignKey = DdlForeignKey
+interface Index extends DdlIndex {
+  id: string
+}
+
+interface ForeignKey extends DdlForeignKey {
+  id: string
+}
 
 const props = defineProps<{
   connectionId: string
@@ -456,6 +480,64 @@ const tabs = computed(() => [
   { key: 'sql', label: t('tableDesigner.tabSql') },
 ])
 const activeTab = ref('fields')
+
+// SQL 预览 CodeMirror 实例（只读）
+const sqlPreviewRef = ref<HTMLElement | null>(null)
+const sqlPreviewView = shallowRef<EditorView | null>(null)
+
+/** 创建或更新 SQL 预览的 CodeMirror 视图（lazy：切到 SQL 标签时才挂载） */
+function ensureSqlPreviewView() {
+  if (!sqlPreviewRef.value) return
+  if (sqlPreviewView.value) {
+    // 已存在 → 只更新内容
+    sqlPreviewView.value.dispatch({
+      changes: { from: 0, to: sqlPreviewView.value.state.doc.length, insert: generatedSql.value },
+    })
+    return
+  }
+  const state = EditorState.create({
+    doc: generatedSql.value,
+    extensions: [
+      EditorState.readOnly.of(true),
+      sqlLanguage({
+        dialect: driverKind.value === 'postgres' ? PostgreSQL : MySQL,
+      }),
+      syntaxHighlighting(previewHighlightStyle, { fallback: true }),
+      EditorView.theme(
+        {
+          '&': {
+            height: '100%',
+            fontSize: 'var(--text-sm)',
+            color: 'var(--text-primary)',
+            backgroundColor: 'transparent',
+          },
+          '&.cm-focused': { outline: 'none' },
+          '.cm-scroller': {
+            overflow: 'auto',
+            fontFamily: 'var(--font-mono)',
+            lineHeight: '1.6',
+          },
+          '.cm-content': {
+            padding: '0',
+            caretColor: 'transparent',
+          },
+          '.cm-gutters': { display: 'none' },
+        },
+        { dark: false }
+      ),
+    ],
+  })
+  sqlPreviewView.value = new EditorView({ state, parent: sqlPreviewRef.value })
+}
+
+watch(activeTab, async tab => {
+  if (tab === 'sql') {
+    await nextTick()
+    ensureSqlPreviewView()
+  }
+})
+
+// generatedSql 的 watch 放在 const generatedSql = computed(...) 之后定义
 
 // 数据类型 / 索引类型：由统一能力表提供，MySQL 与 PG 各一套
 const dataTypes = computed<string[]>(() => [...driverCaps.value.dataTypes])
@@ -526,6 +608,14 @@ const generatedSql = computed(() => {
   return t('tableDesigner.sqlNoChanges')
 })
 
+watch(generatedSql, sql => {
+  if (sqlPreviewView.value && activeTab.value === 'sql') {
+    sqlPreviewView.value.dispatch({
+      changes: { from: 0, to: sqlPreviewView.value.state.doc.length, insert: sql },
+    })
+  }
+})
+
 // 加载表结构
 async function loadTableStructure() {
   // 新表模式，不需要加载
@@ -579,6 +669,7 @@ async function loadTableStructure() {
 
     // 转换索引
     indexes.value = structure.indexes.map((idx: { name: string; columns: string[]; type?: string; is_unique: boolean }) => ({
+      id: Math.random().toString(36).substr(2, 9),
       name: idx.name,
       columns: idx.columns,
       type: idx.type || driverCaps.value.indexTypes[0] || 'BTREE',
@@ -594,6 +685,7 @@ async function loadTableStructure() {
 
     // 转换外键
     foreignKeys.value = structure.foreign_keys.map((fk: { name: string; column: string; ref_table: string; ref_column: string; on_delete: string; on_update: string }) => ({
+      id: Math.random().toString(36).substr(2, 9),
       name: fk.name,
       column: fk.column,
       refTable: fk.ref_table,
@@ -832,6 +924,7 @@ function moveFieldDown() {
 // 添加索引
 function addIndex() {
   const newIndex: Index = {
+    id: Math.random().toString(36).substr(2, 9),
     name: `idx_${Date.now()}`,
     columns: [],
     type: driverCaps.value.indexTypes[0] || 'BTREE',
@@ -864,6 +957,7 @@ async function deleteIndex() {
 // 添加外键
 function addForeignKey() {
   const newFk: ForeignKey = {
+    id: Math.random().toString(36).substr(2, 9),
     name: `fk_${Date.now()}`,
     column: '',
     refTable: '',
@@ -970,6 +1064,11 @@ async function closeDesigner() {
 
 onMounted(() => {
   loadTableStructure()
+})
+
+onBeforeUnmount(() => {
+  sqlPreviewView.value?.destroy()
+  sqlPreviewView.value = null
 })
 </script>
 
@@ -1414,19 +1513,100 @@ onMounted(() => {
 .fields-table input[type="checkbox"],
 .indexes-table input[type="checkbox"],
 .fk-table input[type="checkbox"] {
-  width: 14px;
-  height: 14px;
-  accent-color: var(--brand-500);
+  appearance: none;
+  -webkit-appearance: none;
+  width: 15px;
+  height: 15px;
+  border: 1.5px solid var(--border-default);
+  border-radius: 3px;
+  background: var(--surface-default);
   cursor: pointer;
+  position: relative;
+  transition:
+    background-color var(--duration-fast) var(--ease-in-out),
+    border-color var(--duration-fast) var(--ease-in-out),
+    box-shadow var(--duration-fast) var(--ease-in-out);
+  flex-shrink: 0;
+}
+
+.fields-table input[type="checkbox"]:hover,
+.indexes-table input[type="checkbox"]:hover,
+.fk-table input[type="checkbox"]:hover {
+  border-color: var(--brand-500);
+}
+
+.fields-table input[type="checkbox"]:focus-visible,
+.indexes-table input[type="checkbox"]:focus-visible,
+.fk-table input[type="checkbox"]:focus-visible {
+  outline: none;
+  border-color: var(--brand-500);
+  box-shadow: 0 0 0 2px rgba(var(--brand-500-rgb), 0.25);
+}
+
+.fields-table input[type="checkbox"]:checked,
+.indexes-table input[type="checkbox"]:checked,
+.fk-table input[type="checkbox"]:checked {
+  background-color: var(--brand-500);
+  border-color: var(--brand-500);
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='3 8 7 12 13 5'%3e%3c/polyline%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 11px 11px;
+}
+
+.fields-table input[type="checkbox"]:checked:hover,
+.indexes-table input[type="checkbox"]:checked:hover,
+.fk-table input[type="checkbox"]:checked:hover {
+  background-color: var(--brand-600);
+  border-color: var(--brand-600);
 }
 
 .fields-table input[type="radio"],
 .indexes-table input[type="radio"],
 .fk-table input[type="radio"] {
-  width: 13px;
-  height: 13px;
-  accent-color: var(--brand-500);
+  appearance: none;
+  -webkit-appearance: none;
+  width: 15px;
+  height: 15px;
+  border: 1.5px solid var(--border-default);
+  border-radius: 50%;
+  background: var(--surface-default);
   cursor: pointer;
+  position: relative;
+  transition:
+    background-color var(--duration-fast) var(--ease-in-out),
+    border-color var(--duration-fast) var(--ease-in-out),
+    box-shadow var(--duration-fast) var(--ease-in-out);
+  flex-shrink: 0;
+}
+
+.fields-table input[type="radio"]:hover,
+.indexes-table input[type="radio"]:hover,
+.fk-table input[type="radio"]:hover {
+  border-color: var(--brand-500);
+}
+
+.fields-table input[type="radio"]:focus-visible,
+.indexes-table input[type="radio"]:focus-visible,
+.fk-table input[type="radio"]:focus-visible {
+  outline: none;
+  border-color: var(--brand-500);
+  box-shadow: 0 0 0 2px rgba(var(--brand-500-rgb), 0.25);
+}
+
+.fields-table input[type="radio"]:checked,
+.indexes-table input[type="radio"]:checked,
+.fk-table input[type="radio"]:checked {
+  background-color: var(--surface-default);
+  border-color: var(--brand-500);
+  box-shadow: inset 0 0 0 4px var(--brand-500);
+}
+
+.fields-table input[type="radio"]:checked:hover,
+.indexes-table input[type="radio"]:checked:hover,
+.fk-table input[type="radio"]:checked:hover {
+  border-color: var(--brand-600);
+  box-shadow: inset 0 0 0 4px var(--brand-600);
 }
 
 /* 单元格内自定义下拉框：与文本输入框保持一致的“无边框”外观 */
@@ -1534,16 +1714,19 @@ onMounted(() => {
 
 .sql-code {
   margin: 0;
-  padding: var(--space-4);
   max-height: 60vh;
   background: var(--canvas);
   color: var(--text-primary);
-  font-family: var(--font-mono);
-  font-size: var(--text-base);
-  line-height: var(--leading-relaxed);
+  overflow: hidden;
+}
+
+.sql-code :deep(.cm-content) {
+  padding: var(--space-4);
+}
+
+.sql-code :deep(.cm-scroller) {
   overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
+  max-height: 60vh;
 }
 
 /* ---------- 错误提示 ---------- */
@@ -1646,9 +1829,42 @@ onMounted(() => {
 }
 
 .field-properties-panel .property-row input[type="checkbox"] {
-  width: 15px;
-  height: 15px;
-  accent-color: var(--brand-500);
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid var(--border-default);
+  border-radius: 3px;
+  background: var(--surface-default);
   cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-in-out),
+    border-color var(--duration-fast) var(--ease-in-out),
+    box-shadow var(--duration-fast) var(--ease-in-out);
+  flex-shrink: 0;
+}
+
+.field-properties-panel .property-row input[type="checkbox"]:hover {
+  border-color: var(--brand-500);
+}
+
+.field-properties-panel .property-row input[type="checkbox"]:focus-visible {
+  outline: none;
+  border-color: var(--brand-500);
+  box-shadow: 0 0 0 2px rgba(var(--brand-500-rgb), 0.25);
+}
+
+.field-properties-panel .property-row input[type="checkbox"]:checked {
+  background-color: var(--brand-500);
+  border-color: var(--brand-500);
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='3 8 7 12 13 5'%3e%3c/polyline%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 12px 12px;
+}
+
+.field-properties-panel .property-row input[type="checkbox"]:checked:hover {
+  background-color: var(--brand-600);
+  border-color: var(--brand-600);
 }
 </style>

@@ -154,9 +154,19 @@ impl ConnectionManager {
 
         // 证书路径为空串时视为未配置，避免把空路径交给驱动
         let ssl = &request.config.ssl_config;
-        let pool_config = &request.config.pool_config;
 
-        // 记录 MySQL 连接是否因 TLS 握手失败回退为明文，供备份/还原 CLI 保持一致
+        // 远程/SSH 连接场景下，首次建连 RTT 高，预热更多空闲连接 + 放宽等待，减少用户感知
+        let is_remote = request.ssh_config.is_some()
+            || !matches!(
+                request.config.host.as_str(),
+                "localhost" | "127.0.0.1" | "::1"
+            );
+        let mut pool_config = request.config.pool_config.clone();
+        if is_remote {
+            pool_config.min_connections = pool_config.min_connections.max(5);
+            pool_config.connect_timeout = pool_config.connect_timeout.max(15);
+        }
+
         let mut tls_disabled = false;
 
         // 按驱动创建连接池
