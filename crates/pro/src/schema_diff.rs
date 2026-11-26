@@ -1091,9 +1091,16 @@ async fn load_pg_compare_schema(
             }
         }
 
-        let structure = manager
+        let structure = match manager
             .get_table_structure(connection_id, &scope.read_database, &info.name)
-            .await?;
+            .await
+        {
+            Ok(structure) => structure,
+            // 快照列表与逐表读取之间存在竞态窗口（并行 DDL：其他会话/测试
+            // 刚好删除了列表中的表）。表已消失 → 跳过，快照语义是"取仍存在的对象"。
+            Err(e) if e.to_string().contains("表不存在") => continue,
+            Err(e) => return Err(e),
+        };
         tables.push(build_pg_compare_table(info, &structure, &scope, &schema));
     }
 
@@ -2196,9 +2203,16 @@ async fn load_sqlite_compare_schema(
 
     let mut tables = Vec::with_capacity(snapshot.tables.len());
     for info in &snapshot.tables {
-        let structure = manager
+        let structure = match manager
             .get_table_structure(connection_id, database, &info.name)
-            .await?;
+            .await
+        {
+            Ok(structure) => structure,
+            // 快照列表与逐表读取之间存在竞态窗口（并行 DDL：其他会话/测试
+            // 刚好删除了列表中的表）。表已消失 → 跳过，快照语义是"取仍存在的对象"。
+            Err(e) if e.to_string().contains("表不存在") => continue,
+            Err(e) => return Err(e),
+        };
         tables.push(build_sqlite_compare_table(info, &structure));
     }
 

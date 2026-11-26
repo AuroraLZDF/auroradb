@@ -268,7 +268,12 @@ impl ConnectionManager {
                 let _ = &mut opts;
 
                 SqlitePoolOptions::new()
-                    .max_connections(pool_config.max_connections)
+                    // 强制单连接：SQLite 每个连接持有独立的 schema cache，
+                    // 池内轮换连接执行 DDL（如 schema diff 的 DROP+RENAME+CREATE 序列）
+                    // 时，落在"缓存陈旧"连接上的语句会误报
+                    // "already exists" / "there is already another table or index"。
+                    // 桌面客户端对本地文件的查询本就微秒级，串行化无感知。
+                    .max_connections(1)
                     // SQLite 常驻连接无收益，且每个连接独立打开文件句柄
                     .min_connections(0)
                     .acquire_timeout(Duration::from_secs(pool_config.connect_timeout))
