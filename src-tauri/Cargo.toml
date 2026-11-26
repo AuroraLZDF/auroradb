@@ -1,6 +1,6 @@
 [package]
 name = "auroradb"
-version = "3.1.0-rc.1"
+version = "3.1.0"
 description = "A MySQL / PostgreSQL database client with connection stability"
 authors = ["Developer"]
 edition = "2021"
