@@ -21,6 +21,14 @@ const METADATA_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 /// 引用外键查询的一行：约束名、子表、子表列、DELETE_RULE、UPDATE_RULE
 type ReferencingFkRow = (String, String, String, Option<String>, Option<String>);
 
+/// PG 对象树并行查询结果：(表, 视图, 存储过程/函数, 触发器)
+type PgObjectTreeJoin = (
+    Vec<(String, String)>,
+    Vec<(String, String)>,
+    Vec<(String, String, String)>,
+    Vec<(String, String, String)>,
+);
+
 /// PG 引用外键查询的一行：约束名、子 schema、子表、子表列、DELETE_RULE、UPDATE_RULE
 type PgReferencingFkRow = (
     String,
@@ -677,12 +685,7 @@ impl ConnectionManager {
                 let pool = self.pg_pool_for(connection_id, db).await?;
 
                 // 4 次 PG 元数据查询无依赖关系，并行发出
-                let (tables, views, routines, triggers): (
-                    Vec<(String, String)>,
-                    Vec<(String, String)>,
-                    Vec<(String, String, String)>,
-                    Vec<(String, String, String)>,
-                ) = tokio::try_join!(
+                let (tables, views, routines, triggers): PgObjectTreeJoin = tokio::try_join!(
                     // 表
                     with_metadata_timeout(
                         sqlx::query_as(
